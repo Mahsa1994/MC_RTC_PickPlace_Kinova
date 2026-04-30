@@ -159,17 +159,17 @@ states:
 # ────────────────────────────────────────────────────────────────────────────
 transitions:
   - [Unfold,         MoveHome,  MoveHome,  Auto]
-#  - [MoveHome,         MoveToPickHover,  MoveToPickHover,  Auto]
-#  - [MoveToPickHover,  LowerToPick,      LowerToPick,      Auto]
-#  - [LowerToPick,      LiftFromPick,     LiftFromPick,     Auto]
-##  - [LowerToPick,      CloseGripper,     CloseGripper,     Auto]
-##  - [CloseGripper,     LiftFromPick,     LiftFromPick,     Auto]
-#  - [LiftFromPick,     MoveToPlaceHover, MoveToPlaceHover, Auto]
-#  - [MoveToPlaceHover, LowerToPlace,     LowerToPlace,     Auto]
-#  - [LowerToPlace, ReturnHome,     ReturnHome,     Auto]
-##  - [LowerToPlace,     OpenGripper,      OpenGripper,      Auto]
-##  - [OpenGripper,      ReturnHome,       ReturnHome,       Auto]
-#  - [ReturnHome,       Idle,             Idle,             Auto]
+  - [MoveHome,         MoveToPickHover,  MoveToPickHover,  Auto]
+  - [MoveToPickHover,  LowerToPick,      LowerToPick,      Auto]
+  - [LowerToPick,      LiftFromPick,     LiftFromPick,     Auto]
+#  - [LowerToPick,      CloseGripper,     CloseGripper,     Auto]
+#  - [CloseGripper,     LiftFromPick,     LiftFromPick,     Auto]
+  - [LiftFromPick,     MoveToPlaceHover, MoveToPlaceHover, Auto]
+  - [MoveToPlaceHover, LowerToPlace,     LowerToPlace,     Auto]
+  - [LowerToPlace, ReturnHome,     ReturnHome,     Auto]
+#  - [LowerToPlace,     OpenGripper,      OpenGripper,      Auto]
+#  - [OpenGripper,      ReturnHome,       ReturnHome,       Auto]
+  - [ReturnHome,       Idle,             Idle,             Auto]
 
 constraints:
   - type: kinematics
