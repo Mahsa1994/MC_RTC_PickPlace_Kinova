@@ -1,0 +1,183 @@
+MainRobot: Kinova6DOF
+ControllerName: PickPlaceController
+z_min_limit: 0.15
+
+# ────────────────────────────────────────────────────────────────────────────
+# Reference poses — read by C++ controller and exposed via pickPose() /
+# placePose() / homePose(). States reference them by name ("pick", "place",
+# "home") with optional offsets.
+# Rotation convention: [roll, pitch, yaw] in radians (ZYX extrinsic).
+# ────────────────────────────────────────────────────────────────────────────
+home_pose:
+  translation: [0.25, 0.00,  0.45]
+  rotation:    [3.1416, 0.0, 0.0]
+
+pick_pose:
+  translation: [0.40, 0.10,  0.15]
+  rotation:    [3.1416, 0.0, 0.0]
+
+place_pose:
+  translation: [0.35, -0.10, 0.15]
+  rotation:    [3.1416, 0.0, 0.0]
+
+# Where the compiled state libraries live. These must be absolute paths.
+# Adjust these if your workspace or install layout differs.
+StatesLibraries:
+  - /home/vscode/workspace/install/pick_and_place/lib/mc_controller/states
+StatesFiles: []
+IdleKeepState: false
+#init: MoveHome
+init: Unfold
+
+# ────────────────────────────────────────────────────────────────────────────
+# STATE CONFIGURATIONS
+# Each entry instantiates a generic state class (CartesianMove / JointMove /
+# Gripper) and parameterizes it. EVERYTHING below can be tuned without
+# recompiling.
+#
+# For HRI experiments, the important knobs are:
+#   duration   : seconds for the whole motion (lower = faster)
+#   stiffness  : feedback gain (leave at 10 unless you know why)
+#   waypoints  : optional list of [x,y,z] to force a specific trajectory
+#                shape (e.g. arc around a human). Points are interpolated
+#                smoothly via B-spline.
+# ────────────────────────────────────────────────────────────────────────────
+states:
+
+
+# ── 0. Safely unfold from the ground (No self-collisions) ───────────────
+  Unfold:
+    base: JointMove
+    target: [3.1416, 0.25, 1.57, 0.0, 1.57, 0.0]
+    duration: 7.0 #5.0
+    stiffness: 2.0
+    next: MoveHome
+
+
+  # ── 1. Unfold to a safe joint-space home ───────────────────────────────────
+  MoveHome:
+#    base: JointMove
+    base: CartesianMove
+#    target: [3.1416, 0.25, 1.57, 0.0, 1.57, 0.0]
+    target:
+      ref: home
+    duration: 10.0 #8
+    stiffness: 6.0
+    weight: 1000.0
+    threshold: 0.15
+#    threshold: 0.02
+    next: MoveToPickHover
+
+  # ── 2. Go above the pick pose ──────────────────────────────────────────────
+  MoveToPickHover:
+    base: CartesianMove
+    target:
+      ref: pick
+      offset: [0.0, 0.0, 0.20]   # 15 cm above
+    duration: 9 #6.0
+#    stiffness: 10.0
+    stiffness: 6.0
+    weight:    1000.0
+    next: LowerToPick
+
+  # ── 3. Lower straight down onto the object ────────────────────────────────
+  LowerToPick:
+    base: CartesianMove
+    target:
+      ref: pick
+    duration: 6 #4.0
+    stiffness: 8.0
+    weight:    1000.0
+    pos_threshold: 0.01          # 1 cm - tighter for grasping
+    #next: CloseGripper
+    next: LiftFromPick
+
+  # ── 4. Grasp ──────────────────────────────────────────────────────────────
+  CloseGripper:
+    base: Gripper
+    action: close
+    timeout: 2.0
+    next: LiftFromPick
+
+  # ── 5. Lift the object ────────────────────────────────────────────────────
+  LiftFromPick:
+    base: CartesianMove
+    target:
+      ref: pick
+      offset: [0.0, 0.0, 0.25]
+    duration: 6 #3.0
+    next: MoveToPlaceHover
+
+  # ── 6. Transfer to place hover (this is where HRI lives!) ─────────────────
+  # Want to avoid a person standing between pick and place?
+  # Uncomment waypoints and add any intermediate via-points.
+  # The B-spline goes smoothly through them.
+  MoveToPlaceHover:
+    base: CartesianMove
+    target:
+      ref: place
+      offset: [0.0, 0.0, 0.20]
+    duration: 9 #5.0
+#    waypoints:
+#       - [0.45,  0.00, 0.55]   # arc up & over
+#       - [0.4, -0.05, 0.50]
+    next: LowerToPlace
+
+  # ── 7. Lower to place ─────────────────────────────────────────────────────
+  LowerToPlace:
+    base: CartesianMove
+    target:
+      ref: place
+    duration: 8 #4.0
+    stiffness: 8.0
+    pos_threshold: 0.01
+#    next: OpenGripper
+    next: ReturnHome
+
+  # ── 8. Release ────────────────────────────────────────────────────────────
+  OpenGripper:
+    base: Gripper
+    action: open
+    timeout: 2.0
+    next: ReturnHome
+
+  # ── 9. Back to safe joint home ────────────────────────────────────────────
+  ReturnHome:
+#    base: JointMove
+    base: CartesianMove
+#    target: [3.1416, 0.25, 1.57, 0.0, 1.57, 0.0]
+    target:
+      ref: home
+    duration: 9 #5.0
+    stiffness: 6.0
+    next: Idle
+
+# ────────────────────────────────────────────────────────────────────────────
+# FSM transitions. Each state's output() call passes the `next` value from
+# its own config above. So the transition table format is:
+#   [FromState, OutputValue (== NextStateName), ToState, Auto]
+# ────────────────────────────────────────────────────────────────────────────
+transitions:
+  - [Unfold,         MoveHome,  MoveHome,  Auto]
+#  - [MoveHome,         MoveToPickHover,  MoveToPickHover,  Auto]
+#  - [MoveToPickHover,  LowerToPick,      LowerToPick,      Auto]
+#  - [LowerToPick,      LiftFromPick,     LiftFromPick,     Auto]
+##  - [LowerToPick,      CloseGripper,     CloseGripper,     Auto]
+##  - [CloseGripper,     LiftFromPick,     LiftFromPick,     Auto]
+#  - [LiftFromPick,     MoveToPlaceHover, MoveToPlaceHover, Auto]
+#  - [MoveToPlaceHover, LowerToPlace,     LowerToPlace,     Auto]
+#  - [LowerToPlace, ReturnHome,     ReturnHome,     Auto]
+##  - [LowerToPlace,     OpenGripper,      OpenGripper,      Auto]
+##  - [OpenGripper,      ReturnHome,       ReturnHome,       Auto]
+#  - [ReturnHome,       Idle,             Idle,             Auto]
+
+constraints:
+  - type: kinematics
+  - type: collision
+    r1: kinova_6dof
+    r2: kinova_6dof
+    collisions:
+      - type: all
+        iDist: 0.02
+        sDist: 0.005
+        damping: 0.0

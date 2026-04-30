@@ -1,0 +1,28 @@
+# ROS2 / colcon
+build/
+install/
+log/
+
+# colcon generated files
+*.log
+*.pyc
+__pycache__/
+
+# environment setup files (generated)
+local_setup.*
+setup.*
+
+# binaries / libs
+lib/
+bin/
+
+# cmake
+CMakeFiles/
+CMakeCache.txt
+compile_commands.json
+
+# vscode (optional)
+.vscode/
+
+# python venv (if any)
+venv/

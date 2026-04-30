@@ -1,0 +1,36 @@
+digraph G {
+"robot_map" -> "real/kinova_6dof/world"[label=" Broadcaster: default_authority\nAverage rate: 100.199\nBuffer length: 5.0\nMost recent transform: 1772221194.861714\nOldest transform: 1772221189.861653\n"];
+"real/kinova_6dof/world" -> "real/kinova_6dof/base_link"[label=" Broadcaster: default_authority\nAverage rate: 100.199\nBuffer length: 5.0\nMost recent transform: 1772221194.861714\nOldest transform: 1772221189.861653\n"];
+"real/kinova_6dof/base_link" -> "real/kinova_6dof/shoulder_link"[label=" Broadcaster: default_authority\nAverage rate: 100.199\nBuffer length: 5.0\nMost recent transform: 1772221194.861714\nOldest transform: 1772221189.861653\n"];
+"real/kinova_6dof/shoulder_link" -> "real/kinova_6dof/bicep_link"[label=" Broadcaster: default_authority\nAverage rate: 100.199\nBuffer length: 5.0\nMost recent transform: 1772221194.861714\nOldest transform: 1772221189.861653\n"];
+"real/kinova_6dof/bicep_link" -> "real/kinova_6dof/forearm_link"[label=" Broadcaster: default_authority\nAverage rate: 100.199\nBuffer length: 5.0\nMost recent transform: 1772221194.861714\nOldest transform: 1772221189.861653\n"];
+"real/kinova_6dof/forearm_link" -> "real/kinova_6dof/spherical_wrist_1_link"[label=" Broadcaster: default_authority\nAverage rate: 100.199\nBuffer length: 5.0\nMost recent transform: 1772221194.861714\nOldest transform: 1772221189.861653\n"];
+"real/kinova_6dof/spherical_wrist_1_link" -> "real/kinova_6dof/spherical_wrist_2_link"[label=" Broadcaster: default_authority\nAverage rate: 100.199\nBuffer length: 5.0\nMost recent transform: 1772221194.861714\nOldest transform: 1772221189.861653\n"];
+"real/kinova_6dof/spherical_wrist_2_link" -> "real/kinova_6dof/bracelet_link"[label=" Broadcaster: default_authority\nAverage rate: 100.199\nBuffer length: 5.0\nMost recent transform: 1772221194.861714\nOldest transform: 1772221189.861653\n"];
+"real/kinova_6dof/bracelet_link" -> "real/kinova_6dof/end_effector_link"[label=" Broadcaster: default_authority\nAverage rate: 100.199\nBuffer length: 5.0\nMost recent transform: 1772221194.861714\nOldest transform: 1772221189.861653\n"];
+"real/kinova_6dof/end_effector_link" -> "real/kinova_6dof/tool_frame"[label=" Broadcaster: default_authority\nAverage rate: 100.199\nBuffer length: 5.0\nMost recent transform: 1772221194.861714\nOldest transform: 1772221189.861653\n"];
+"real/kinova_6dof/tool_frame" -> "real/kinova_6dof/EEForceSensor"[label=" Broadcaster: default_authority\nAverage rate: 100.199\nBuffer length: 5.0\nMost recent transform: 1772221194.861714\nOldest transform: 1772221189.861653\n"];
+"real/kinova_6dof/end_effector_link" -> "real/kinova_6dof/surfaces/Arm"[label=" Broadcaster: default_authority\nAverage rate: 100.199\nBuffer length: 5.0\nMost recent transform: 1772221194.861714\nOldest transform: 1772221189.861653\n"];
+"robot_map" -> "control/kinova_6dof/world"[label=" Broadcaster: default_authority\nAverage rate: 100.198\nBuffer length: 5.01\nMost recent transform: 1772221194.871708\nOldest transform: 1772221189.861651\n"];
+"control/kinova_6dof/world" -> "control/kinova_6dof/base_link"[label=" Broadcaster: default_authority\nAverage rate: 100.198\nBuffer length: 5.01\nMost recent transform: 1772221194.871708\nOldest transform: 1772221189.861651\n"];
+"control/kinova_6dof/base_link" -> "control/kinova_6dof/shoulder_link"[label=" Broadcaster: default_authority\nAverage rate: 100.198\nBuffer length: 5.01\nMost recent transform: 1772221194.871708\nOldest transform: 1772221189.861651\n"];
+"control/kinova_6dof/shoulder_link" -> "control/kinova_6dof/bicep_link"[label=" Broadcaster: default_authority\nAverage rate: 100.198\nBuffer length: 5.01\nMost recent transform: 1772221194.871708\nOldest transform: 1772221189.861651\n"];
+"control/kinova_6dof/bicep_link" -> "control/kinova_6dof/forearm_link"[label=" Broadcaster: default_authority\nAverage rate: 100.198\nBuffer length: 5.01\nMost recent transform: 1772221194.871708\nOldest transform: 1772221189.861651\n"];
+"control/kinova_6dof/forearm_link" -> "control/kinova_6dof/spherical_wrist_1_link"[label=" Broadcaster: default_authority\nAverage rate: 100.198\nBuffer length: 5.01\nMost recent transform: 1772221194.871708\nOldest transform: 1772221189.861651\n"];
+"control/kinova_6dof/spherical_wrist_1_link" -> "control/kinova_6dof/spherical_wrist_2_link"[label=" Broadcaster: default_authority\nAverage rate: 100.198\nBuffer length: 5.01\nMost recent transform: 1772221194.871708\nOldest transform: 1772221189.861651\n"];
+"control/kinova_6dof/spherical_wrist_2_link" -> "control/kinova_6dof/bracelet_link"[label=" Broadcaster: default_authority\nAverage rate: 100.198\nBuffer length: 5.01\nMost recent transform: 1772221194.871708\nOldest transform: 1772221189.861651\n"];
+"control/kinova_6dof/bracelet_link" -> "control/kinova_6dof/end_effector_link"[label=" Broadcaster: default_authority\nAverage rate: 100.198\nBuffer length: 5.01\nMost recent transform: 1772221194.871708\nOldest transform: 1772221189.861651\n"];
+"control/kinova_6dof/end_effector_link" -> "control/kinova_6dof/tool_frame"[label=" Broadcaster: default_authority\nAverage rate: 100.198\nBuffer length: 5.01\nMost recent transform: 1772221194.871708\nOldest transform: 1772221189.861651\n"];
+"control/kinova_6dof/tool_frame" -> "control/kinova_6dof/EEForceSensor"[label=" Broadcaster: default_authority\nAverage rate: 100.198\nBuffer length: 5.01\nMost recent transform: 1772221194.871708\nOldest transform: 1772221189.861651\n"];
+"control/kinova_6dof/end_effector_link" -> "control/kinova_6dof/surfaces/Arm"[label=" Broadcaster: default_authority\nAverage rate: 100.198\nBuffer length: 5.01\nMost recent transform: 1772221194.871708\nOldest transform: 1772221189.861651\n"];
+"robot_map" -> "control/ground/base_link"[label=" Broadcaster: default_authority\nAverage rate: 100.199\nBuffer length: 5.0\nMost recent transform: 1772221194.861713\nOldest transform: 1772221189.861652\n"];
+"control/ground/base_link" -> "control/ground/ground"[label=" Broadcaster: default_authority\nAverage rate: 100.199\nBuffer length: 5.0\nMost recent transform: 1772221194.861713\nOldest transform: 1772221189.861652\n"];
+"control/ground/ground" -> "control/ground/surfaces/AllGround"[label=" Broadcaster: default_authority\nAverage rate: 100.199\nBuffer length: 5.0\nMost recent transform: 1772221194.861713\nOldest transform: 1772221189.861652\n"];
+"robot_map" -> "real/ground/base_link"[label=" Broadcaster: default_authority\nAverage rate: 100.199\nBuffer length: 5.0\nMost recent transform: 1772221194.861715\nOldest transform: 1772221189.861654\n"];
+"real/ground/base_link" -> "real/ground/ground"[label=" Broadcaster: default_authority\nAverage rate: 100.199\nBuffer length: 5.0\nMost recent transform: 1772221194.861715\nOldest transform: 1772221189.861654\n"];
+"real/ground/ground" -> "real/ground/surfaces/AllGround"[label=" Broadcaster: default_authority\nAverage rate: 100.199\nBuffer length: 5.0\nMost recent transform: 1772221194.861715\nOldest transform: 1772221189.861654\n"];
+edge [style=invis];
+ subgraph cluster_legend { style=bold; color=black; label ="view_frames Result";
+"Recorded at time: 1772221194.8913603"[ shape=plaintext ] ;
+}->"robot_map";
+}
