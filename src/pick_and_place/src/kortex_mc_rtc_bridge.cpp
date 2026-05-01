@@ -68,42 +68,96 @@ private:
     }
   }
 
-  void controlLoop()
-  {
-    if(gc_->run())
-    {
-      // Send 200Hz high-density points to Kinova driver (FIXES THE SHAKE!)
-      trajectory_msgs::msg::JointTrajectory traj;
-      traj.joint_names = {"joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"};
-
-      trajectory_msgs::msg::JointTrajectoryPoint pt;
-      for(const auto & jn : traj.joint_names)
-      {
-          if(gc_->robot().hasJoint(jn)) {
-             auto mbc_idx = gc_->robot().jointIndexByName(jn);
-             pt.positions.push_back(gc_->robot().mbc().q[mbc_idx][0]);
-             pt.velocities.push_back(gc_->robot().mbc().alpha[mbc_idx][0]);
+//  void controlLoop()
+//  {
+//    if(gc_->run())
+//    {
+//      // Send 200Hz high-density points to Kinova driver (FIXES THE SHAKE!)
+//      trajectory_msgs::msg::JointTrajectory traj;
+//      traj.joint_names = {"joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"};
+//
+//      trajectory_msgs::msg::JointTrajectoryPoint pt;
+//      for(const auto & jn : traj.joint_names)
+//      {
+//          if(gc_->robot().hasJoint(jn)) {
+//             auto mbc_idx = gc_->robot().jointIndexByName(jn);
+//             pt.positions.push_back(gc_->robot().mbc().q[mbc_idx][0]);
+//             pt.velocities.push_back(gc_->robot().mbc().alpha[mbc_idx][0]);
    //          // 1. Get the joint's numeric index from its string name
      //        auto joint_idx = gc_->robot().jointIndexByName(jn);
        //      // 2. Get the index of that joint in the MBC state vector
        //      auto mbc_idx = gc_->robot().jointIndexInMBC(joint_idx); 
         //     pt.positions.push_back(gc_->robot().mbc().q[mbc_idx][0]);
          //    pt.velocities.push_back(gc_->robot().mbc().alpha[mbc_idx][0]);
+//        } else {
+//          pt.positions.push_back(0.0);
+//          pt.velocities.push_back(0.0);
+//        }
+//      }
+
+      // Tell driver this point happens in exactly 5ms
+//      pt.time_from_start.sec = 0;
+//      pt.time_from_start.nanosec = 5000000; 
+//
+//      traj.points.push_back(pt);
+//      pub_->publish(traj);
+//   }
+//  }
+
+void controlLoop()
+  {
+    if(gc_->run())
+    {
+      trajectory_msgs::msg::JointTrajectory traj;
+      traj.joint_names = {"joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"};
+
+      trajectory_msgs::msg::JointTrajectoryPoint pt1;
+      double max_vel = 0.0;
+
+      for(const auto & jn : traj.joint_names)
+      {
+        if(gc_->robot().hasJoint(jn)) {
+          auto mbc_idx = gc_->robot().jointIndexByName(jn);
+          double q = gc_->robot().mbc().q[mbc_idx][0];
+          double alpha = gc_->robot().mbc().alpha[mbc_idx][0];
+          
+          pt1.positions.push_back(q);
+          pt1.velocities.push_back(alpha);
+          
+          // Track the highest velocity requested by the FSM
+          max_vel = std::max(max_vel, std::abs(alpha));
         } else {
-          pt.positions.push_back(0.0);
-          pt.velocities.push_back(0.0);
+          pt1.positions.push_back(0.0);
+          pt1.velocities.push_back(0.0);
         }
       }
 
-      // Tell driver this point happens in exactly 5ms
-      pt.time_from_start.sec = 0;
-      pt.time_from_start.nanosec = 5000000; 
+      // SMART PUBLISH LOGIC: Only send commands if the FSM actually wants to move
+      bool is_moving = (max_vel > 1e-4); 
+      static bool was_moving = true; 
 
-      traj.points.push_back(pt);
-      pub_->publish(traj);
+      if(is_moving || was_moving)
+      {
+        // Point 1: The real 200Hz command
+        pt1.time_from_start.sec = 0;
+        pt1.time_from_start.nanosec = 5000000; 
+        traj.points.push_back(pt1);
+
+        // Point 2: Dummy stop point to bypass ROS 2 strict velocity checks
+        trajectory_msgs::msg::JointTrajectoryPoint pt2;
+        pt2.positions = pt1.positions;
+        pt2.velocities = std::vector<double>(pt1.positions.size(), 0.0);
+        pt2.time_from_start.sec = 0;
+        pt2.time_from_start.nanosec = 100000000; // 100ms in the future
+        traj.points.push_back(pt2);
+
+        pub_->publish(traj);
+      }
+
+      // Remember state for next loop. (If it just stopped, it publishes one final time to lock it in).
+      was_moving = is_moving; 
     }
   }
-
   std::shared_ptr<mc_control::MCGlobalController> gc_;
   rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr pub_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr sub_;
