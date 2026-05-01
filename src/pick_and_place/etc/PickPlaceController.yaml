@@ -69,20 +69,21 @@ states:
     weight: 1000.0
     threshold: 0.02
 #    threshold: 0.02
-#    next: MoveToPickHover
-    next: Idle
+    next: MoveToPickHover
+#    next: Idle
 
   # ── 2. Go above the pick pose ──────────────────────────────────────────────
   MoveToPickHover:
     base: CartesianMove
     target:
       ref: pick
-      offset: [0.0, 0.0, 0.20]   # 15 cm above
+      offset: [0.0, 0.0, 0.20]   # 20 cm above
     duration: 9 #6.0
 #    stiffness: 10.0
     stiffness: 6.0
     weight:    1000.0
-    next: LowerToPick
+#    next: LowerToPick
+    next: ReturnHome
 
   # ── 3. Lower straight down onto the object ────────────────────────────────
   LowerToPick:
@@ -163,9 +164,9 @@ states:
 # ────────────────────────────────────────────────────────────────────────────
 transitions:
 #  - [Unfold,         MoveHome,  MoveHome,  Auto]
-  - [MoveHome,         Idle,  Idle,  Auto]
-#  - [MoveHome,         MoveToPickHover,  MoveToPickHover,  Auto]
-#  - [MoveToPickHover,  LowerToPick,      LowerToPick,      Auto]
+#  - [MoveHome,         Idle,  Idle,  Auto]
+  - [MoveHome,         MoveToPickHover,  MoveToPickHover,  Auto]
+  - [MoveToPickHover,  ReturnHome,      ReturnHome,      Auto]
 #  - [LowerToPick,      LiftFromPick,     LiftFromPick,     Auto]
 ##  - [LowerToPick,      CloseGripper,     CloseGripper,     Auto]
 ##  - [CloseGripper,     LiftFromPick,     LiftFromPick,     Auto]
@@ -174,7 +175,7 @@ transitions:
 #  - [LowerToPlace, ReturnHome,     ReturnHome,     Auto]
 ## - [LowerToPlace,     OpenGripper,      OpenGripper,      Auto]
 ##  - [OpenGripper,      ReturnHome,       ReturnHome,       Auto]
-#  - [ReturnHome,       Idle,             Idle,             Auto]
+  - [ReturnHome,       Idle,             Idle,             Auto]
 
 constraints:
   - type: kinematics
