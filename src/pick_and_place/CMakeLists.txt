@@ -7,6 +7,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(ament_cmake REQUIRED)
 find_package(mc_rtc REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(trajectory_msgs REQUIRED) 
 
 # ── Controller library (no ROS dependency) ───────────────────────────────────
 add_library(PickPlaceController SHARED
@@ -55,4 +58,30 @@ install(FILES etc/PickPlaceController.yaml
 install(DIRECTORY launch/ DESTINATION share/${PROJECT_NAME}/launch)
 install(DIRECTORY worlds/  DESTINATION share/${PROJECT_NAME}/worlds)
 
+
+
+# ── RealRobotSensor GlobalPlugin ─────────────────────────────────────────────
+add_library(RealRobotSensor SHARED src/plugins/RealRobotSensor.cpp)
+
+# Link mc_rtc without PUBLIC so it matches ROS 2 ament_target_dependencies
+target_link_libraries(RealRobotSensor mc_rtc::mc_control)
+ament_target_dependencies(RealRobotSensor rclcpp sensor_msgs)
+
+install(TARGETS RealRobotSensor
+  LIBRARY DESTINATION lib/mc_plugins
+)
+install(FILES etc/RealRobotSensor.yaml
+  DESTINATION lib/mc_plugins/etc
+)
+
+######################
+add_executable(kortex_mc_rtc_bridge src/kortex_mc_rtc_bridge.cpp)
+target_link_libraries(kortex_mc_rtc_bridge mc_rtc::mc_control)
+ament_target_dependencies(kortex_mc_rtc_bridge rclcpp sensor_msgs trajectory_msgs)
+
+install(TARGETS kortex_mc_rtc_bridge
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 ament_package()
+
