@@ -1,58 +1,66 @@
 #!/usr/bin/env python3
-"""
-Relay node: converts mc_rtc's joint state output to JointTrajectoryController commands.
-
-mc_rtc publishes its desired joint positions on:
-  /control/kinova_6dof/joint_states  (sensor_msgs/JointState)
-
-JointTrajectoryController accepts commands on:
-  /kinova_joint_controller/joint_trajectory  (trajectory_msgs/JointTrajectory)
-
-This node subscribes to the former and publishes to the latter at every tick.
-"""
+import time, sys
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from builtin_interfaces.msg import Duration
 
-JOINTS = ['joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'joint_6']
+JOINTS = ['joint_1','joint_2','joint_3','joint_4','joint_5','joint_6']
+
+MODE = sys.argv[1] if len(sys.argv) > 1 else 'sim'
+
+if MODE == 'real':
+    RATE_HZ  = 10.0
+    DEADBAND = 0.002
+    TRAJ_SEC = 0.2
+    TOPIC    = '/joint_trajectory_controller/joint_trajectory'
+else:
+    RATE_HZ  = 200.0
+    DEADBAND = 0.0001
+    TRAJ_SEC = 0.005
+    TOPIC    = '/kinova_joint_controller/joint_trajectory'
 
 class McRtcJointRelay(Node):
     def __init__(self):
         super().__init__('mc_rtc_joint_relay')
-        self.pub = self.create_publisher(
-            JointTrajectory,
-            #'/kinova_joint_controller/joint_trajectory',
-            '/joint_trajectory_controller/joint_trajectory',
-            10)
+        self._last_t   = 0.0
+        self._last_pos = None
+        self._interval = 1.0 / RATE_HZ
+        self.pub = self.create_publisher(JointTrajectory, TOPIC, 10)
         self.sub = self.create_subscription(
-            JointState,
-            '/control/kinova_6dof/joint_states',
-            self.callback,
-            10)
-        self.get_logger().info('mc_rtc joint relay started')
+            JointState, '/control/kinova_6dof/joint_states',
+            self.callback, 10)
+        self.get_logger().info(
+            f'Relay [{MODE}] → {TOPIC} @ {RATE_HZ}Hz traj={TRAJ_SEC}s')
 
-    def callback(self, msg: JointState):
-        # Build index map from incoming message
-        idx = {name: i for i, name in enumerate(msg.name)}
+    def callback(self, msg):
+        idx = {n: i for i, n in enumerate(msg.name)}
         if not all(j in idx for j in JOINTS):
-            return  # not all joints present yet
-
+            return
+        pos = [msg.position[idx[j]] for j in JOINTS]
+        now = time.monotonic()
+        if now - self._last_t < self._interval:
+            return
+        if self._last_pos and max(
+                abs(pos[i]-self._last_pos[i]) for i in range(6)) < DEADBAND:
+            return
         traj = JointTrajectory()
         traj.joint_names = JOINTS
         pt = JointTrajectoryPoint()
-        pt.positions = [msg.position[idx[j]] for j in JOINTS]
-        pt.velocities = [0.0] * len(JOINTS)
-        # time_from_start = 0 means "execute immediately"
-        pt.time_from_start = Duration(sec=0, nanosec=100_000_000)  # 5ms
+        pt.positions  = pos
+        pt.velocities = [0.0]*6
+        s  = int(TRAJ_SEC)
+        ns = int((TRAJ_SEC - s)*1e9)
+        pt.time_from_start = Duration(sec=s, nanosec=ns)
         traj.points = [pt]
         self.pub.publish(traj)
+        self._last_t   = now
+        self._last_pos = pos
 
 def main():
     rclpy.init()
-    node = McRtcJointRelay()
-    rclpy.spin(node)
+    rclpy.spin(McRtcJointRelay())
     rclpy.shutdown()
 
 if __name__ == '__main__':
