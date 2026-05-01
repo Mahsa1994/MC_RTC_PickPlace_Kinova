@@ -112,38 +112,46 @@ void controlLoop()
       traj.joint_names = {"joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"};
 
       trajectory_msgs::msg::JointTrajectoryPoint pt1;
-      double max_vel = 0.0;
+      
+      // Keep track of where we last told the robot to go
+      static std::vector<double> last_published_q(6, 0.0);
+      bool intent_to_move = false;
 
-      for(const auto & jn : traj.joint_names)
+      for(size_t i = 0; i < traj.joint_names.size(); ++i)
       {
-        if(gc_->robot().hasJoint(jn)) {
-          auto mbc_idx = gc_->robot().jointIndexByName(jn);
+        if(gc_->robot().hasJoint(traj.joint_names[i])) {
+          auto mbc_idx = gc_->robot().jointIndexByName(traj.joint_names[i]);
           double q = gc_->robot().mbc().q[mbc_idx][0];
           double alpha = gc_->robot().mbc().alpha[mbc_idx][0];
           
           pt1.positions.push_back(q);
           pt1.velocities.push_back(alpha);
           
-          // Track the highest velocity requested by the FSM
-          max_vel = std::max(max_vel, std::abs(alpha));
+          // If the position changed by even a micro-radian, or velocity is active, we are moving!
+          if(std::abs(q - last_published_q[i]) > 1e-5 || std::abs(alpha) > 1e-4) {
+            intent_to_move = true;
+          }
         } else {
           pt1.positions.push_back(0.0);
           pt1.velocities.push_back(0.0);
         }
       }
 
-      // SMART PUBLISH LOGIC: Only send commands if the FSM actually wants to move
-      bool is_moving = (max_vel > 1e-4); 
-      static bool was_moving = true; 
+      static int idle_ticks = 0;
+      if(intent_to_move) {
+        idle_ticks = 0; // Reset counter immediately when FSM starts moving
+      } else {
+        idle_ticks++;
+      }
 
-      if(is_moving || was_moving)
+      // Publish during movement, AND for 50 ticks (250ms) after stopping to let the arm settle smoothly
+      if(idle_ticks < 50)
       {
-        // Point 1: The real 200Hz command
         pt1.time_from_start.sec = 0;
         pt1.time_from_start.nanosec = 5000000; 
         traj.points.push_back(pt1);
 
-        // Point 2: Dummy stop point to bypass ROS 2 strict velocity checks
+        // Dummy stop point to bypass ROS 2 strict velocity checks
         trajectory_msgs::msg::JointTrajectoryPoint pt2;
         pt2.positions = pt1.positions;
         pt2.velocities = std::vector<double>(pt1.positions.size(), 0.0);
@@ -152,12 +160,13 @@ void controlLoop()
         traj.points.push_back(pt2);
 
         pub_->publish(traj);
+        last_published_q = pt1.positions; // Save for next loop
       }
-
-      // Remember state for next loop. (If it just stopped, it publishes one final time to lock it in).
-      was_moving = is_moving; 
     }
   }
+
+
+
   std::shared_ptr<mc_control::MCGlobalController> gc_;
   rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr pub_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr sub_;
