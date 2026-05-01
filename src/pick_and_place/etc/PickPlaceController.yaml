@@ -67,9 +67,10 @@ states:
     duration: 10.0 #8
     stiffness: 6.0
     weight: 1000.0
-    threshold: 0.15
+    threshold: 0.02
 #    threshold: 0.02
-    next: MoveToPickHover
+#    next: MoveToPickHover
+    next: Idle
 
   # ── 2. Go above the pick pose ──────────────────────────────────────────────
   MoveToPickHover:
