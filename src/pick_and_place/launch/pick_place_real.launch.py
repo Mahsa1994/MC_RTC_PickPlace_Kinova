@@ -22,7 +22,6 @@ def generate_launch_description():
             'dof:=6',
             'use_fake_hardware:=false',
             'launch_rviz:=false',
-            'gripper:=',
             'use_internal_bus_gripper_comm:=false',
         ],
         output='screen'
