@@ -23,8 +23,8 @@ class McRtcJointRelay(Node):
         super().__init__('mc_rtc_joint_relay')
         self.pub = self.create_publisher(
             JointTrajectory,
-            '/kinova_joint_controller/joint_trajectory',
-            #'/joint_trajectory_controller/joint_trajectory',
+            #'/kinova_joint_controller/joint_trajectory',
+            '/joint_trajectory_controller/joint_trajectory',
             10)
         self.sub = self.create_subscription(
             JointState,
