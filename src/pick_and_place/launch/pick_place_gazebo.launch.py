@@ -104,6 +104,17 @@ def generate_launch_description():
         ]
     )
 
+    relay = TimerAction(
+        period=9.0,
+        actions=[
+            ExecuteProcess(
+                cmd=['python3',
+                     '/home/vscode/workspace/src/pick_and_place/scripts/mc_rtc_joint_relay.py',
+                     'sim'],
+                output='screen'
+            )
+        ]
+    )
     # ── 7. Unpause Gazebo AFTER mc_rtc is initialised ─────────────────────
     # mc_rtc needs ~2-3 seconds to load after the ticker starts (at t=5s).
     # We unpause at t=10s, by which time mc_rtc is running and sending
