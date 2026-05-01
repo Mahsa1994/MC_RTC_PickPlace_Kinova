@@ -9,8 +9,11 @@ z_min_limit: 0.15
 # Rotation convention: [roll, pitch, yaw] in radians (ZYX extrinsic).
 # ────────────────────────────────────────────────────────────────────────────
 home_pose:
-  translation: [0.25, 0.00,  0.45]
-  rotation:    [3.1416, 0.0, 0.0]
+##  translation: [0.25, 0.00,  0.45]
+  translation: [0.04, 0.308, 0.362]
+#  rotation:    [3.1416, 0.0, 0.0]
+  rotation:    [-3.140, 0.022, 2.908]
+
 
 pick_pose:
   translation: [0.40, 0.10,  0.15]
@@ -26,8 +29,8 @@ StatesLibraries:
   - /home/vscode/workspace/install/pick_and_place/lib/mc_controller/states
 StatesFiles: []
 IdleKeepState: false
-#init: MoveHome
-init: Unfold
+init: MoveHome
+#init: Unfold
 
 # ────────────────────────────────────────────────────────────────────────────
 # STATE CONFIGURATIONS
@@ -49,7 +52,7 @@ states:
   Unfold:
     base: JointMove
     target: [3.1416, 0.25, 1.57, 0.0, 1.57, 0.0]
-    duration: 7.0 #5.0
+    duration: 10.0 #5.0
     stiffness: 2.0
     next: MoveHome
 
@@ -158,8 +161,9 @@ states:
 #   [FromState, OutputValue (== NextStateName), ToState, Auto]
 # ────────────────────────────────────────────────────────────────────────────
 transitions:
-  - [Unfold,         MoveHome,  MoveHome,  Auto]
-  - [MoveHome,         MoveToPickHover,  MoveToPickHover,  Auto]
+#  - [Unfold,         MoveHome,  MoveHome,  Auto]
+  - [MoveHome,         Idle,  Idle,  Auto]
+#  - [MoveHome,         MoveToPickHover,  MoveToPickHover,  Auto]
 #  - [MoveToPickHover,  LowerToPick,      LowerToPick,      Auto]
 #  - [LowerToPick,      LiftFromPick,     LiftFromPick,     Auto]
 ##  - [LowerToPick,      CloseGripper,     CloseGripper,     Auto]
@@ -167,7 +171,7 @@ transitions:
 #  - [LiftFromPick,     MoveToPlaceHover, MoveToPlaceHover, Auto]
 #  - [MoveToPlaceHover, LowerToPlace,     LowerToPlace,     Auto]
 #  - [LowerToPlace, ReturnHome,     ReturnHome,     Auto]
-##  - [LowerToPlace,     OpenGripper,      OpenGripper,      Auto]
+## - [LowerToPlace,     OpenGripper,      OpenGripper,      Auto]
 ##  - [OpenGripper,      ReturnHome,       ReturnHome,       Auto]
 #  - [ReturnHome,       Idle,             Idle,             Auto]
 
@@ -178,6 +182,7 @@ constraints:
     r2: kinova_6dof
     collisions:
       - type: all
-        iDist: 0.02
-        sDist: 0.005
+        iDist: 0.08
+        sDist: 0.03
         damping: 0.0
+
