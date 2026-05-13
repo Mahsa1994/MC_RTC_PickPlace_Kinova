@@ -61,10 +61,14 @@ private:
       std::vector<double> enc_q(ref_order.size(), 0.0);
       for(size_t i = 0; i < ref_order.size(); ++i) {
         for(size_t j = 0; j < msg->name.size(); ++j) {
-          if(msg->name[j] == ref_order[i]) { enc_q[i] = msg->position[j]; break; }
+          if(msg->name[j] == ref_order[i]) { 
+             //enc_q[i] = msg->position[j];
+             enc_alpha[i] = msg->velocity[j];
+             break; }
         }
       }
       gc_->setEncoderValues(gc_->robot().name(), enc_q);
+      gc_->setEncoderVelocities(gc_->robot().name(), enc_alpha);
     }
   }
 
@@ -148,7 +152,7 @@ void controlLoop()
       if(idle_ticks < 50)
       {
         pt1.time_from_start.sec = 0;
-        pt1.time_from_start.nanosec = 5000000; 
+        pt1.time_from_start.nanosec = 200000000; //5000000;
         traj.points.push_back(pt1);
 
         // Dummy stop point to bypass ROS 2 strict velocity checks
@@ -156,7 +160,7 @@ void controlLoop()
         pt2.positions = pt1.positions;
         pt2.velocities = std::vector<double>(pt1.positions.size(), 0.0);
         pt2.time_from_start.sec = 0;
-        pt2.time_from_start.nanosec = 100000000; // 100ms in the future
+        pt2.time_from_start.nanosec = 400000000; //100000000; // 100ms in the future
         traj.points.push_back(pt2);
 
         pub_->publish(traj);
