@@ -16,8 +16,14 @@ public:
         "/joint_trajectory_controller/joint_trajectory", 10);
     
     // Listen to Kinova's true hardware state
+//    sub_ = this->create_subscription<sensor_msgs::msg::JointState>(
+//        "/joint_states", 10,
+//        std::bind(&KortexMcRtcBridge::jointStateCallback, this, std::placeholders::_1));
+    auto qos = rclcpp::QoS(rclcpp::KeepLast(10))
+        .reliability(rclcpp::ReliabilityPolicy::BestEffort)
+        .durability(rclcpp::DurabilityPolicy::Volatile);
     sub_ = this->create_subscription<sensor_msgs::msg::JointState>(
-        "/joint_states", 10,
+        "/joint_states", qos,
         std::bind(&KortexMcRtcBridge::jointStateCallback, this, std::placeholders::_1));
 
     mc_rtc::log::info("[KortexBridge] Waiting for first /joint_states from real Kinova...");
@@ -26,12 +32,19 @@ public:
 private:
   void jointStateCallback(const sensor_msgs::msg::JointState::SharedPtr msg)
   {
+//    RCLCPP_INFO(this->get_logger(), "Got joint_states with %zu joints", msg->name.size());
+    
     if(!gc_)
     {
+    RCLCPP_INFO(this->get_logger(), "Initializing mc_rtc...");
       // 1. Initialize mc_rtc
-      // mc_rtc::Configuration config; // Loads your ~/.config/mc_rtc/mc_rtc.yaml FSM
+//      std::string config_path = "~/.config/mc_rtc/mc_rtc.yaml";
+//      mc_rtc::Configuration config(config_path); // Loads your ~/.config/mc_rtc/mc_rtc.yaml FSM
+//      config.add("GUIServer", mc_rtc::Configuration());
+//      config("GUIServer").add("enabled", false);
 //      gc_ = std::make_shared<mc_control::MCGlobalController>(config);
       gc_ = std::make_shared<mc_control::MCGlobalController>();
+
 
       // 2. Map real joint states to mc_rtc's internal order
       auto ref_order = gc_->robot().refJointOrder();
@@ -50,8 +63,8 @@ private:
       gc_->init(init_q);
       gc_->running = true;
 
-      // 4. Start Control Loop at 200 Hz (dt = 0.005s)
-      timer_ = this->create_wall_timer(5ms, std::bind(&KortexMcRtcBridge::controlLoop, this));
+      // 4. Start Control Loop at 200 Hz (dt = 0.005s) - changed from 5 to 10
+      timer_ = this->create_wall_timer(10ms, std::bind(&KortexMcRtcBridge::controlLoop, this));
       mc_rtc::log::success("[KortexBridge] mc_rtc seeded with real robot state. 200Hz Control loop started!");
     }
     else
@@ -59,10 +72,11 @@ private:
       // Keep encoders updated for FSM closed-loop observation
       auto ref_order = gc_->robot().refJointOrder();
       std::vector<double> enc_q(ref_order.size(), 0.0);
+      std::vector<double> enc_alpha(ref_order.size(), 0.0);
       for(size_t i = 0; i < ref_order.size(); ++i) {
         for(size_t j = 0; j < msg->name.size(); ++j) {
           if(msg->name[j] == ref_order[i]) { 
-             //enc_q[i] = msg->position[j];
+             enc_q[i] = msg->position[j];
              enc_alpha[i] = msg->velocity[j];
              break; }
         }
@@ -110,8 +124,10 @@ private:
 
 void controlLoop()
   {
+//  RCLCPP_INFO(this->get_logger(), "Control loop tick, gc_=%s", gc_ ? "valid" : "null");
     if(gc_->run())
     {
+
       trajectory_msgs::msg::JointTrajectory traj;
       traj.joint_names = {"joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"};
 
@@ -152,7 +168,7 @@ void controlLoop()
       if(idle_ticks < 50)
       {
         pt1.time_from_start.sec = 0;
-        pt1.time_from_start.nanosec = 200000000; //5000000;
+        pt1.time_from_start.nanosec = 10000000; //5000000;
         traj.points.push_back(pt1);
 
         // Dummy stop point to bypass ROS 2 strict velocity checks
@@ -160,7 +176,7 @@ void controlLoop()
         pt2.positions = pt1.positions;
         pt2.velocities = std::vector<double>(pt1.positions.size(), 0.0);
         pt2.time_from_start.sec = 0;
-        pt2.time_from_start.nanosec = 400000000; //100000000; // 100ms in the future
+        pt2.time_from_start.nanosec = 20000000; //100000000; // 100ms in the future
         traj.points.push_back(pt2);
 
         pub_->publish(traj);
