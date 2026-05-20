@@ -83,5 +83,8 @@ install(TARGETS kortex_mc_rtc_bridge
   DESTINATION lib/${PROJECT_NAME}
 )
 
+install(DIRECTORY config/
+  DESTINATION share/${PROJECT_NAME}/config
+)
 ament_package()
 
