@@ -162,20 +162,20 @@ states:
 # its own config above. So the transition table format is:
 #   [FromState, OutputValue (== NextStateName), ToState, Auto]
 # ────────────────────────────────────────────────────────────────────────────
-#transitions:
-##  - [Unfold,         MoveHome,  MoveHome,  Auto]
-##  - [MoveHome,         Idle,  Idle,  Auto]
-#  - [MoveHome,         MoveToPickHover,  MoveToPickHover,  Auto]
-#  - [MoveToPickHover,  ReturnHome,      ReturnHome,      Auto]
-##  - [LowerToPick,      LiftFromPick,     LiftFromPick,     Auto]
-###  - [LowerToPick,      CloseGripper,     CloseGripper,     Auto]
-###  - [CloseGripper,     LiftFromPick,     LiftFromPick,     Auto]
-##  - [LiftFromPick,     MoveToPlaceHover, MoveToPlaceHover, Auto]
-##  - [MoveToPlaceHover, LowerToPlace,     LowerToPlace,     Auto]
-##  - [LowerToPlace, ReturnHome,     ReturnHome,     Auto]
-### - [LowerToPlace,     OpenGripper,      OpenGripper,      Auto]
-###  - [OpenGripper,      ReturnHome,       ReturnHome,       Auto]
-#  - [ReturnHome,       Idle,             Idle,             Auto]
+transitions:
+#  - [Unfold,         MoveHome,  MoveHome,  Auto]
+#  - [MoveHome,         Idle,  Idle,  Auto]
+  - [MoveHome,         MoveToPickHover,  MoveToPickHover,  Auto]
+  - [MoveToPickHover,  ReturnHome,      ReturnHome,      Auto]
+#  - [LowerToPick,      LiftFromPick,     LiftFromPick,     Auto]
+##  - [LowerToPick,      CloseGripper,     CloseGripper,     Auto]
+##  - [CloseGripper,     LiftFromPick,     LiftFromPick,     Auto]
+#  - [LiftFromPick,     MoveToPlaceHover, MoveToPlaceHover, Auto]
+#  - [MoveToPlaceHover, LowerToPlace,     LowerToPlace,     Auto]
+#  - [LowerToPlace, ReturnHome,     ReturnHome,     Auto]
+## - [LowerToPlace,     OpenGripper,      OpenGripper,      Auto]
+##  - [OpenGripper,      ReturnHome,       ReturnHome,       Auto]
+  - [ReturnHome,       Idle,             Idle,             Auto]
 
 constraints:
   - type: kinematics
