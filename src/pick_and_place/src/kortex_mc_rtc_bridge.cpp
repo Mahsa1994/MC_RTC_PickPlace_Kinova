@@ -4,6 +4,7 @@
 #include <mc_control/mc_global_controller.h>
 #include <mc_rtc/logging.h>
 
+#include <mutex>
 #include <atomic>
 
 using namespace std::chrono_literals;
@@ -36,6 +37,7 @@ private:
 
   std::vector<double> last_published_q_ = std::vector<double>(6, 0.0);
   int idle_ticks_ = 0;
+  std::mutex init_mutex_;
 
   // The control loop checks this before running to avoid a race condition.
   std::atomic<bool> initialized_{false};
@@ -43,62 +45,72 @@ private:
 
   void jointStateCallback(const sensor_msgs::msg::JointState::SharedPtr msg)
   {
-    if(!initialized_)
+    if(initialized_)
     {
-    RCLCPP_INFO(this->get_logger(), "Initializing mc_rtc...");
-
-      // 2. Map real joint states to mc_rtc's internal order
       auto ref_order = gc_->robot().refJointOrder();
-      std::vector<double> init_q(ref_order.size(), 0.0);
-
+      std::vector<double> enc_q(ref_order.size(), 0.0);
+      std::vector<double> enc_alpha(ref_order.size(), 0.0);
+      
       for(size_t i = 0; i < ref_order.size(); ++i) {
         for(size_t j = 0; j < msg->name.size(); ++j) {
           if(msg->name[j] == ref_order[i]) {
-            init_q[i] = msg->position[j];
+            enc_q[i]   = msg->position[j];
+            enc_alpha[i] = msg->velocity[j];
             break;
           }
         }
       }
-
-      // 3. Seed FSM with true hardware position (FIXES THE JUMP!)
-      // to the current robot configuration, preventing a jump on startup.
-      // Explicitly calling init() is sufficient — it triggers MCController::reset() internally.
-      // If you ever switch controllers at runtime, you must call reset() again manually.
-      gc_->init(init_q);
-      gc_->running = true;
-
-      // add this log line right after gc_->run() in controlLoop(). If the robot is stationary
-      // but mbc().q drifts away from enc_q below, your observer pipeline is NOT closing the loop.
-      // Log both here to compare at startup:
-      auto ref = gc_->robot().refJointOrder();
-      for(size_t i = 0; i < ref.size(); ++i) {
-        auto idx = gc_->robot().jointIndexByName(ref[i]);
-        mc_rtc::log::info("[KortexBridge] Joint {} | init_q (encoder): {} | mbc.q (QP seed): {}",
-          ref[i], init_q[i], gc_->robot().mbc().q[idx][0]);
-	}
-      // 4. Start Control Loop at 200 Hz (dt = 0.005s) - changed from 5 to 10
-      //timer_ = this->create_wall_timer(10ms, std::bind(&KortexMcRtcBridge::controlLoop, this));
-      //mc_rtc::log::success("[KortexBridge] mc_rtc seeded with real robot state. 200Hz Control loop started!");
-    }
-    else
-    {
-      // Keep encoders updated for FSM closed-loop observation
-      auto ref_order = gc_->robot().refJointOrder();
-      std::vector<double> enc_q(ref_order.size(), 0.0);
-      std::vector<double> enc_alpha(ref_order.size(), 0.0);
-      for(size_t i = 0; i < ref_order.size(); ++i) {
-        for(size_t j = 0; j < msg->name.size(); ++j) {
-          if(msg->name[j] == ref_order[i]) { 
-             enc_q[i] = msg->position[j];
-             enc_alpha[i] = msg->velocity[j];
-             break; }
-        }
-      }
       gc_->setEncoderValues(gc_->robot().name(), enc_q);
       gc_->setEncoderVelocities(gc_->robot().name(), enc_alpha);
+      return;  // EXIT HERE — never fall through to init block
     }
-  }
 
+    // SLOW PATH — first-time init only.
+    // Lock so that even if multiple callbacks queued up at 1000Hz
+    // and all passed the `if(initialized_)` check above simultaneously,
+    // only ONE of them executes the init block.
+    std::lock_guard<std::mutex> lock(init_mutex_);
+
+    // DOUBLE-CHECK after acquiring the lock.
+    // The 2nd, 3rd, 4th... callbacks that were queued will reach here
+    // after the first one finishes and set initialized_ = true.
+    // Without this second check, they would ALL run init — which is
+    // exactly the bug you saw (5x init in the log).
+    if(initialized_) return;
+
+    RCLCPP_INFO(this->get_logger(), "Seeding mc_rtc with first real joint states...");
+
+    auto ref_order = gc_->robot().refJointOrder();
+    std::vector<double> init_q(ref_order.size(), 0.0);
+
+    for(size_t i = 0; i < ref_order.size(); ++i) {
+      for(size_t j = 0; j < msg->name.size(); ++j) {
+        if(msg->name[j] == ref_order[i]) {
+          init_q[i] = msg->position[j];
+          break;
+        }
+      }
+    }
+
+    gc_->init(init_q);
+    gc_->running = true;
+
+    // Log encoder vs QP seed to confirm correct seeding
+    for(size_t i = 0; i < ref_order.size(); ++i) {
+      auto idx = gc_->robot().jointIndexByName(ref_order[i]);
+      mc_rtc::log::info("[KortexBridge] Joint {} | init_q (encoder): {} | mbc.q (QP seed): {}",
+        ref_order[i], init_q[i], gc_->robot().mbc().q[idx][0]);
+    }
+
+    // SET THE FLAG LAST — only after everything above is complete.
+    // Any callback that arrives now and checks initialized_ will
+    // go straight to the fast path above.
+    initialized_ = true;
+
+    // Create the control loop timer only once, after full init.
+    timer_ = this->create_wall_timer(10ms, std::bind(&KortexMcRtcBridge::controlLoop, this));
+    mc_rtc::log::success("[KortexBridge] mc_rtc seeded. Control loop started!");
+  }
 
 void controlLoop()
   {
