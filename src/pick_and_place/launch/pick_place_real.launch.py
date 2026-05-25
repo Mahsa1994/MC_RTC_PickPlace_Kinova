@@ -61,22 +61,8 @@ def generate_launch_description():
         ]
     )
 
-    # Add this inside generate_launch_description(), after mc_rtc_bridge:
-    rviz = TimerAction(
-        period=16.0,  # wait for bridge to initialize before RViz connects
-        actions=[
-            Node(
-                package='mc_rtc_rviz_panel',
-                executable='display',   # or 'mc_rtc_rviz_panel' depending on your install
-                output='screen',
-                arguments=['--ros-args', '--log-level', 'warn']
-            )
-        ]
-    )
-
     return LaunchDescription([
         cleanup,
         kortex,
         mc_rtc_bridge,
-        rviz,
     ])
