@@ -16,7 +16,8 @@ ObserverPipelines:
         update: true
         log: true
         position: encoderValues
-        velocity: encoderFiniteDifferences
+        # velocity: encoderFiniteDifferences
+        velocity: encoderVelocities
 
 #GlobalPlugins:
 #  - RealRobotSensor
