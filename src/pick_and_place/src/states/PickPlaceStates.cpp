@@ -113,12 +113,14 @@ struct CartesianMove : mc_control::fsm::State
   std::shared_ptr<mc_tasks::BSplineTrajectoryTask> traj_;
   sva::PTransformd target_;
   double t_elapsed_ = 0.0;
-  double dt_        = 0.005;
+  double dt_        = 0.01; //0.005;
 
   // Posture task backup (we temporarily lower its priority so it
   // doesn't fight the Cartesian trajectory).
   double prev_posture_weight_    = 1.0;
   double prev_posture_stiffness_ = 1.0;
+
+  int tick_ = 0;
 
   void configure(const mc_rtc::Configuration & config) override
   {
@@ -150,6 +152,7 @@ struct CartesianMove : mc_control::fsm::State
   {
     dt_        = ctl.solver().dt();
     t_elapsed_ = 0.0;
+    tick_      = 0;
     target_    = resolveTarget(ctl, target_cfg_, ee_frame_);
 
     // Back off the posture task so the QP respects the Cartesian trajectory.
@@ -203,8 +206,8 @@ struct CartesianMove : mc_control::fsm::State
     }
 
     // Periodic progress log while settling
-    static int tick = 0;
-    if((tick++ % 200) == 0)
+//    static int tick = 0;
+    if((tick_++ % 200) == 0)
     {
       mc_rtc::log::warning("[{}] Settling: pos_err={:.4f} m, ori_err={:.4f} rad",
                            name(), pos_err, ori_err);
@@ -248,9 +251,11 @@ struct JointMove : mc_control::fsm::State
   std::string next_state_;
 
   double t_elapsed_           = 0.0;
-  double dt_                  = 0.005;
+  double dt_                  = 0.01; //0.005;
   double prev_weight_         = 1.0;
   double prev_stiffness_      = 1.0;
+
+  int tick_ = 0;
 
   void configure(const mc_rtc::Configuration & config) override
   {
@@ -275,6 +280,7 @@ struct JointMove : mc_control::fsm::State
   {
     dt_        = ctl.solver().dt();
     t_elapsed_ = 0.0;
+    tick_      = 0;
 
     auto pt = ctl.getPostureTask(ctl.robot().name());
     if(!pt)
@@ -308,8 +314,8 @@ struct JointMove : mc_control::fsm::State
       return true;
     }
 
-    static int tick = 0;
-    if((tick++ % 200) == 0)
+//    static int tick = 0;
+    if((tick_++ % 200) == 0)
     {
       mc_rtc::log::info("[{}] err={:.4f}", name(), err);
     }
