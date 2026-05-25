@@ -1,18 +1,21 @@
 controller_manager:
   ros__parameters:
-    update_rate: 100  # matches mc_rtc timestep (0.005s = 200Hz) - changed to 100 to match kortex 
+    update_rate: 500  # matches mc_rtc timestep (0.005s = 200Hz) - changed to 100 to match kortex 
 
     joint_state_broadcaster:
       type: joint_state_broadcaster/JointStateBroadcaster
 
+    joint_group_position_controller:
+      type: position_controllers/JointGroupPositionController
+    
     joint_trajectory_controller:
       type: joint_trajectory_controller/JointTrajectoryController
 
-    twist_controller:
-      type: picknik_twist_controller/PicknikTwistController
+    #twist_controller:
+     # type: picknik_twist_controller/PicknikTwistController
 
-    kinova_joint_controller:
-      type: joint_trajectory_controller/JointTrajectoryController
+#    kinova_joint_controller:
+ #     type: joint_trajectory_controller/JointTrajectoryController
 
 joint_trajectory_controller:
   ros__parameters:
