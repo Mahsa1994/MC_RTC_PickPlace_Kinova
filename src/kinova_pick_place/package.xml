@@ -1,26 +1,17 @@
 <?xml version="1.0"?>
 <package format="3">
   <name>kinova_pick_place</name>
-  <version>0.1.0</version>
-  <description>mc_rtc based pick and place for Kinova Gen3</description>
-  <maintainer email="user@example.com">User</maintainer>
+  <version>1.0.0</version>
+  <description>mc_rtc FSM pick and place for Kinova Gen3</description>
+  <maintainer email="user@example.com">user</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
   <depend>rclcpp</depend>
-  <depend>std_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>trajectory_msgs</depend>
-  <depend>mc_rtc</depend>
-  <depend>mc_control</depend>
-  <depend>mc_rbdyn</depend>
-  <depend>mc_tasks</depend>
-  <depend>mc_solver</depend>
-  <depend>mc_observers</depend>
-  <depend>kinova_driver</depend>  <!-- or kortex_driver -->
-  <depend>rosbag2_cpp</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
