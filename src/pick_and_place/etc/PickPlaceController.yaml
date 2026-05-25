@@ -28,7 +28,7 @@ place_pose:
 StatesLibraries:
   - /home/vscode/workspace/install/pick_and_place/lib/mc_controller/states
 StatesFiles: []
-IdleKeepState: false
+IdleKeepState: true
 init: MoveHome
 #init: Unfold
 
