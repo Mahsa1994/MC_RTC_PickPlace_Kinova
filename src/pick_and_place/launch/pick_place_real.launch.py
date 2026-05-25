@@ -34,34 +34,48 @@ def generate_launch_description():
         output='screen'
     )
 
-    mc_rtc_bridge = TimerAction(
-        period=12.0,
-        actions=[
-            ExecuteProcess(
-                cmd=[
-                    'ros2', 'launch', 'mc_rtc_ros_control', 'control.launch.py',
-                    'publish_to:=/joint_trajectory_controller/joint_trajectory',
-                    'subscribe_to:=/joint_states',
-                ],
-                output='screen'
-            )
-        ]
-    )
-
-    # ── 2. The new Custom C++ Closed-Loop Bridge ──────────────────────────
 #    mc_rtc_bridge = TimerAction(
-#        period=8.0, # Wait 8 seconds for kortex driver to load
+#        period=12.0,
 #        actions=[
-#            Node(
-#                package='pick_and_place',
-#                executable='kortex_mc_rtc_bridge',
+#            ExecuteProcess(
+#                cmd=[
+#                    'ros2', 'launch', 'mc_rtc_ros_control', 'control.launch.py',
+#                    'publish_to:=/joint_trajectory_controller/joint_trajectory',
+#                    'subscribe_to:=/joint_states',
+#                ],
 #                output='screen'
 #            )
 #        ]
 #    )
 
+    # ── 2. The new Custom C++ Closed-Loop Bridge ──────────────────────────
+    mc_rtc_bridge = TimerAction(
+        period=12.0, # Wait 8 seconds for kortex driver to load
+        actions=[
+            Node(
+                package='pick_and_place',
+                executable='kortex_mc_rtc_bridge',
+                output='screen'
+            )
+        ]
+    )
+
+    # Add this inside generate_launch_description(), after mc_rtc_bridge:
+    rviz = TimerAction(
+        period=16.0,  # wait for bridge to initialize before RViz connects
+        actions=[
+            Node(
+                package='mc_rtc_rviz_panel',
+                executable='display',   # or 'mc_rtc_rviz_panel' depending on your install
+                output='screen',
+                arguments=['--ros-args', '--log-level', 'warn']
+            )
+        ]
+    )
+
     return LaunchDescription([
         cleanup,
         kortex,
         mc_rtc_bridge,
+        rviz,
     ])

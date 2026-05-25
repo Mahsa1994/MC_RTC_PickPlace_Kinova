@@ -75,7 +75,7 @@ private:
         auto idx = gc_->robot().jointIndexByName(ref[i]);
         mc_rtc::log::info("[KortexBridge] Joint {} | init_q (encoder): {} | mbc.q (QP seed): {}",
           ref[i], init_q[i], gc_->robot().mbc().q[idx][0]);
-
+	}
       // 4. Start Control Loop at 200 Hz (dt = 0.005s) - changed from 5 to 10
       //timer_ = this->create_wall_timer(10ms, std::bind(&KortexMcRtcBridge::controlLoop, this));
       //mc_rtc::log::success("[KortexBridge] mc_rtc seeded with real robot state. 200Hz Control loop started!");
@@ -151,13 +151,13 @@ void controlLoop()
 
 //      static int idle_ticks = 0;
       if(intent_to_move) {
-        idle_ticks = 0; // Reset counter immediately when FSM starts moving
+        idle_ticks_ = 0; // Reset counter immediately when FSM starts moving
       } else {
-        idle_ticks++;
+        idle_ticks_++;
       }
 
       // Publish during movement, AND for 50 ticks (250ms) after stopping to let the arm settle smoothly
-      if(idle_ticks < 50)
+      if(idle_ticks_ < 50)
       {
         pt1.time_from_start.sec = 0;
         pt1.time_from_start.nanosec = 10000000; //5000000;
