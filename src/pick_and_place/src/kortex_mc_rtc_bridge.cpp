@@ -4,6 +4,8 @@
 #include <mc_control/mc_global_controller.h>
 #include <mc_rtc/logging.h>
 
+#include <atomic>
+
 using namespace std::chrono_literals;
 
 class KortexMcRtcBridge : public rclcpp::Node
@@ -14,7 +16,8 @@ public:
     // Publish directly to Kinova's Trajectory Controller
     pub_ = this->create_publisher<trajectory_msgs::msg::JointTrajectory>(
         "/joint_trajectory_controller/joint_trajectory", 10);
-    
+    gc_ = std::make_shared<mc_control::MCGlobalController>();
+
     // Listen to Kinova's true hardware state
 //    sub_ = this->create_subscription<sensor_msgs::msg::JointState>(
 //        "/joint_states", 10,
@@ -30,21 +33,19 @@ public:
   }
 
 private:
+
+  std::vector<double> last_published_q_ = std::vector<double>(6, 0.0);
+  int idle_ticks_ = 0;
+
+  // The control loop checks this before running to avoid a race condition.
+  std::atomic<bool> initialized_{false};
+
+
   void jointStateCallback(const sensor_msgs::msg::JointState::SharedPtr msg)
   {
-//    RCLCPP_INFO(this->get_logger(), "Got joint_states with %zu joints", msg->name.size());
-    
-    if(!gc_)
+    if(!initialized_)
     {
     RCLCPP_INFO(this->get_logger(), "Initializing mc_rtc...");
-      // 1. Initialize mc_rtc
-//      std::string config_path = "~/.config/mc_rtc/mc_rtc.yaml";
-//      mc_rtc::Configuration config(config_path); // Loads your ~/.config/mc_rtc/mc_rtc.yaml FSM
-//      config.add("GUIServer", mc_rtc::Configuration());
-//      config("GUIServer").add("enabled", false);
-//      gc_ = std::make_shared<mc_control::MCGlobalController>(config);
-      gc_ = std::make_shared<mc_control::MCGlobalController>();
-
 
       // 2. Map real joint states to mc_rtc's internal order
       auto ref_order = gc_->robot().refJointOrder();
@@ -60,12 +61,24 @@ private:
       }
 
       // 3. Seed FSM with true hardware position (FIXES THE JUMP!)
+      // to the current robot configuration, preventing a jump on startup.
+      // Explicitly calling init() is sufficient — it triggers MCController::reset() internally.
+      // If you ever switch controllers at runtime, you must call reset() again manually.
       gc_->init(init_q);
       gc_->running = true;
 
+      // add this log line right after gc_->run() in controlLoop(). If the robot is stationary
+      // but mbc().q drifts away from enc_q below, your observer pipeline is NOT closing the loop.
+      // Log both here to compare at startup:
+      auto ref = gc_->robot().refJointOrder();
+      for(size_t i = 0; i < ref.size(); ++i) {
+        auto idx = gc_->robot().jointIndexByName(ref[i]);
+        mc_rtc::log::info("[KortexBridge] Joint {} | init_q (encoder): {} | mbc.q (QP seed): {}",
+          ref[i], init_q[i], gc_->robot().mbc().q[idx][0]);
+
       // 4. Start Control Loop at 200 Hz (dt = 0.005s) - changed from 5 to 10
-      timer_ = this->create_wall_timer(10ms, std::bind(&KortexMcRtcBridge::controlLoop, this));
-      mc_rtc::log::success("[KortexBridge] mc_rtc seeded with real robot state. 200Hz Control loop started!");
+      //timer_ = this->create_wall_timer(10ms, std::bind(&KortexMcRtcBridge::controlLoop, this));
+      //mc_rtc::log::success("[KortexBridge] mc_rtc seeded with real robot state. 200Hz Control loop started!");
     }
     else
     {
@@ -86,55 +99,31 @@ private:
     }
   }
 
-//  void controlLoop()
-//  {
-//    if(gc_->run())
-//    {
-//      // Send 200Hz high-density points to Kinova driver (FIXES THE SHAKE!)
-//      trajectory_msgs::msg::JointTrajectory traj;
-//      traj.joint_names = {"joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"};
-//
-//      trajectory_msgs::msg::JointTrajectoryPoint pt;
-//      for(const auto & jn : traj.joint_names)
-//      {
-//          if(gc_->robot().hasJoint(jn)) {
-//             auto mbc_idx = gc_->robot().jointIndexByName(jn);
-//             pt.positions.push_back(gc_->robot().mbc().q[mbc_idx][0]);
-//             pt.velocities.push_back(gc_->robot().mbc().alpha[mbc_idx][0]);
-   //          // 1. Get the joint's numeric index from its string name
-     //        auto joint_idx = gc_->robot().jointIndexByName(jn);
-       //      // 2. Get the index of that joint in the MBC state vector
-       //      auto mbc_idx = gc_->robot().jointIndexInMBC(joint_idx); 
-        //     pt.positions.push_back(gc_->robot().mbc().q[mbc_idx][0]);
-         //    pt.velocities.push_back(gc_->robot().mbc().alpha[mbc_idx][0]);
-//        } else {
-//          pt.positions.push_back(0.0);
-//          pt.velocities.push_back(0.0);
-//        }
-//      }
-
-      // Tell driver this point happens in exactly 5ms
-//      pt.time_from_start.sec = 0;
-//      pt.time_from_start.nanosec = 5000000; 
-//
-//      traj.points.push_back(pt);
-//      pub_->publish(traj);
-//   }
-//  }
 
 void controlLoop()
   {
-//  RCLCPP_INFO(this->get_logger(), "Control loop tick, gc_=%s", gc_ ? "valid" : "null");
+
+    if(!initialized_) return;
+
     if(gc_->run())
     {
 
+      // FIX 2 (HOW TO CHECK): Uncomment these lines to compare QP output vs real encoder state.
+      // If mbc().q and enc_q diverge while the robot is still, your observer is open-loop.
+      // auto ref = gc_->robot().refJointOrder();
+      // for(size_t i = 0; i < ref.size(); ++i) {
+      //   auto idx = gc_->robot().jointIndexByName(ref[i]);
+      //   mc_rtc::log::info("[QP vs ENC] {} | mbc.q: {} | encoder: {}",
+      //     ref[i], gc_->robot().mbc().q[idx][0], gc_->robot().encoderValues()[i]);
+      // }
+      
       trajectory_msgs::msg::JointTrajectory traj;
       traj.joint_names = {"joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"};
 
       trajectory_msgs::msg::JointTrajectoryPoint pt1;
       
       // Keep track of where we last told the robot to go
-      static std::vector<double> last_published_q(6, 0.0);
+      //static std::vector<double> last_published_q(6, 0.0);
       bool intent_to_move = false;
 
       for(size_t i = 0; i < traj.joint_names.size(); ++i)
@@ -148,16 +137,19 @@ void controlLoop()
           pt1.velocities.push_back(alpha);
           
           // If the position changed by even a micro-radian, or velocity is active, we are moving!
-          if(std::abs(q - last_published_q[i]) > 1e-5 || std::abs(alpha) > 1e-4) {
+        if(std::abs(q - last_published_q_[i]) > 1e-5 || std::abs(alpha) > 1e-4) {
             intent_to_move = true;
           }
+          //if(std::abs(q - last_published_q[i]) > 1e-5 || std::abs(alpha) > 1e-4) {
+          //  intent_to_move = true;
+          //}
         } else {
           pt1.positions.push_back(0.0);
           pt1.velocities.push_back(0.0);
         }
       }
 
-      static int idle_ticks = 0;
+//      static int idle_ticks = 0;
       if(intent_to_move) {
         idle_ticks = 0; // Reset counter immediately when FSM starts moving
       } else {
@@ -180,7 +172,7 @@ void controlLoop()
         traj.points.push_back(pt2);
 
         pub_->publish(traj);
-        last_published_q = pt1.positions; // Save for next loop
+        last_published_q_ = pt1.positions; // Save for next loop
       }
     }
   }
