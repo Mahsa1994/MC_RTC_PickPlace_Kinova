@@ -55,7 +55,8 @@ def generate_launch_description():
             Node(
                 package='pick_and_place',
                 executable='kortex_mc_rtc_bridge',
-                output='screen'
+                output='screen',
+                parameters=[{'use_sim_time': False}]
             )
         ]
     )
