@@ -3,6 +3,7 @@ Enabled:
   - PickPlaceController
 #Timestep: 0.005
 Timestep: 0.01
+
 LogPolicy: threaded
 
 ControllerModulePaths:
@@ -15,14 +16,10 @@ ObserverPipelines:
         update: true
         log: true
         position: encoderValues
-#        velocity: encoderFiniteDifferences
-        velocity: encoderVelocities
+        velocity: encoderFiniteDifferences
 
-GUIServer:
-  Enable: false
+#GlobalPlugins:
+#  - RealRobotSensor
 
-GlobalPlugins:
-  - RealRobotSensor
-
-GlobalPluginPaths:
-  - /home/vscode/workspace/install/pick_and_place/lib/mc_plugins
+#GlobalPluginPaths:
+#  - /home/vscode/workspace/install/pick_and_place/lib/mc_plugins
