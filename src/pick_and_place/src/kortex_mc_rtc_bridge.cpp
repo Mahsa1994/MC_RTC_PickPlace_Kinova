@@ -3,6 +3,7 @@
 #include <trajectory_msgs/msg/joint_trajectory.hpp>
 #include <mc_control/mc_global_controller.h>
 #include <mc_rtc/logging.h>
+#include <std_msgs/msg/float64_multi_array.hpp>
 
 #include <mutex>
 #include <atomic>
@@ -15,8 +16,11 @@ public:
   KortexMcRtcBridge() : Node("kortex_mc_rtc_bridge")
   {
     // Publish directly to Kinova's Trajectory Controller
-    pub_ = this->create_publisher<trajectory_msgs::msg::JointTrajectory>(
-        "/joint_trajectory_controller/joint_trajectory", 10);
+    //pub_ = this->create_publisher<trajectory_msgs::msg::JointTrajectory>(
+    //    "/joint_trajectory_controller/joint_trajectory", 10);
+    pub_ = this->create_publisher<std_msgs::msg::Float64MultiArray>(
+        "/joint_group_position_controller/commands", 1);
+
     gc_ = std::make_shared<mc_control::MCGlobalController>();
 
     // Listen to Kinova's true hardware state
@@ -108,11 +112,11 @@ private:
     initialized_ = true;
 
     // Create the control loop timer only once, after full init.
-    timer_ = this->create_wall_timer(10ms, std::bind(&KortexMcRtcBridge::controlLoop, this));
+    timer_ = this->create_wall_timer(2ms, std::bind(&KortexMcRtcBridge::controlLoop, this));
     mc_rtc::log::success("[KortexBridge] mc_rtc seeded. Control loop started!");
   }
 
-void controlLoop()
+/*void controlLoop()
   {
 
     if(!initialized_) return;
@@ -189,10 +193,55 @@ void controlLoop()
     }
   }
 
+*/
+void controlLoop()
+  {
+    if(!initialized_) return;
 
+    if(gc_->run())
+    {
+      std_msgs::msg::Float64MultiArray msg;
+      std::vector<std::string> joint_names = {"joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"};
+      msg.data.resize(joint_names.size());
+
+      bool intent_to_move = false;
+
+      for(size_t i = 0; i < joint_names.size(); ++i)
+      {
+        if(gc_->robot().hasJoint(joint_names[i])) {
+          auto mbc_idx = gc_->robot().jointIndexByName(joint_names[i]);
+          double q = gc_->robot().mbc().q[mbc_idx][0];
+          double alpha = gc_->robot().mbc().alpha[mbc_idx][0];
+          
+          msg.data[i] = q;
+          
+          // Verify if there is active intent to command movement
+          if(std::abs(q - last_published_q_[i]) > 1e-5 || std::abs(alpha) > 1e-4) {
+            intent_to_move = true;
+          }
+        } else {
+          msg.data[i] = 0.0;
+        }
+      }
+
+      if(intent_to_move) {
+        idle_ticks_ = 0; // Reset counter when actively moving
+      } else {
+        idle_ticks_++;
+      }
+
+      // Stream commands while moving, and during a brief settling window (50 ticks)
+      if(idle_ticks_ < 50)
+      {
+        pub_->publish(msg);
+        last_published_q_ = msg.data; // Save for the next loop iteration
+      }
+    }
+  }
 
   std::shared_ptr<mc_control::MCGlobalController> gc_;
-  rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr pub_;
+//  rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr pub_;
+  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr pub_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr sub_;
   rclcpp::TimerBase::SharedPtr timer_;
 };
