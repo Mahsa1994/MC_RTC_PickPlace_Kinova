@@ -183,6 +183,11 @@ transitions:
 
 constraints:
   - type: kinematics
+  - type: dynamics
+    # damper: [interaction_dist, safety_dist, damping_offset]
+    # The QP starts slowing the joint when it enters interaction_dist
+    # from the limit, and enforces a hard stop at safety_dist.
+    damper: [0.1, 0.01, 0.5]
   - type: collision
     r1: kinova_6dof
     r2: kinova_6dof
@@ -191,5 +196,15 @@ constraints:
         iDist: 0.08
         sDist: 0.03
         damping: 0.0
-  - type: dynamics
-    damper: [0.1, 0.01, 0.5]
+#constraints:
+#  - type: kinematics
+#  - type: collision
+#    r1: kinova_6dof
+#    r2: kinova_6dof
+#    collisions:
+#      - type: all
+#        iDist: 0.08
+#        sDist: 0.03
+#        damping: 0.0
+#  - type: dynamics
+#    damper: [0.1, 0.01, 0.5]
