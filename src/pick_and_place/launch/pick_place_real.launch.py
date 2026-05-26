@@ -29,7 +29,7 @@ def generate_launch_description():
             'use_fake_hardware:=false',
             'launch_rviz:=false',
             'use_internal_bus_gripper_comm:=false',
-            'robot_controller:=joint_group_position_controller',
+#            'robot_controller:=joint_group_position_controller',
             'controllers_file:=' + os.path.join(get_package_share_directory('pick_and_place'), 'config', 'ros2_controllers.yaml'),
         ],
         output='screen'

@@ -16,10 +16,10 @@ public:
   KortexMcRtcBridge() : Node("kortex_mc_rtc_bridge")
   {
     // Publish directly to Kinova's Trajectory Controller
-    //pub_ = this->create_publisher<trajectory_msgs::msg::JointTrajectory>(
-    //    "/joint_trajectory_controller/joint_trajectory", 10);
-    pub_ = this->create_publisher<std_msgs::msg::Float64MultiArray>(
-        "/joint_group_position_controller/commands", 1);
+    pub_ = this->create_publisher<trajectory_msgs::msg::JointTrajectory>(
+        "/joint_trajectory_controller/joint_trajectory", 10);
+    //pub_ = this->create_publisher<std_msgs::msg::Float64MultiArray>(
+     //   "/joint_group_position_controller/commands", 1);
 
     gc_ = std::make_shared<mc_control::MCGlobalController>();
 
@@ -116,7 +116,7 @@ private:
     mc_rtc::log::success("[KortexBridge] mc_rtc seeded. Control loop started!");
   }
 
-/*void controlLoop()
+void controlLoop()
   {
 
     if(!initialized_) return;
@@ -193,14 +193,15 @@ private:
     }
   }
 
-*/
+/*
 void controlLoop()
   {
     if(!initialized_) return;
 
     if(gc_->run())
     {
-      std_msgs::msg::Float64MultiArray msg;
+//      std_msgs::msg::Float64MultiArray msg;
+      trajectory_msgs::msg::JointTrajectory msg;
       std::vector<std::string> joint_names = {"joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"};
       msg.data.resize(joint_names.size());
 
@@ -238,10 +239,10 @@ void controlLoop()
       }
     }
   }
-
+*/
   std::shared_ptr<mc_control::MCGlobalController> gc_;
-//  rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr pub_;
-  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr pub_;
+  rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr pub_;
+//  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr pub_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr sub_;
   rclcpp::TimerBase::SharedPtr timer_;
 };
