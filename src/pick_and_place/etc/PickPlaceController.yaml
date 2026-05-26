@@ -191,4 +191,5 @@ constraints:
         iDist: 0.08
         sDist: 0.03
         damping: 0.0
-
+  - type: dynamics
+    damper: [0.1, 0.01, 0.5]
