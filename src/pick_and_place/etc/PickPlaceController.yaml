@@ -56,9 +56,9 @@ states:
     stiffness: 200.0
     next: MoveHome
 
-  postureTask:
-    stiffness: 1.0   # low — let Cartesian task dominate
-    weight: 1.0
+#  postureTask:
+#    stiffness: 1.0   # low — let Cartesian task dominate
+#    weight: 1.0
 
   # ── 1. Unfold to a safe joint-space home ───────────────────────────────────
   MoveHome:
