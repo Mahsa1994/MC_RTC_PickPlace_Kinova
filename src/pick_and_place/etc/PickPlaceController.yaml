@@ -71,9 +71,8 @@ states:
     stiffness: 200.0 #6
     weight: 1000.0
     threshold: 0.02
-#    threshold: 0.02
+    settle_timeout: 5.0
     next: MoveToPickHover
-#    next: Idle
 
   # ── 2. Go above the pick pose ──────────────────────────────────────────────
   MoveToPickHover:
@@ -81,11 +80,15 @@ states:
     target:
       ref: pick
       offset: [0.0, 0.0, 0.20]   # 20 cm above
-    duration: 9 #6.0
-#    stiffness: 10.0
+      inherit_orientation: true   # add this
+    duration: 12 #6.0
     stiffness: 200.0
+    settle_timeout: 5.0
     weight:    1000.0
 #    next: LowerToPick
+    waypoints:
+      - [0.150, 0.250, 0.420]   # lift slightly and rotate toward target
+      - [0.300, 0.180, 0.380]   # intermediate approach
     next: ReturnHome
 
   # ── 3. Lower straight down onto the object ────────────────────────────────
@@ -193,8 +196,8 @@ constraints:
     r2: kinova_6dof
     collisions:
       - type: all
-        iDist: 0.08
-        sDist: 0.03
+        iDist: 0.15
+        sDist: 0.05
         damping: 0.0
 #constraints:
 #  - type: kinematics
