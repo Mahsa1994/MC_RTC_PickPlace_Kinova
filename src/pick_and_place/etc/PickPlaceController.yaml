@@ -53,9 +53,12 @@ states:
     base: JointMove
     target: [3.1416, 0.25, 1.57, 0.0, 1.57, 0.0]
     duration: 10.0 #5.0
-    stiffness: 2.0
+    stiffness: 200.0
     next: MoveHome
 
+  postureTask:
+    stiffness: 1.0   # low — let Cartesian task dominate
+    weight: 1.0
 
   # ── 1. Unfold to a safe joint-space home ───────────────────────────────────
   MoveHome:
@@ -65,7 +68,7 @@ states:
     target:
       ref: home
     duration: 10.0 #8
-    stiffness: 6.0
+    stiffness: 200.0 #6
     weight: 1000.0
     threshold: 0.02
 #    threshold: 0.02
@@ -80,38 +83,38 @@ states:
       offset: [0.0, 0.0, 0.20]   # 20 cm above
     duration: 9 #6.0
 #    stiffness: 10.0
-    stiffness: 6.0
+    stiffness: 200.0
     weight:    1000.0
 #    next: LowerToPick
     next: ReturnHome
 
   # ── 3. Lower straight down onto the object ────────────────────────────────
-  LowerToPick:
-    base: CartesianMove
-    target:
-      ref: pick
-    duration: 6 #4.0
-    stiffness: 8.0
-    weight:    1000.0
-    pos_threshold: 0.01          # 1 cm - tighter for grasping
-    #next: CloseGripper
-    next: LiftFromPick
+#  LowerToPick:
+#    base: CartesianMove
+#    target:
+#      ref: pick
+#    duration: 6 #4.0
+#    stiffness: 8.0
+#    weight:    1000.0
+#    pos_threshold: 0.01          # 1 cm - tighter for grasping
+#    #next: CloseGripper
+#    next: LiftFromPick
 
   # ── 4. Grasp ──────────────────────────────────────────────────────────────
-  CloseGripper:
-    base: Gripper
-    action: close
-    timeout: 2.0
-    next: LiftFromPick
+#  CloseGripper:
+#    base: Gripper
+#    action: close
+#    timeout: 2.0
+#    next: LiftFromPick
 
   # ── 5. Lift the object ────────────────────────────────────────────────────
-  LiftFromPick:
-    base: CartesianMove
-    target:
-      ref: pick
-      offset: [0.0, 0.0, 0.25]
-    duration: 6 #3.0
-    next: MoveToPlaceHover
+#  LiftFromPick:
+#    base: CartesianMove
+#    target:
+#      ref: pick
+#      offset: [0.0, 0.0, 0.25]
+#    duration: 6 #3.0
+#    next: MoveToPlaceHover
 
   # ── 6. Transfer to place hover (this is where HRI lives!) ─────────────────
   # Want to avoid a person standing between pick and place?
@@ -122,6 +125,7 @@ states:
     target:
       ref: place
       offset: [0.0, 0.0, 0.20]
+    stiffness: 200.0
     duration: 9 #5.0
 #    waypoints:
 #       - [0.45,  0.00, 0.55]   # arc up & over
@@ -129,22 +133,22 @@ states:
     next: LowerToPlace
 
   # ── 7. Lower to place ─────────────────────────────────────────────────────
-  LowerToPlace:
-    base: CartesianMove
-    target:
-      ref: place
-    duration: 8 #4.0
-    stiffness: 8.0
-    pos_threshold: 0.01
-#    next: OpenGripper
-    next: ReturnHome
+#  LowerToPlace:
+#    base: CartesianMove
+#    target:
+#      ref: place
+#    duration: 8 #4.0
+#    stiffness: 8.0
+#    pos_threshold: 0.01
+##    next: OpenGripper
+#    next: ReturnHome
 
   # ── 8. Release ────────────────────────────────────────────────────────────
-  OpenGripper:
-    base: Gripper
-    action: open
-    timeout: 2.0
-    next: ReturnHome
+#  OpenGripper:
+#    base: Gripper
+#    action: open
+#    timeout: 2.0
+#    next: ReturnHome
 
   # ── 9. Back to safe joint home ────────────────────────────────────────────
   ReturnHome:
@@ -154,7 +158,7 @@ states:
     target:
       ref: home
     duration: 9 #5.0
-    stiffness: 6.0
+    stiffness: 200.0
     next: Idle
 
 # ────────────────────────────────────────────────────────────────────────────
