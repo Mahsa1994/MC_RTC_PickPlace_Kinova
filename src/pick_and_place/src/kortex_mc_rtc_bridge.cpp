@@ -40,12 +40,15 @@ public:
 private:
 
   std::vector<double> last_published_q_ = std::vector<double>(6, 0.0);
-  int idle_ticks_ = 0;
+  int settle_ticks_ = 0;
+  static constexpr int SETTLE_TICKS_MAX = 50;
+
   std::mutex init_mutex_;
 
   // The control loop checks this before running to avoid a race condition.
   std::atomic<bool> initialized_{false};
 
+  std::vector<double> last_alpha_ = std::vector<double>(6, 0.0);
 
   void jointStateCallback(const sensor_msgs::msg::JointState::SharedPtr msg)
   {
@@ -112,7 +115,7 @@ private:
     initialized_ = true;
 
     // Create the control loop timer only once, after full init.
-    timer_ = this->create_wall_timer(2ms, std::bind(&KortexMcRtcBridge::controlLoop, this));
+    timer_ = this->create_wall_timer(10ms, std::bind(&KortexMcRtcBridge::controlLoop, this));
     mc_rtc::log::success("[KortexBridge] mc_rtc seeded. Control loop started!");
   }
 
@@ -151,7 +154,8 @@ void controlLoop()
           
           pt1.positions.push_back(q);
           pt1.velocities.push_back(alpha);
-          
+
+          last_alpha_[i] = alpha;     
           // If the position changed by even a micro-radian, or velocity is active, we are moving!
         if(std::abs(q - last_published_q_[i]) > 1e-5 || std::abs(alpha) > 1e-4) {
             intent_to_move = true;
@@ -162,36 +166,62 @@ void controlLoop()
         } else {
           pt1.positions.push_back(0.0);
           pt1.velocities.push_back(0.0);
+          last_alpha_[i] = 0.0;
         }
       }
 
 //      static int idle_ticks = 0;
       if(intent_to_move) {
-        idle_ticks_ = 0; // Reset counter immediately when FSM starts moving
+        settle_ticks_ = 0; // Reset counter immediately when FSM starts moving
       } else {
-        idle_ticks_++;
+        settle_ticks_++;
       }
 
       // Publish during movement, AND for 50 ticks (250ms) after stopping to let the arm settle smoothly
-      if(idle_ticks_ < 50)
+      if(settle_ticks_ < SETTLE_TICKS_MAX)
       {
         pt1.time_from_start.sec = 0;
-        pt1.time_from_start.nanosec = 10000000; //5000000;
+        pt1.time_from_start.nanosec = 20000000; //5000000;
         traj.points.push_back(pt1);
 
         // Dummy stop point to bypass ROS 2 strict velocity checks
         trajectory_msgs::msg::JointTrajectoryPoint pt2;
-        pt2.positions = pt1.positions;
-        pt2.velocities = std::vector<double>(pt1.positions.size(), 0.0);
-        pt2.time_from_start.sec = 0;
-        pt2.time_from_start.nanosec = 20000000; //100000000; // 100ms in the future
-        traj.points.push_back(pt2);
+        const double dt = 0.01;
+        for(size_t i = 0; i < pt1.positions.size(); ++i) {
+                // Forward-project position by one dt step
+                  pt2.positions.push_back(pt1.positions[i] + last_alpha_[i] * dt);
+                  // Carry the same velocity forward — let the JTC interpolate
+                  // the deceleration naturally when mc_rtc reduces alpha
+                  pt2.velocities.push_back(last_alpha_[i]);
+                }
 
-        pub_->publish(traj);
-        last_published_q_ = pt1.positions; // Save for next loop
-      }
-    }
-  }
+        // [FIX 7] pt2 at 40ms (2× pt1, 4× dt).
+        // Gives the JTC a 40ms lookahead window, wide enough for the
+        // spline interpolator to produce smooth velocity profiles between
+        // updates instead of bang-bang position steps.
+                pt2.time_from_start.sec = 0;
+                pt2.time_from_start.nanosec = 40'000'000; // 40ms
+
+                traj.points.push_back(pt2);
+
+                pub_->publish(traj);
+                last_published_q_ = pt1.positions;
+            }
+           }
+        }
+        //pt2.positions = pt1.positions;
+//      //  pt2.velocities = std::vector<double>(pt1.positions.size(), 0.0);
+        //pt2.velocities = alpha;
+
+//        pt2.time_from_start.sec = 0;
+//        pt2.time_from_start.nanosec = 30000000; //100000000; // 100ms in the future
+//        traj.points.push_back(pt2);
+
+///        pub_->publish(traj);
+//        last_published_q_ = pt1.positions; // Save for next loop
+//      }
+//    }
+//  }
 
 /*
 void controlLoop()
