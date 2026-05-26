@@ -11,8 +11,8 @@ controller_manager:
     joint_trajectory_controller:
       type: joint_trajectory_controller/JointTrajectoryController
 
-    twist_controller:
-      type: picknik_twist_controller/PicknikTwistController
+#    twist_controller:
+#      type: picknik_twist_controller/PicknikTwistController
 
     kinova_joint_controller:
       type: joint_trajectory_controller/JointTrajectoryController
@@ -34,7 +34,7 @@ joint_trajectory_controller:
     state_publish_rate: 100.0
     action_monitor_rate: 20.0
     allow_partial_joints_goal: false
-    open_loop_control: false
+    open_loop_control: true
     allow_integration_in_goal_trajectories: false
 
 kinova_joint_controller:
@@ -54,5 +54,5 @@ kinova_joint_controller:
     state_publish_rate: 100.0
     action_monitor_rate: 20.0
     allow_partial_joints_goal: false
-    open_loop_control: false
+    open_loop_control: true
     allow_integration_in_goal_trajectories: false
