@@ -17,38 +17,38 @@ set_gz_resource = SetEnvironmentVariable(
 
 def generate_launch_description():
     pkg        = get_package_share_directory('pick_and_place')
-    urdf_file  = '/home/vscode/workspace/src/pick_and_place/urdf/kinova_6dof_sim.urdf'
+#    urdf_file  = os.path.join(pkg, 'urdf', 'kinova_6dof_sim.urdf')
+    urdf_file = os.path.join( '/home/vscode/workspace/src/pick_and_place/urdf/kinova_6dof_sim.urdf')
     world_file = os.path.join(pkg, 'worlds', 'pick_place.world')
 
     with open(urdf_file, 'r') as f:
         robot_description = f.read()
 
-    # ── 1. Clean stale sockets/ports ─────────────────────────────────────
-    clean = ExecuteProcess(
+    cleanup = ExecuteProcess(
         cmd=['bash', '-c',
-             'rm -f /tmp/mc_rtc*.ipc && '
-             'fuser -k 4242/tcp 4343/tcp 2>/dev/null || true && '
-             'echo "Cleanup done"'],
+             'pkill -9 -f kortex_mc_rtc_bridge 2>/dev/null || true; '
+             'pkill -9 -f mc_rtc_ticker 2>/dev/null || true; '
+             'fuser -k 4242/tcp 4343/tcp 2>/dev/null || true; '
+             'rm -f /tmp/mc_rtc*.ipc /tmp/mc_rtc*.sock; '
+             'sleep 1'],
         output='screen'
     )
 
-    # ── 2. Gazebo PAUSED (no -r flag) ─────────────────────────────────────
-    # The arm stays frozen at its spawn pose until we explicitly unpause.
-    # This prevents gravity from collapsing the unactuated arm.
     gazebo = ExecuteProcess(
-        cmd=['gz', 'sim', world_file],   # no -r → starts paused
+        cmd=['gz', 'sim', world_file],
         output='screen'
     )
 
-    # ── 3. Robot state publisher ──────────────────────────────────────────
     robot_state_pub = Node(
         package='robot_state_publisher',
         executable='robot_state_publisher',
-        parameters=[{'robot_description': robot_description}],
+        parameters=[
+            {'robot_description': robot_description},
+            {'use_sim_time': True},
+        ],
         output='screen'
     )
 
-    # ── 4. Spawn robot ────────────────────────────────────────────────────
     spawn_robot = Node(
         package='ros_gz_sim',
         executable='create',
@@ -56,19 +56,22 @@ def generate_launch_description():
         output='screen'
     )
 
-    # ── 5. ros_gz_bridge ─────────────────────────────────────────────────
     gz_bridge = TimerAction(
-        period=3.0,
+        period=4.0,
         actions=[
             Node(
                 package='ros_gz_bridge',
                 executable='parameter_bridge',
                 name='gz_bridge',
+                parameters=[{'use_sim_time': True}],
                 arguments=[
                     '/world/pick_place_world/model/robot/joint_state'
                     '@sensor_msgs/msg/JointState'
                     '[gz.msgs.Model',
                     '/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock',
+                    '/joint_trajectory_controller/joint_trajectory'
+                    '@trajectory_msgs/msg/JointTrajectory'
+                    ']gz.msgs.JointTrajectory',
                 ],
                 remappings=[
                     ('/world/pick_place_world/model/robot/joint_state',
@@ -79,69 +82,79 @@ def generate_launch_description():
         ]
     )
 
+    # [FIX 1] Unpause defined as a function returning a fresh ExecuteProcess
+    # each time it is referenced, preventing the "executed more than once"
+    # crash. The previous version defined unpause as a module-level object
+    # which asyncio attempted to execute twice, causing InvalidStateError
+    # and bringing down the entire launch.
+    def make_unpause():
+        return ExecuteProcess(
+            cmd=['gz', 'service',
+                 '-s', '/world/pick_place_world/control',
+                 '--reqtype', 'gz.msgs.WorldControl',
+                 '--reptype', 'gz.msgs.Boolean',
+                 '--req', 'pause: false',
+                 '--timeout', '1000'],
+            output='screen'
+        )
 
-    # ── Spawn ros2_control controllers ───────────────────────────────────
+    # t=6s: unpause so the gz controller manager's clock starts ticking.
+    # Controller activation requires sim to be stepping — paused sim causes
+    # the exact 5s timeout seen in every previous log.
+    unpause = TimerAction(
+        period=6.0,
+        actions=[make_unpause()]
+    )
+
+    # [FIX 2] Spawners pushed to t=10s and t=11s.
+    # Previous attempts at t=5s, t=6s, t=8s, t=9s all timed out.
+    # The gz controller manager consistently takes 7-8s from world load
+    # to being ready for activation. t=10s gives 4s margin after unpause.
     spawn_jsb = TimerAction(
-        period=4.0,
-        actions=[Node(package='controller_manager', executable='spawner',
-                      arguments=['joint_state_broadcaster', '--controller-manager-timeout', '30'], output='screen')]
+        period=10.0,
+        actions=[Node(
+            package='controller_manager',
+            executable='spawner',
+            arguments=['joint_state_broadcaster',
+                       '--controller-manager-timeout', '30'],
+            output='screen'
+        )]
     )
 
     spawn_jtc = TimerAction(
-        period=5.0,
-        actions=[Node(package='controller_manager', executable='spawner',
-                      arguments=['kinova_joint_controller', '--controller-manager-timeout', '30'], output='screen')]
+        period=11.0,
+        actions=[Node(
+            package='controller_manager',
+            executable='spawner',
+            arguments=['joint_trajectory_controller',
+                       '--controller-manager-timeout', '30'],
+            output='screen'
+        )]
     )
 
-    # ── 6. mc_rtc_ticker ─────────────────────────────────────────────────
-    mc_rtc = TimerAction(
-        period=8.0,
+    # t=20s: controllers active by t=11s, bridge gets 9s of margin.
+    mc_rtc_bridge = TimerAction(
+        period=20.0,
         actions=[
-            ExecuteProcess(
-                cmd=['/home/vscode/workspace/install/bin/mc_rtc_ticker'],
-                output='screen'
+            Node(
+                package='pick_and_place',
+                executable='kortex_mc_rtc_bridge',
+                output='screen',
+                parameters=[{'use_sim_time': True}]
             )
         ]
     )
 
-    relay = TimerAction(
-        period=9.0,
-        actions=[
-            ExecuteProcess(
-                cmd=['python3',
-                     '/home/vscode/workspace/src/pick_and_place/scripts/mc_rtc_joint_relay.py',
-                     'sim'],
-                output='screen'
-            )
-        ]
-    )
-    # ── 7. Unpause Gazebo AFTER mc_rtc is initialised ─────────────────────
-    # mc_rtc needs ~2-3 seconds to load after the ticker starts (at t=5s).
-    # We unpause at t=10s, by which time mc_rtc is running and sending
-    # valid joint commands. The arm is actuated before gravity acts on it.
-    unpause = TimerAction(
-        period=10.0,
-        actions=[
-            ExecuteProcess(
-                cmd=['gz', 'service', '-s', '/world/pick_place_world/control',
-                     '--reqtype', 'gz.msgs.WorldControl',
-                     '--reptype', 'gz.msgs.Boolean',
-                     '--req', 'pause: false',
-                     '--timeout', '1000'],
-                output='screen'
-            )
-        ]
-    )
     return LaunchDescription([
-        clean,
+        cleanup,
         set_gz_plugin_path,
         set_gz_resource,
         gazebo,
         robot_state_pub,
         spawn_robot,
         gz_bridge,
+        unpause,
         spawn_jsb,
         spawn_jtc,
-        mc_rtc,
-        unpause,
+        mc_rtc_bridge,
     ])
