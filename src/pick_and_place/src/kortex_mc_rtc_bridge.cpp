@@ -217,9 +217,9 @@ private:
         // pt3 position = pt2 position (hold in place), velocity = 0.
         trajectory_msgs::msg::JointTrajectoryPoint pt3;
         pt3.positions = pt2.positions;
-        pt3.velocities = std::vector<double>(pt2.positions.size(), 0.0);
         pt3.time_from_start.sec = 0;
-        pt3.time_from_start.nanosec = 60'000'000; // 60ms
+        pt3.time_from_start.nanosec = 120'000'000; //60'000'000; 
+        pt3.velocities = std::vector<double>(pt2.positions.size(), 0.0);
         traj.points.push_back(pt3);
 
         pub_->publish(traj);
