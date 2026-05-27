@@ -4,6 +4,9 @@ Enabled:
 #Timestep: 0.005
 Timestep: 0.01
 
+Plugins:
+  - ROS
+
 LogPolicy: threaded
 
 ControllerModulePaths:
