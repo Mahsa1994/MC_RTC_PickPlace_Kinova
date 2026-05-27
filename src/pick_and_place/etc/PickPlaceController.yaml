@@ -11,7 +11,6 @@ z_min_limit: 0.15
 home_pose:
 ##  translation: [0.25, 0.00,  0.45]
   translation: [0.04, 0.308, 0.362]
-#  rotation:    [3.1416, 0.0, 0.0]
   rotation:    [-3.140, 0.022, 2.908]
 
 
@@ -30,7 +29,6 @@ StatesLibraries:
 StatesFiles: []
 IdleKeepState: true
 init: MoveHome
-#init: Unfold
 
 # ────────────────────────────────────────────────────────────────────────────
 # STATE CONFIGURATIONS
@@ -67,7 +65,7 @@ states:
 #    target: [3.1416, 0.25, 1.57, 0.0, 1.57, 0.0]
     target:
       ref: home
-    duration: 10.0 #8
+    duration: 7.0 #8
     stiffness: 200.0 #6
     weight: 1000.0
     threshold: 0.02
