@@ -11,6 +11,8 @@ controller_manager:
     joint_trajectory_controller:
       type: joint_trajectory_controller/JointTrajectoryController
 
+    robotiq_gripper_controller:
+      type: gripper_controllers/GripperActionController
 #    twist_controller:
 #      type: picknik_twist_controller/PicknikTwistController
 
