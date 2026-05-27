@@ -170,14 +170,14 @@ void PickPlaceController::sendGripperGoal(const std::string &action)
 #endif
 }
 
-bool PickPlaceController::isGripperDone() const
-{
-  return gripper_done_.load();
-}
+//bool PickPlaceController::isGripperDone() const
+//{
+//  return gripper_done_.load();
+//}
 
-void PickPlaceController::resetGripperDone()
-{
-  gripper_done_ = false;
-}
+//void PickPlaceController::resetGripperDone()
+//{
+//  gripper_done_ = false;
+//}
 
 CONTROLLER_CONSTRUCTOR("PickPlaceController", PickPlaceController)
