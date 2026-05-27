@@ -216,10 +216,33 @@ private:
         // Required by JTC: last point in trajectory must have zero velocity.
         // pt3 position = pt2 position (hold in place), velocity = 0.
         trajectory_msgs::msg::JointTrajectoryPoint pt3;
-        pt3.positions = pt2.positions;
+        double max_alpha = 0.0;
+        for(size_t i = 0; i < last_alpha_.size(); ++i)
+          max_alpha = std::max(max_alpha, std::abs(last_alpha_[i]));
+
+        const bool genuinely_stopping = (max_alpha < 0.002); // rad/s
+
+        for(size_t i = 0; i < pt2.positions.size(); ++i)
+        {
+          if(genuinely_stopping)
+          {
+            // Motion ending — zero velocity is safe, JTC will hold cleanly
+            pt3.positions.push_back(pt2.positions[i]);
+            pt3.velocities.push_back(0.0);
+          }
+          else
+          {
+            // Still moving — project position forward one more step so the
+            // JTC spline has a realistic endpoint to interpolate toward,
+            // but use zero velocity to satisfy the JTC's terminal constraint.
+            // The position lookahead prevents the sharp deceleration snap
+            // that causes the grinding sound.
+            pt3.positions.push_back(pt2.positions[i] + last_alpha_[i] * dt_);
+            pt3.velocities.push_back(0.0);
+          }
+        }
         pt3.time_from_start.sec = 0;
-        pt3.time_from_start.nanosec = 120'000'000; //60'000'000; 
-        pt3.velocities = std::vector<double>(pt2.positions.size(), 0.0);
+        pt3.time_from_start.nanosec = 60'000'000;
         traj.points.push_back(pt3);
 
         pub_->publish(traj);
