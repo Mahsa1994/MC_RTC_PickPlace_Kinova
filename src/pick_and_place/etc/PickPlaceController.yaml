@@ -23,7 +23,9 @@ place_pose:
 
 # Where the compiled state libraries live.
 StatesLibraries:
-  - /home/vscode/workspace/install/pick_and_place/lib/mc_controller/states
+   - /home/vscode/workspace/install/pick_and_place/lib/mc_states
+#  - /home/vscode/workspace/install/pick_and_place/lib/mc_controller/states
+
 StatesFiles: []
 IdleKeepState: true
 init: MoveHome
