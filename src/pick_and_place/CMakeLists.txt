@@ -43,7 +43,7 @@ target_include_directories(PickPlaceStates PUBLIC
 
 target_link_libraries(PickPlaceStates
   mc_rtc::mc_control_fsm
-#  PickPlaceController
+ # PickPlaceController
 )
 
 #  Install 
@@ -52,7 +52,7 @@ install(TARGETS PickPlaceController
 )
 
 install(TARGETS PickPlaceStates
-  LIBRARY DESTINATION lib/mc_controller/states
+  LIBRARY DESTINATION lib/mc_states
 )
 
 install(FILES etc/PickPlaceController.yaml
@@ -99,4 +99,3 @@ install(DIRECTORY config/
   DESTINATION share/${PROJECT_NAME}/config
 )
 ament_package()
-
