@@ -8,10 +8,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(ament_cmake REQUIRED)
 find_package(mc_rtc REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_action REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(control_msgs REQUIRED)
 find_package(trajectory_msgs REQUIRED) 
 
-# ── Controller library (no ROS dependency) ───────────────────────────────────
+#  Controller library (no ROS dependency) 
 add_library(PickPlaceController SHARED
   src/PickPlaceController.cpp
 )
@@ -25,9 +27,13 @@ target_include_directories(PickPlaceController PUBLIC
 
 target_link_libraries(PickPlaceController
   mc_rtc::mc_control_fsm
+  mc_rtc::mc_rtc_ros
+  rclcpp::rclcpp
+  rclcpp_action::rclcpp_action
+  control_msgs::control_msgs
 )
 
-# ── States library ────────────────────────────────────────────────────────────
+#  States library 
 add_library(PickPlaceStates SHARED
   src/states/PickPlaceStates.cpp
 )
@@ -43,7 +49,7 @@ target_link_libraries(PickPlaceStates
 #  PickPlaceController
 )
 
-# ── Install ───────────────────────────────────────────────────────────────────
+#  Install 
 install(TARGETS PickPlaceController
   LIBRARY DESTINATION lib/mc_controller
 )
@@ -61,7 +67,7 @@ install(DIRECTORY worlds/  DESTINATION share/${PROJECT_NAME}/worlds)
 
 
 
-# ── RealRobotSensor GlobalPlugin ─────────────────────────────────────────────
+#  RealRobotSensor GlobalPlugin 
 add_library(RealRobotSensor SHARED src/plugins/RealRobotSensor.cpp)
 
 # Link mc_rtc without PUBLIC so it matches ROS 2 ament_target_dependencies
