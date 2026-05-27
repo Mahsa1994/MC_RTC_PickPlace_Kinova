@@ -45,8 +45,10 @@ public:
   //  Gripper interface (stubbed; wire this to your real gripper)
   // Called by the `Gripper` FSM state with action ∈ {"open", "close"}.
   void sendGripperGoal(const std::string &action);
-  bool isGripperDone() const;
-  void resetGripperDone();
+  bool isGripperDone() const { return gripper_done_.load(); }
+  void resetGripperDone()     { gripper_done_ = false; }
+//  bool isGripperDone() const;
+//  void resetGripperDone();
 
 private:
   sva::PTransformd home_pose_;
