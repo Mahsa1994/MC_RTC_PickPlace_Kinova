@@ -11,9 +11,9 @@ find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(control_msgs REQUIRED)
-find_package(trajectory_msgs REQUIRED) 
+find_package(trajectory_msgs REQUIRED)
 
-#  Controller library (no ROS dependency) 
+#  Controller library (no ROS dependency)
 add_library(PickPlaceController SHARED
   src/PickPlaceController.cpp
 )
@@ -28,12 +28,9 @@ target_include_directories(PickPlaceController PUBLIC
 target_link_libraries(PickPlaceController
   mc_rtc::mc_control_fsm
   mc_rtc::mc_rtc_ros
-  rclcpp::rclcpp
-  rclcpp_action::rclcpp_action
-  control_msgs::control_msgs
 )
 
-#  States library 
+#  States library
 add_library(PickPlaceStates SHARED
   src/states/PickPlaceStates.cpp
 )
@@ -85,6 +82,14 @@ install(FILES etc/RealRobotSensor.yaml
 add_executable(kortex_mc_rtc_bridge src/kortex_mc_rtc_bridge.cpp)
 target_link_libraries(kortex_mc_rtc_bridge mc_rtc::mc_control)
 ament_target_dependencies(kortex_mc_rtc_bridge rclcpp sensor_msgs trajectory_msgs)
+
+### ROS
+ament_target_dependencies(PickPlaceController
+  rclcpp
+  rclcpp_action
+  control_msgs
+)
+
 
 install(TARGETS kortex_mc_rtc_bridge
   DESTINATION lib/${PROJECT_NAME}
