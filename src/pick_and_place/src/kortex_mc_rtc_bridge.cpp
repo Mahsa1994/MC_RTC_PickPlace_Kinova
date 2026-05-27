@@ -185,13 +185,39 @@ private:
       }
 
       //      static int idle_ticks = 0;
-      if (intent_to_move)
+      /*if (intent_to_move)
       {
         settle_ticks_ = 0; // Reset counter immediately when FSM starts moving
       }
       else
       {
         settle_ticks_++;
+      }*/
+      if (intent_to_move)
+      {
+        settle_ticks_ = 0;
+      }
+      else
+      {
+        settle_ticks_++;
+      }
+
+      // When the bridge stops publishing (settle window expired),
+      // send one explicit hold message so the JTC has a clean zero-velocity
+      // target at the exact final position. Without this, the last buffered
+      // pt2/pt3 forward projections execute and cause the arm to drift past
+      // the target after mc_rtc has already converged.
+      if(settle_ticks_ == SETTLE_TICKS_MAX)
+      {
+        trajectory_msgs::msg::JointTrajectory hold;
+        hold.joint_names = traj.joint_names;
+        trajectory_msgs::msg::JointTrajectoryPoint hold_pt;
+        hold_pt.positions = last_published_q_;
+        hold_pt.velocities = std::vector<double>(last_published_q_.size(), 0.0);
+        hold_pt.time_from_start.sec = 0;
+        hold_pt.time_from_start.nanosec = 200'000'000; // 200ms — long window, zero velocity
+        hold.points.push_back(hold_pt);
+        pub_->publish(hold);
       }
 
       if (settle_ticks_ < SETTLE_TICKS_MAX)
@@ -216,11 +242,25 @@ private:
         // Required by JTC: last point in trajectory must have zero velocity.
         // pt3 position = pt2 position (hold in place), velocity = 0.
         trajectory_msgs::msg::JointTrajectoryPoint pt3;
+        
+        /* double max_alpha = 0.0;
+        for(size_t i = 0; i < last_alpha_.size(); ++i)
+          max_alpha = std::max(max_alpha, std::abs(last_alpha_[i]));
+        const bool genuinely_stopping = (max_alpha < 0.002); // rad/s */
+
         double max_alpha = 0.0;
         for(size_t i = 0; i < last_alpha_.size(); ++i)
           max_alpha = std::max(max_alpha, std::abs(last_alpha_[i]));
 
-        const bool genuinely_stopping = (max_alpha < 0.002); // rad/s
+        // Check how much pt1 moved from last published position.
+        double max_delta = 0.0;
+        for(size_t i = 0; i < pt1.positions.size(); ++i)
+          max_delta = std::max(max_delta,
+                               std::abs(pt1.positions[i] - last_published_q_[i]));
+
+        // Genuinely stopping: velocity is tiny AND position is barely changing.
+        const bool genuinely_stopping = (max_alpha < 0.002 && max_delta < 0.0005);
+
 
         for(size_t i = 0; i < pt2.positions.size(); ++i)
         {
@@ -232,12 +272,15 @@ private:
           }
           else
           {
-            // Still moving — project position forward one more step so the
-            // JTC spline has a realistic endpoint to interpolate toward,
-            // but use zero velocity to satisfy the JTC's terminal constraint.
-            // The position lookahead prevents the sharp deceleration snap
-            // that causes the grinding sound.
-            pt3.positions.push_back(pt2.positions[i] + last_alpha_[i] * dt_);
+            //// Still moving — project position forward one more step so the
+            //pt3.positions.push_back(pt2.positions[i] + last_alpha_[i] * dt_);
+            //pt3.velocities.push_back(0.0);
+            // Only project forward if the step is meaningful.
+            double step = last_alpha_[i] * dt_;
+            if(max_delta > 0.0005)
+              pt3.positions.push_back(pt2.positions[i] + step);
+            else
+              pt3.positions.push_back(pt2.positions[i]); // hold — arm nearly stopped
             pt3.velocities.push_back(0.0);
           }
         }
