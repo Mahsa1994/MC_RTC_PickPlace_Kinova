@@ -78,7 +78,8 @@ public:
     goal_msg.command.position = {target_pos};
     goal_msg.command.effort   = {100.0};
 
-    auto send_goal_options = rclcpp_action::Client<control_msgs::action::GripperCommand>::SendGoalOptions();
+    // auto send_goal_options = rclcpp_action::Client<control_msgs::action::GripperCommand>::SendGoalOptions();
+    auto send_goal_options = rclcpp_action::Client<control_msgs::action::ParallelGripperCommand>::SendGoalOptions();
 
     send_goal_options.goal_response_callback =
       [this](const GoalHandleGripper::SharedPtr & goal_handle) {
