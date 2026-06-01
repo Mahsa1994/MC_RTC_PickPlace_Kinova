@@ -3,13 +3,16 @@
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
-from control_msgs.action import GripperCommand
+#from control_msgs.action import GripperCommand
+from control_msgs.action import ParallelGripperCommand
 from sensor_msgs.msg import JointState
+
 
 class GripperActionClient(Node):
     def __init__(self):
         super().__init__('gripper_action_client')
-        self._action_client = ActionClient(self, GripperCommand, '/robotiq_gripper_controller/gripper_cmd')
+#        self._action_client = ActionClient(self, GripperCommand, '/robotiq_gripper_controller/gripper_cmd')
+        self._action_client = ActionClient(self, ParallelGripperCommand, '/robotiq_gripper_controller/gripper_cmd')
         self._joint_state_sub = self.create_subscription(
             JointState,
             '/joint_states',
@@ -18,6 +21,9 @@ class GripperActionClient(Node):
         )
         self.gripper_position = None
         self.joint_found = False
+
+        self.get_logger().info('[INFO] Waiting for action server to be discovered...')
+        self._action_client.wait_for_server(timeout_sec=10.0)
 
         # Wait for initial joint state data
         for _ in range(5):
@@ -34,12 +40,17 @@ class GripperActionClient(Node):
                 break
 
     def send_goal_sync(self, position):
-        if not self._action_client.wait_for_server(timeout_sec=5.0):
+        self.get_logger().info('[INFO] Waiting for action server...')
+        if not self._action_client.wait_for_server(timeout_sec=10.0):
             self.get_logger().info('[INFO] Action server not available!')
             return
 
-        goal_msg = GripperCommand.Goal()
-        goal_msg.command.position = max(0.0, min(0.8, position))
+        # goal_msg = GripperCommand.Goal()
+        goal_msg = ParallelGripperCommand.Goal()
+        goal_msg.command.name = ['robotiq_85_left_knuckle_joint']
+        goal_msg.command.effort = [100.0]
+        #goal_msg.command.position = max(0.0, min(0.8, position))
+        goal_msg.command.position = [max(0.0, min(0.8, position))]
 
         self.get_logger().info(f'[INFO] Sending goal - Position: {position:.2f}')
         send_goal_future = self._action_client.send_goal_async(goal_msg)
