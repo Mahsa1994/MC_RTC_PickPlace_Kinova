@@ -43,6 +43,7 @@ target_include_directories(PickPlaceStates PUBLIC
 
 target_link_libraries(PickPlaceStates
   mc_rtc::mc_control_fsm
+  mc_rtc::mc_rtc_ros
  # PickPlaceController
 )
 
@@ -91,6 +92,12 @@ ament_target_dependencies(PickPlaceController
   sensor_msgs
 )
 
+ament_target_dependencies(PickPlaceStates
+  rclcpp
+  rclcpp_action
+  control_msgs
+  sensor_msgs
+)
 
 install(TARGETS kortex_mc_rtc_bridge
   DESTINATION lib/${PROJECT_NAME}
