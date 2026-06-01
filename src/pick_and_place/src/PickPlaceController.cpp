@@ -39,7 +39,9 @@ try : mc_control::fsm::Controller(rm, dt, config)
   nh_ = mc_rtc::ROSBridge::get_node_handle();
   if(nh_)
   {
-    gripper_action_client_ = rclcpp_action::create_client<control_msgs::action::GripperCommand>(
+    //gripper_action_client_ = rclcpp_action::create_client<control_msgs::action::GripperCommand>(
+    //    nh_, "/robotiq_gripper_controller/gripper_cmd");
+    gripper_action_client_ = rclcpp_action::create_client<control_msgs::action::ParallelGripperCommand>(
         nh_, "/robotiq_gripper_controller/gripper_cmd");
     mc_rtc::log::info("[PickPlaceController] ROS 2 Node handle acquired, Action Client initialized.");
   }
