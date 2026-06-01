@@ -12,7 +12,7 @@ controller_manager:
       type: joint_trajectory_controller/JointTrajectoryController
 
     robotiq_gripper_controller:
-      type: gripper_controllers/GripperActionController
+      type: parallel_gripper_action_controller/GripperActionController
 #    twist_controller:
 #      type: picknik_twist_controller/PicknikTwistController
 
@@ -58,3 +58,12 @@ kinova_joint_controller:
     allow_partial_joints_goal: false
     open_loop_control: true
     allow_integration_in_goal_trajectories: false
+
+robotiq_gripper_controller:
+  ros__parameters:
+    joint: robotiq_85_left_knuckle_joint
+    goal_tolerance: 0.01
+    max_effort: 100.0
+    allow_stalling: true
+    stall_velocity_threshold: 0.001
+    stall_timeout: 1.0
