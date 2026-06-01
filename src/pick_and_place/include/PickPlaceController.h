@@ -67,7 +67,7 @@ public:
 
     if(!gripper_action_client_->action_server_is_ready())
     {
-      mc_rtc::log::error("[Gripper] Action server not ready! Cannot actuate gripper.");
+      // mc_rtc::log::error("[Gripper] Action server not ready! Cannot actuate gripper.");
       gripper_done_ = true;
       return false;
     }
@@ -118,9 +118,11 @@ public:
       };
 
     gripper_action_client_->async_send_goal(goal_msg, send_goal_options);
+    return true;
 #else
     mc_rtc::log::info("[Gripper] Stub mode active. Simulating action: {}", action);
     gripper_done_ = true;
+    return true;
 #endif
   }
 
