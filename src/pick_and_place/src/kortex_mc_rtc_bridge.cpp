@@ -107,6 +107,7 @@ private:
     }
 
     gc_->init(init_q);
+    last_published_q_ = init_q;
     gc_->running = true;
     dt_ = gc_->timestep();
 
