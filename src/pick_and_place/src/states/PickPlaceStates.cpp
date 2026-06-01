@@ -335,10 +335,11 @@ struct JointMove : mc_control::fsm::State
 // ════════════════════════════════════════════════════════════════════════════
 //  Gripper — open/close with timeout fallback
 // ════════════════════════════════════════════════════════════════════════════
-struct Gripper : mc_control::fsm::State
+
+/*struct Gripper : mc_control::fsm::State
 {
   std::string action_    = "close";
-  double      timeout_   = 2.0;
+  double      timeout_   = 5.0;
   std::string next_state_;
 
   bool   sent_      = false;
@@ -357,8 +358,8 @@ struct Gripper : mc_control::fsm::State
     dt_        = ctl.solver().dt();
     t_elapsed_ = 0.0;
     ppc(ctl).resetGripperDone();
-    ppc(ctl).sendGripperGoal(action_);
-    sent_ = true;
+    sent_ = ppc(ctl).sendGripperGoal(action_);
+    // sent_ = true;
     mc_rtc::log::info("[{}] Gripper action: {}", name(), action_);
   }
 
@@ -382,7 +383,76 @@ struct Gripper : mc_control::fsm::State
   }
 
   void teardown(mc_control::fsm::Controller &) override {}
+}; */
+
+
+struct Gripper : mc_control::fsm::State
+{
+  std::string action_    = "close";
+  double      timeout_   = 5.0; // Increased default timeout slightly to allow ROS 2 discovery
+  std::string next_state_;
+
+  bool   sent_      = false;
+  double t_elapsed_ = 0.0;
+  double dt_        = 0.005;
+
+  void configure(const mc_rtc::Configuration & config) override
+  {
+    if(config.has("action"))  action_  = static_cast<std::string>(config("action"));
+    if(config.has("timeout")) timeout_ = config("timeout");
+    if(config.has("next"))    next_state_ = static_cast<std::string>(config("next"));
+  }
+
+  void start(mc_control::fsm::Controller & ctl) override
+  {
+    dt_        = ctl.solver().dt();
+    t_elapsed_ = 0.0;
+    ppc(ctl).resetGripperDone();
+    
+    // We do NOT send the goal on start() because the DDS discovery might not be ready.
+    sent_ = false; 
+    mc_rtc::log::info("[{}] Gripper state initialized. Waiting to establish connection for action: {}", name(), action_);
+  }
+
+  bool run(mc_control::fsm::Controller & ctl) override
+  {
+    t_elapsed_ += dt_;
+
+    // Attempt to send the goal to ROS 2 until the action server is discovered and ready
+    if(!sent_)
+    {
+      sent_ = ppc(ctl).sendGripperGoal(action_);
+      if(sent_)
+      {
+        mc_rtc::log::info("[{}] Connection established. Gripper action successfully sent: {}", name(), action_);
+      }
+    }
+
+    // Monitor for the completion callback once sent
+    if(sent_ && ppc(ctl).isGripperDone())
+    {
+      mc_rtc::log::success("[{}] Gripper done.", name());
+      output(next_state_);
+      return true;
+    }
+
+    // Safety timeout in case of physical/network jams
+    if(t_elapsed_ >= timeout_)
+    {
+      mc_rtc::log::warning("[{}] Gripper timeout ({:.1f}s), proceeding.", name(), timeout_);
+      output(next_state_);
+      return true;
+    }
+    return false;
+  }
+
+  void teardown(mc_control::fsm::Controller &) override {}
 };
+
+
+
+
+
 
 // ════════════════════════════════════════════════════════════════════════════
 //  Idle — terminal state
