@@ -30,6 +30,7 @@ def generate_launch_description():
             'launch_rviz:=false',
             'use_internal_bus_gripper_comm:=true',
             'gripper:=robotiq_2f_85',
+            'gripper_joint_name:=robotiq_85_left_knuckle_joint',
 #            'robot_controller:=joint_group_position_controller',
             'controllers_file:=' + os.path.join(get_package_share_directory('pick_and_place'), 'config', 'ros2_controllers.yaml'),
         ],
