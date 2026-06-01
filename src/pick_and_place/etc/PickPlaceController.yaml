@@ -3,8 +3,8 @@ ControllerName: PickPlaceController
 z_min_limit: 0.15
 
 home_pose:
-  translation: [0.257, 0.237, 0.428]
-  rotation: [3.0808, -0.0194, 2.4543]
+  translation: [0.287, 0.175, 0.392]
+  rotation: [3.0087, 0.0020, 1.7769]
 
 pick_pose:
   translation: [0.40, 0.10, 0.15]
@@ -32,11 +32,11 @@ states:
   Unfold:
     base: JointMove
     #target: [-0.6933, 0.0449, -1.4642, 3.0964, 1.5793, -1.3926]
-    target: [-0.6932, 0.0475, -1.4646, -2.4012, 1.5794, -1.3924]
+    target: [-0.5649, -0.0336, -1.6628, -3.1074, 1.3932, -1.9451]
     duration: 15.0      # very slow — 15 s to move essentially nowhere
     stiffness: 50.0      # minimal gain — arm will move gently
     threshold: 0.05     # 0.05 rad (~3°) convergence threshold
-    next: Idle          # stop at Idle, do NOT chain to MoveHome yet
+    next: MoveHome          # stop at Idle, do NOT chain to MoveHome yet
 
   # ── Placeholder states (not used yet) ───────────────────────────────
   MoveHome:
@@ -63,8 +63,8 @@ states:
     next: Idle
 
 transitions:
-  - [Unfold, Idle, Idle, Auto]   # only one hop — stops after Unfold
-
+  - [Unfold,    MoveHome, MoveHome, Auto]
+  - [MoveHome,  Idle,     Idle,     Auto]
 constraints:
   - type: kinematics
   - type: dynamics
