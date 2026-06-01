@@ -13,7 +13,9 @@
 #include <mc_rtc_ros/ros.h>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
-#include <control_msgs/action/gripper_command.hpp>
+#include <control_msgs/action/parallel_gripper_command.hpp>
+#include <sensor_msgs/msg/joint_state.hpp>
+//#include <control_msgs/action/gripper_command.hpp>
 #endif
 
 class PickPlaceController : public mc_control::fsm::Controller
@@ -41,11 +43,11 @@ public:
     double target_pos = 0.0;
     if(action == "close")
     {
-      target_pos = 0.1; //0.8
+      target_pos = 0.7; //0.8
     }
     else if(action == "open")
     {
-      target_pos = 0.7; //0.0
+      target_pos = 0.1; //0.0
     }
     else
     {
@@ -69,8 +71,12 @@ public:
       return;
     }
 
-    auto goal_msg = control_msgs::action::GripperCommand::Goal();
-    goal_msg.command.position = target_pos;
+    // auto goal_msg = control_msgs::action::GripperCommand::Goal();
+    // goal_msg.command.position = target_pos;
+    auto goal_msg = control_msgs::action::ParallelGripperCommand::Goal();
+    goal_msg.command.name     = {"robotiq_85_left_knuckle_joint"};
+    goal_msg.command.position = {target_pos};
+    goal_msg.command.effort   = {100.0};
 
     auto send_goal_options = rclcpp_action::Client<control_msgs::action::GripperCommand>::SendGoalOptions();
 
@@ -123,10 +129,15 @@ private:
   std::atomic<bool> gripper_done_{true};
 
 #ifdef MC_RTC_HAS_ROS_SUPPORT
-  using GripperCommand = control_msgs::action::GripperCommand;
-  using GoalHandleGripper = rclcpp_action::ClientGoalHandle<GripperCommand>;
+  // using GripperCommand = control_msgs::action::GripperCommand;
+  // using GoalHandleGripper = rclcpp_action::ClientGoalHandle<GripperCommand>;
 
   mc_rtc::NodeHandlePtr nh_;
+  // rclcpp_action::Client<GripperCommand>::SharedPtr gripper_action_client_;
+  using GripperCommand    = control_msgs::action::ParallelGripperCommand;
+  using GoalHandleGripper = rclcpp_action::ClientGoalHandle<GripperCommand>;
   rclcpp_action::Client<GripperCommand>::SharedPtr gripper_action_client_;
+
+
 #endif
 };
