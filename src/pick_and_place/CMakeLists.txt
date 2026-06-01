@@ -88,6 +88,7 @@ ament_target_dependencies(PickPlaceController
   rclcpp
   rclcpp_action
   control_msgs
+  sensor_msgs
 )
 
 
