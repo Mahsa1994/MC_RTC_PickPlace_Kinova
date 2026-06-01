@@ -276,7 +276,7 @@ struct JointMove : mc_control::fsm::State
     }
   }
 
-  void start(mc_control::fsm::Controller & ctl) override
+/*  void start(mc_control::fsm::Controller & ctl) override
   {
     dt_        = ctl.solver().dt();
     t_elapsed_ = 0.0;
@@ -288,6 +288,77 @@ struct JointMove : mc_control::fsm::State
       mc_rtc::log::error("[{}] No posture task available!", name());
       output(next_state_);
       return;
+    }
+
+// ── DEBUG: print actual joint names the robot knows ──────────────
+    mc_rtc::log::info("[{}] Robot joint names:", name());
+    for(const auto & j : ctl.robot().mb().joints())
+    {
+      mc_rtc::log::info("[{}]   '{}' (dof={})", name(), j.name(), j.dof());
+    }
+
+// ── DEBUG: print what WE are commanding ──────────────────────────
+    mc_rtc::log::info("[{}] Our target_joints_:", name());
+    for(const auto & kv : target_joints_)
+      mc_rtc::log::info("[{}]   '{}' = {:.4f}", name(), kv.first, kv.second[0]);
+
+
+    prev_weight_    = pt->weight();
+    prev_stiffness_ = pt->stiffness();
+    pt->stiffness(stiffness_);
+    pt->weight(weight_);
+    pt->target(target_joints_);
+
+    mc_rtc::log::info("[{}] Joint-space move started (duration={:.2f}s)", name(), duration_);
+  } */
+
+void start(mc_control::fsm::Controller & ctl) override
+  {
+    dt_        = ctl.solver().dt();
+    t_elapsed_ = 0.0;
+    tick_      = 0;
+
+    auto pt = ctl.getPostureTask(ctl.robot().name());
+    if(!pt)
+    {
+      mc_rtc::log::error("[{}] No posture task available!", name());
+      output(next_state_);
+      return;
+    }
+
+    // ── DEBUG: print actual joint names the robot knows ──────────────
+    mc_rtc::log::info("[{}] Robot joint names:", name());
+    for(const auto & j : ctl.robot().mb().joints())
+      mc_rtc::log::info("[{}]   '{}' (dof={})", name(), j.name(), j.dof());
+
+    // ── FIX: wrap each target angle to within π of the current q ─────
+    // Prevents commanding a 360° detour when the bridge seeds joints in
+    // a different wrap than the YAML value (e.g. +263° → −97°).
+    const auto & q   = ctl.robot().mbc().q;
+    const auto & mbs = ctl.robot().mb().joints();
+    for(size_t ji = 0; ji < mbs.size(); ++ji)
+    {
+      const std::string & jname = mbs[ji].name();
+      if(mbs[ji].dof() != 1) continue;
+      if(!target_joints_.count(jname)) continue;
+
+      double current = q[ji][0];
+      double & target = target_joints_.at(jname)[0];
+      // Snap to the nearest equivalent angle
+      while(target - current >  M_PI) target -= 2.0 * M_PI;
+      while(target - current < -M_PI) target += 2.0 * M_PI;
+    }
+
+    // ── DEBUG: print current q vs wrapped target ──────────────────────
+    mc_rtc::log::info("[{}] Joint current_q vs target (after wrap):", name());
+    for(size_t ji = 0; ji < mbs.size(); ++ji)
+    {
+      const std::string & jname = mbs[ji].name();
+      if(mbs[ji].dof() != 1) continue;
+      double current = q[ji][0];
+      double target  = target_joints_.count(jname) ? target_joints_.at(jname)[0] : current;
+      mc_rtc::log::info("[{}]   '{}' current={:.4f}  target={:.4f}  delta={:.4f}",
+                        name(), jname, current, target, target - current);
     }
 
     prev_weight_    = pt->weight();
