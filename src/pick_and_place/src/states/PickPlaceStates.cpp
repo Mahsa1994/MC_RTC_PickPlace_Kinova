@@ -113,12 +113,14 @@ struct CartesianMove : mc_control::fsm::State
   std::shared_ptr<mc_tasks::BSplineTrajectoryTask> traj_;
   sva::PTransformd target_;
   double t_elapsed_ = 0.0;
-  double dt_        = 0.005;
+  double dt_        = 0.01; //0.005;
 
   // Posture task backup (we temporarily lower its priority so it
   // doesn't fight the Cartesian trajectory).
   double prev_posture_weight_    = 1.0;
   double prev_posture_stiffness_ = 1.0;
+
+  int tick_ = 0;
 
   void configure(const mc_rtc::Configuration & config) override
   {
@@ -150,6 +152,7 @@ struct CartesianMove : mc_control::fsm::State
   {
     dt_        = ctl.solver().dt();
     t_elapsed_ = 0.0;
+    tick_      = 0;
     target_    = resolveTarget(ctl, target_cfg_, ee_frame_);
 
     // Back off the posture task so the QP respects the Cartesian trajectory.
@@ -203,8 +206,8 @@ struct CartesianMove : mc_control::fsm::State
     }
 
     // Periodic progress log while settling
-    static int tick = 0;
-    if((tick++ % 200) == 0)
+//    static int tick = 0;
+    if((tick_++ % 200) == 0)
     {
       mc_rtc::log::warning("[{}] Settling: pos_err={:.4f} m, ori_err={:.4f} rad",
                            name(), pos_err, ori_err);
@@ -248,9 +251,11 @@ struct JointMove : mc_control::fsm::State
   std::string next_state_;
 
   double t_elapsed_           = 0.0;
-  double dt_                  = 0.005;
+  double dt_                  = 0.01; //0.005;
   double prev_weight_         = 1.0;
   double prev_stiffness_      = 1.0;
+
+  int tick_ = 0;
 
   void configure(const mc_rtc::Configuration & config) override
   {
@@ -271,10 +276,11 @@ struct JointMove : mc_control::fsm::State
     }
   }
 
-  void start(mc_control::fsm::Controller & ctl) override
+/*  void start(mc_control::fsm::Controller & ctl) override
   {
     dt_        = ctl.solver().dt();
     t_elapsed_ = 0.0;
+    tick_      = 0;
 
     auto pt = ctl.getPostureTask(ctl.robot().name());
     if(!pt)
@@ -282,6 +288,77 @@ struct JointMove : mc_control::fsm::State
       mc_rtc::log::error("[{}] No posture task available!", name());
       output(next_state_);
       return;
+    }
+
+// ── DEBUG: print actual joint names the robot knows ──────────────
+    mc_rtc::log::info("[{}] Robot joint names:", name());
+    for(const auto & j : ctl.robot().mb().joints())
+    {
+      mc_rtc::log::info("[{}]   '{}' (dof={})", name(), j.name(), j.dof());
+    }
+
+// ── DEBUG: print what WE are commanding ──────────────────────────
+    mc_rtc::log::info("[{}] Our target_joints_:", name());
+    for(const auto & kv : target_joints_)
+      mc_rtc::log::info("[{}]   '{}' = {:.4f}", name(), kv.first, kv.second[0]);
+
+
+    prev_weight_    = pt->weight();
+    prev_stiffness_ = pt->stiffness();
+    pt->stiffness(stiffness_);
+    pt->weight(weight_);
+    pt->target(target_joints_);
+
+    mc_rtc::log::info("[{}] Joint-space move started (duration={:.2f}s)", name(), duration_);
+  } */
+
+void start(mc_control::fsm::Controller & ctl) override
+  {
+    dt_        = ctl.solver().dt();
+    t_elapsed_ = 0.0;
+    tick_      = 0;
+
+    auto pt = ctl.getPostureTask(ctl.robot().name());
+    if(!pt)
+    {
+      mc_rtc::log::error("[{}] No posture task available!", name());
+      output(next_state_);
+      return;
+    }
+
+    // ── DEBUG: print actual joint names the robot knows ──────────────
+    mc_rtc::log::info("[{}] Robot joint names:", name());
+    for(const auto & j : ctl.robot().mb().joints())
+      mc_rtc::log::info("[{}]   '{}' (dof={})", name(), j.name(), j.dof());
+
+    // ── FIX: wrap each target angle to within π of the current q ─────
+    // Prevents commanding a 360° detour when the bridge seeds joints in
+    // a different wrap than the YAML value (e.g. +263° → −97°).
+    const auto & q   = ctl.robot().mbc().q;
+    const auto & mbs = ctl.robot().mb().joints();
+    for(size_t ji = 0; ji < mbs.size(); ++ji)
+    {
+      const std::string & jname = mbs[ji].name();
+      if(mbs[ji].dof() != 1) continue;
+      if(!target_joints_.count(jname)) continue;
+
+      double current = q[ji][0];
+      double & target = target_joints_.at(jname)[0];
+      // Snap to the nearest equivalent angle
+      while(target - current >  M_PI) target -= 2.0 * M_PI;
+      while(target - current < -M_PI) target += 2.0 * M_PI;
+    }
+
+    // ── DEBUG: print current q vs wrapped target ──────────────────────
+    mc_rtc::log::info("[{}] Joint current_q vs target (after wrap):", name());
+    for(size_t ji = 0; ji < mbs.size(); ++ji)
+    {
+      const std::string & jname = mbs[ji].name();
+      if(mbs[ji].dof() != 1) continue;
+      double current = q[ji][0];
+      double target  = target_joints_.count(jname) ? target_joints_.at(jname)[0] : current;
+      mc_rtc::log::info("[{}]   '{}' current={:.4f}  target={:.4f}  delta={:.4f}",
+                        name(), jname, current, target, target - current);
     }
 
     prev_weight_    = pt->weight();
@@ -308,8 +385,8 @@ struct JointMove : mc_control::fsm::State
       return true;
     }
 
-    static int tick = 0;
-    if((tick++ % 200) == 0)
+//    static int tick = 0;
+    if((tick_++ % 200) == 0)
     {
       mc_rtc::log::info("[{}] err={:.4f}", name(), err);
     }
@@ -329,10 +406,11 @@ struct JointMove : mc_control::fsm::State
 // ════════════════════════════════════════════════════════════════════════════
 //  Gripper — open/close with timeout fallback
 // ════════════════════════════════════════════════════════════════════════════
-struct Gripper : mc_control::fsm::State
+
+/*struct Gripper : mc_control::fsm::State
 {
   std::string action_    = "close";
-  double      timeout_   = 2.0;
+  double      timeout_   = 5.0;
   std::string next_state_;
 
   bool   sent_      = false;
@@ -351,8 +429,8 @@ struct Gripper : mc_control::fsm::State
     dt_        = ctl.solver().dt();
     t_elapsed_ = 0.0;
     ppc(ctl).resetGripperDone();
-    ppc(ctl).sendGripperGoal(action_);
-    sent_ = true;
+    sent_ = ppc(ctl).sendGripperGoal(action_);
+    // sent_ = true;
     mc_rtc::log::info("[{}] Gripper action: {}", name(), action_);
   }
 
@@ -376,7 +454,76 @@ struct Gripper : mc_control::fsm::State
   }
 
   void teardown(mc_control::fsm::Controller &) override {}
+}; */
+
+
+struct Gripper : mc_control::fsm::State
+{
+  std::string action_    = "close";
+  double      timeout_   = 5.0; // Increased default timeout slightly to allow ROS 2 discovery
+  std::string next_state_;
+
+  bool   sent_      = false;
+  double t_elapsed_ = 0.0;
+  double dt_        = 0.005;
+
+  void configure(const mc_rtc::Configuration & config) override
+  {
+    if(config.has("action"))  action_  = static_cast<std::string>(config("action"));
+    if(config.has("timeout")) timeout_ = config("timeout");
+    if(config.has("next"))    next_state_ = static_cast<std::string>(config("next"));
+  }
+
+  void start(mc_control::fsm::Controller & ctl) override
+  {
+    dt_        = ctl.solver().dt();
+    t_elapsed_ = 0.0;
+    ppc(ctl).resetGripperDone();
+    
+    // We do NOT send the goal on start() because the DDS discovery might not be ready.
+    sent_ = false; 
+    mc_rtc::log::info("[{}] Gripper state initialized. Waiting to establish connection for action: {}", name(), action_);
+  }
+
+  bool run(mc_control::fsm::Controller & ctl) override
+  {
+    t_elapsed_ += dt_;
+
+    // Attempt to send the goal to ROS 2 until the action server is discovered and ready
+    if(!sent_)
+    {
+      sent_ = ppc(ctl).sendGripperGoal(action_);
+      if(sent_)
+      {
+        mc_rtc::log::info("[{}] Connection established. Gripper action successfully sent: {}", name(), action_);
+      }
+    }
+
+    // Monitor for the completion callback once sent
+    if(sent_ && ppc(ctl).isGripperDone())
+    {
+      mc_rtc::log::success("[{}] Gripper done.", name());
+      output(next_state_);
+      return true;
+    }
+
+    // Safety timeout in case of physical/network jams
+    if(t_elapsed_ >= timeout_)
+    {
+      mc_rtc::log::warning("[{}] Gripper timeout ({:.1f}s), proceeding.", name(), timeout_);
+      output(next_state_);
+      return true;
+    }
+    return false;
+  }
+
+  void teardown(mc_control::fsm::Controller &) override {}
 };
+
+
+
+
+
 
 // ════════════════════════════════════════════════════════════════════════════
 //  Idle — terminal state

@@ -1,12 +1,43 @@
 controller_manager:
   ros__parameters:
-    update_rate: 200  # matches mc_rtc timestep (0.005s = 200Hz)
+    update_rate: 500  # matches mc_rtc timestep (0.005s = 200Hz) - changed to 100 to match kortex 
 
     joint_state_broadcaster:
       type: joint_state_broadcaster/JointStateBroadcaster
 
+#    joint_group_position_controller:
+#      type: position_controllers/JointGroupPositionController
+ 
+    joint_trajectory_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+    robotiq_gripper_controller:
+      type: parallel_gripper_action_controller/GripperActionController
+#    twist_controller:
+#      type: picknik_twist_controller/PicknikTwistController
+
     kinova_joint_controller:
       type: joint_trajectory_controller/JointTrajectoryController
+
+joint_trajectory_controller:
+  ros__parameters:
+    joints:
+      - joint_1
+      - joint_2
+      - joint_3
+      - joint_4
+      - joint_5
+      - joint_6
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity
+    state_publish_rate: 100.0
+    action_monitor_rate: 20.0
+    allow_partial_joints_goal: false
+    open_loop_control: true
+    allow_integration_in_goal_trajectories: false
 
 kinova_joint_controller:
   ros__parameters:
@@ -22,8 +53,17 @@ kinova_joint_controller:
     state_interfaces:
       - position
       - velocity
-    state_publish_rate: 200.0
+    state_publish_rate: 100.0
     action_monitor_rate: 20.0
     allow_partial_joints_goal: false
     open_loop_control: true
     allow_integration_in_goal_trajectories: false
+
+robotiq_gripper_controller:
+  ros__parameters:
+    joint: robotiq_85_left_knuckle_joint
+    goal_tolerance: 0.01
+    max_effort: 100.0
+    allow_stalling: true
+    stall_velocity_threshold: 0.001
+    stall_timeout: 1.0

@@ -1,0 +1,2 @@
+# RealRobotSensor plugin configuration
+# No configuration needed — reads /joint_states automatically

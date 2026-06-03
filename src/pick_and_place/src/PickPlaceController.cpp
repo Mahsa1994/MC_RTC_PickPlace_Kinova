@@ -34,6 +34,23 @@ try : mc_control::fsm::Controller(rm, dt, config)
   clampZ(place_pose_);
   clampZ(home_pose_);
 
+#ifdef MC_RTC_HAS_ROS_SUPPORT
+  // Retrieve the global rclcpp::Node from mc_rtc
+  nh_ = mc_rtc::ROSBridge::get_node_handle();
+  if(nh_)
+  {
+    //gripper_action_client_ = rclcpp_action::create_client<control_msgs::action::GripperCommand>(
+    //    nh_, "/robotiq_gripper_controller/gripper_cmd");
+    gripper_action_client_ = rclcpp_action::create_client<control_msgs::action::ParallelGripperCommand>(
+        nh_, "/robotiq_gripper_controller/gripper_cmd");
+    mc_rtc::log::info("[PickPlaceController] ROS 2 Node handle acquired, Action Client initialized.");
+  }
+  else
+  {
+    mc_rtc::log::warning("[PickPlaceController] ROS 2 is not initialized. Using stub mode.");
+  }
+#endif
+
   mc_rtc::log::info("[PickPlaceController] Robot: {} (dt={}s)", robot().name(), dt);
   mc_rtc::log::info("[PickPlaceController] home:  [{:+.3f}, {:+.3f}, {:+.3f}]",
                     home_pose_.translation().x(),
@@ -63,36 +80,6 @@ bool PickPlaceController::run()
 void PickPlaceController::reset(const mc_control::ControllerResetData & d)
 {
   mc_control::fsm::Controller::reset(d);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  Gripper stubs
-//  ----------------------------------------------------------------------
-//  TODO: Wire these to your actual gripper. For the Kinova Gen3, the two
-//  common options are:
-//    (a) ROS 2 action client sending a GripperCommand goal to Kortex.
-//    (b) Direct Kortex API call.
-//  The current implementation immediately reports "done" so the FSM
-//  flows through CloseGripper/OpenGripper states without real actuation.
-// ═══════════════════════════════════════════════════════════════════════════
-void PickPlaceController::sendGripperGoal(const std::string & action)
-{
-  mc_rtc::log::info("[Gripper] Stub received: {} (replace with real driver)", action);
-  // For a real implementation:
-  //   - Publish to /<robot>/robotiq_gripper_controller/gripper_cmd action
-  //   - Or call Kortex SendGripperCommand service
-  //   - Set gripper_done_ = true when the action completes
-  gripper_done_ = true;  // stub: instant completion
-}
-
-bool PickPlaceController::isGripperDone() const
-{
-  return gripper_done_.load();
-}
-
-void PickPlaceController::resetGripperDone()
-{
-  gripper_done_ = false;
 }
 
 CONTROLLER_CONSTRUCTOR("PickPlaceController", PickPlaceController)

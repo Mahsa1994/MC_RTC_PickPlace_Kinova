@@ -1,0 +1,29 @@
+MainRobot: Kinova6DOF
+Enabled:
+  - PickPlaceController
+#Timestep: 0.005
+Timestep: 0.01
+
+Plugins:
+  - ROS
+
+LogPolicy: threaded
+
+ControllerModulePaths:
+  - /home/vscode/workspace/install/pick_and_place/lib/mc_controller
+
+ObserverPipelines:
+  - name: MainPipeline
+    observers:
+      - type: Encoder
+        update: true
+        log: true
+        position: encoderValues
+        # velocity: encoderFiniteDifferences
+        velocity: encoderVelocities
+
+#GlobalPlugins:
+#  - RealRobotSensor
+
+#GlobalPluginPaths:
+#  - /home/vscode/workspace/install/pick_and_place/lib/mc_plugins

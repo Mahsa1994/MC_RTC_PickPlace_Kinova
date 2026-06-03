@@ -7,11 +7,22 @@
   <link name="world"/>
   <ros2_control name="KortexMultiInterfaceHardware" type="system">
     <hardware>
-      <plugin>gz_ros2_control/GazeboSimSystem</plugin>
+      <plugin>kortex_driver/KortexMultiInterfaceHardware</plugin>
+      <param name="robot_ip">192.168.11.11</param>
+      <param name="username">admin</param>
+      <param name="password">admin</param>
+      <param name="port">10000</param>
+      <param name="port_realtime">10001</param>
+      <param name="session_inactivity_timeout_ms">60000</param>
+      <param name="connection_inactivity_timeout_ms">2000</param>
+      <param name="tf_prefix">&quot;&quot;</param>
+      <param name="use_internal_bus_gripper_comm">False</param>
+      <param name="gripper_joint_name">finger_joint</param>
+      <param name="gripper_max_velocity">100.0</param>
+      <param name="gripper_max_force">100.0</param>
     </hardware>
     <joint name="joint_1">
       <command_interface name="position">
-        <param name="initial_value">0.0</param>
         <param name="min">-6.283185307179586</param>
         <param name="max">6.283185307179586</param>
       </command_interface>
@@ -23,43 +34,39 @@
     </joint>
     <joint name="joint_2">
       <command_interface name="position">
-        <param name="initial_value">0.2618</param>
         <param name="min">-2.41</param>
         <param name="max">2.41</param>
       </command_interface>
       <state_interface name="position">
-        <param name="initial_value">0.2618</param>
+        <param name="initial_value">0.0</param>
       </state_interface>
       <state_interface name="velocity"/>
       <state_interface name="effort"/>
     </joint>
     <joint name="joint_3">
       <command_interface name="position">
-        <param name="initial_value">3.14</param>
         <param name="min">-2.66</param>
         <param name="max">2.66</param>
       </command_interface>
       <state_interface name="position">
-        <param name="initial_value">3.14</param>
+        <param name="initial_value">0.0</param>
       </state_interface>
       <state_interface name="velocity"/>
       <state_interface name="effort"/>
     </joint>
     <joint name="joint_4">
       <command_interface name="position">
-        <param name="initial_value">-2.269</param>
         <param name="min">-6.283185307179586</param>
         <param name="max">6.283185307179586</param>
       </command_interface>
       <state_interface name="position">
-        <param name="initial_value">-2.269</param>
+        <param name="initial_value">0.0</param>
       </state_interface>
       <state_interface name="velocity"/>
       <state_interface name="effort"/>
     </joint>
     <joint name="joint_5">
       <command_interface name="position">
-        <param name="initial_value">0.0</param>
         <param name="min">-2.23</param>
         <param name="max">2.23</param>
       </command_interface>
@@ -71,12 +78,11 @@
     </joint>
     <joint name="joint_6">
       <command_interface name="position">
-        <param name="initial_value">0.959878729</param>
         <param name="min">-6.283185307179586</param>
         <param name="max">6.283185307179586</param>
       </command_interface>
       <state_interface name="position">
-        <param name="initial_value">0.959878729</param>
+        <param name="initial_value">0.0</param>
       </state_interface>
       <state_interface name="velocity"/>
       <state_interface name="effort"/>
@@ -131,12 +137,12 @@
       </geometry>
     </collision>
   </link>
-  <joint name="joint_1" type="continuous">
+  <joint name="joint_1" type="revolute">
     <origin rpy="-3.1416 0.0 0.0" xyz="0 0 0.15643"/>
     <parent link="base_link"/>
     <child link="shoulder_link"/>
     <axis xyz="0 0 1"/>
-    <limit effort="39" velocity="1.3963"/>
+    <limit effort="39" lower="-2.97" upper="2.97" velocity="1.3963"/>
   </joint>
   <link name="bicep_link">
     <inertial>
@@ -218,12 +224,12 @@
       </geometry>
     </collision>
   </link>
-  <joint name="joint_4" type="continuous">
+  <joint name="joint_4" type="revolute">
     <origin rpy="1.5708 0.0 0.0" xyz="0 0.20843 -0.006375"/>
     <parent link="forearm_link"/>
     <child link="spherical_wrist_1_link"/>
     <axis xyz="0 0 1"/>
-    <limit effort="9" velocity="1.2218"/>
+    <limit effort="9" lower="-3.14" upper="3.14" velocity="1.2218"/>
   </joint>
   <link name="spherical_wrist_2_link">
     <inertial>
@@ -276,12 +282,12 @@
       </geometry>
     </collision>
   </link>
-  <joint name="joint_6" type="continuous">
+  <joint name="joint_6" type="revolute">
     <origin rpy="1.5708 0.0 0.0" xyz="0 0.10593 -0.00017505"/>
     <parent link="spherical_wrist_2_link"/>
     <child link="bracelet_link"/>
     <axis xyz="0 0 1"/>
-    <limit effort="9" velocity="1.2218"/>
+    <limit effort="9" lower="-3.14" upper="3.14" velocity="1.2218"/>
   </joint>
   <link name="end_effector_link"/>
   <joint name="end_effector" type="fixed">
@@ -297,11 +303,4 @@
     <child link="tool_frame"/>
     <axis xyz="0 0 0"/>
   </joint>
-
-  <gazebo>
-    <plugin filename="gz_ros2_control-system"
-            name="gz_ros2_control::GazeboSimROS2ControlPlugin">
-      <parameters>/home/vscode/workspace/src/pick_and_place/config/ros2_controllers.yaml</parameters>
-    </plugin>
-  </gazebo>
 </robot>
