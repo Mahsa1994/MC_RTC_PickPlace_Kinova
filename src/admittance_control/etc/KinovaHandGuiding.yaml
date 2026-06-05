@@ -1,0 +1,264 @@
+# =============================================================================
+#  KinovaGravityComp.yaml
+#  mc_rtc FSM Controller — Hand-Guiding (Gravity Compensation / Zero-G) for
+#  Kinova Gen3 6-DOF using AdmittanceTask on ALL 6 Cartesian DoF.
+#
+#  Design rationale:
+#   • AdmittanceTask is chosen over ImpedanceTask because Admittance is a
+#     pure velocity-integrating scheme: when force → 0 the task target stops
+#     updating, so the arm freezes exactly where the operator left it.
+#     ImpedanceTask has a spring term that would pull the arm back to the
+#     reference pose — undesirable for hand-guiding.
+#
+#   • The Kinova Gen3 exposes an estimated end-effector wrench via its Kortex
+#     API (gravity-compensated, expressed in the tool frame). mc_kortex maps
+#     this onto the "EndEffector" force sensor registered in the robot's URDF.
+#     No external wrist F/T sensor is required.
+#
+#   • All gains live here — zero recompilation needed to tune.
+#
+#  FSM state machine:
+#
+#       ┌──────────────────────────────────────────────────────────┐
+#       │  Init ──(Auto)──► HoldPosition ──(GUI btn)──► HandGuide │
+#       │                        ▲                         │       │
+#       │                        └──────(GUI btn)──────────┘       │
+#       └──────────────────────────────────────────────────────────┘
+#
+#  "HoldPosition"  : PostureTask holds the arm at its current joint config.
+#                    The arm is stiff and will not move.
+#  "HandGuide"     : AdmittanceTask on all 6 Cartesian DoF lets the operator
+#                    push/pull the end-effector freely. On returning to
+#                    HoldPosition the PostureTask re-seeds from encoders so
+#                    the arm freezes at the released pose.
+# =============================================================================
+
+---
+# ---------------------------------------------------------------------------
+# Controller identity
+# ---------------------------------------------------------------------------
+Name: KinovaGravityComp
+MainRobot: Kinova6DOF   # Must match the robot module name in mc_kortex / URDF
+
+# mc_rtc timestep — Kortex runs at 1 kHz; 5 ms is a safe outer-loop rate
+Timestep: 0.005
+
+# ---------------------------------------------------------------------------
+# FSM meta-settings
+# ---------------------------------------------------------------------------
+# "Managed" = false means the FSM drives itself; transitions fire automatically
+# or via triggers, no external C++ executor needed.
+Managed: false
+StepByStep: false
+
+# ---------------------------------------------------------------------------
+# Robot modules loaded alongside the main robot
+# (No environment / ground needed for a manipulator-only controller)
+# ---------------------------------------------------------------------------
+# robots: {}   # Uncomment and extend if you add a table / obstacle model
+
+# ---------------------------------------------------------------------------
+# Observers: use kinematic+inertial to get real robot body poses
+# ---------------------------------------------------------------------------
+ObserverPipelines:
+  - name: MainObserverPipeline
+    observers:
+      - type: Encoder           # reads joint positions from encoders
+        config:
+          position: estimator   # use encoder-integrated velocity for velocity
+          velocity: estimator
+      - type: KinematicInertial # fuses encoder FK with IMU for floating-base
+        config:
+          imuBodySensor: Accelerometer
+
+# ---------------------------------------------------------------------------
+# Constraints applied for the whole lifetime of the controller
+# ---------------------------------------------------------------------------
+constraints:
+  # Kinematics: joint position + velocity limits
+  - type: kinematics
+    damper: [0.1, 0.01, 0.5]   # [interact dist, safety dist, damping ratio]
+
+  # Dynamics: enables torque computation in QP (required for gravity comp)
+  - type: dynamics
+    damper: [0.1, 0.01, 0.5]
+
+  # Self-collision avoidance — keeps singularity-prone configurations safe
+  - type: collision
+    useMinimal: true
+
+# ---------------------------------------------------------------------------
+# Transition map
+# ---------------------------------------------------------------------------
+transitions:
+  #  [FromState,       OutputSignal, ToState,      Transition type]
+  - [Init,             OK,           HoldPosition, Auto]
+  - [HoldPosition,     startGuiding, HandGuide,    Auto]
+  - [HandGuide,        stopGuiding,  HoldPosition, Auto]
+
+init: Init
+
+# ---------------------------------------------------------------------------
+# State definitions
+# ---------------------------------------------------------------------------
+states:
+
+  # ------------------------------------------------------------------
+  # Init: one-shot state that fires immediately and moves on.
+  #       Purpose: log startup + emit OK so we fall into HoldPosition.
+  # ------------------------------------------------------------------
+  Init:
+    base: MetaTasks
+    # No tasks — just a pass-through initialisation state.
+    # You can add a BSplineTrajectory here if you need the arm to move
+    # to a "safe starting pose" before enabling hand-guiding.
+    completion:
+      timeElapsed: true   # completes after one control cycle
+      timeout: 0.01
+
+  # ------------------------------------------------------------------
+  # HoldPosition: stiff posture hold.
+  #
+  #   Uses PostureTask which targets the robot's current encoder values.
+  #   Because mc_rtc re-reads encoders every time this state is entered,
+  #   the arm freezes exactly at whatever joint angles it was released at.
+  #
+  #   A GUI button "Start Hand-Guiding" transitions to HandGuide.
+  # ------------------------------------------------------------------
+  HoldPosition:
+    base: MetaTasks
+    tasks:
+      HoldPosture:
+        type: posture
+        # stiffness/weight high enough to resist gravity, low enough for QP
+        # to solve without commanding unreasonably large torques.
+        stiffness: 10.0
+        weight: 100.0
+        # jointGains can be used to tune per-joint if some joints sag:
+        # jointGains:
+        #   - jointName: joint_1
+        #     stiffness: 15.0
+
+    # Expose a GUI button that triggers the "startGuiding" transition.
+    # No physical button on the robot is needed.
+    transitions:
+      - [GUI, startGuiding, HandGuide]
+
+    gui:
+      - Control:
+          - [Button, "▶  Start Hand-Guiding", startGuiding]
+
+  # ------------------------------------------------------------------
+  # HandGuide: the gravity-compensation / zero-g state.
+  #
+  #   AdmittanceTask is configured on all 6 Cartesian DoF (3 force + 3
+  #   torque).  The Kortex API's gravity-compensated estimated wrench
+  #   is used as the force measurement.
+  #
+  #   Physics of the admittance law (per axis i):
+  #     ẋ_ref(i) += admittance(i) * (f_measured(i) - f_desired(i))
+  #
+  #   For hand-guiding we set f_desired = 0 everywhere, so any contact
+  #   force from the operator directly drives a velocity command.
+  #   When the operator releases, f_measured → 0, ẋ_ref → 0, and the
+  #   task reference stops moving → arm holds position.
+  #
+  #   Key parameter choices:
+  #   • admittance  : translational 0.0005 [m/s per N],
+  #                   rotational   0.0005 [rad/s per N·m]
+  #                   (Start small; increase if arm feels sticky)
+  #   • stiffness   : MUST be near-zero on guided axes so the task does
+  #                   NOT fight the operator with a position spring.
+  #                   A value of 0 means pure velocity integration.
+  #   • damping     : provides the only restoring force → tune for feel.
+  #                   Too low = oscillatory; too high = sluggish.
+  #   • maxVel      : hard safety cap on end-effector velocity.
+  #
+  #   The wrench target [0,0,0,0,0,0] means "zero interaction force" —
+  #   i.e. float freely, compensating only gravity (already done by Kortex).
+  # ------------------------------------------------------------------
+  HandGuide:
+    base: MetaTasks
+    tasks:
+
+      # ---- Admittance task on end-effector surface ---------------------
+      GravComp:
+        type: admittance
+        # "EndEffector" must match the surface name defined in the Kinova
+        # robot module's surface file (usually the tool-flange surface).
+        surface: EndEffector
+
+        # --- Admittance gains [Tx, Ty, Tz, Rx, Ry, Rz] ----------------
+        # These map force error (N or N·m) → velocity command (m/s or rad/s).
+        # Increase to make the arm feel "lighter"; decrease if oscillations occur.
+        admittance: [0.0005, 0.0005, 0.0005, 0.0005, 0.0005, 0.0005]
+
+        # --- Stiffness [Tx, Ty, Tz, Rx, Ry, Rz] ------------------------
+        # Setting translational AND rotational stiffness to ~0 removes the
+        # position spring that would otherwise snap the arm back to its
+        # reference pose when released.  A tiny residual value (1e-4) avoids
+        # numerical issues in the QP without creating a perceptible spring.
+        stiffness: [0.0001, 0.0001, 0.0001, 0.0001, 0.0001, 0.0001]
+
+        # --- Damping [Tx, Ty, Tz, Rx, Ry, Rz] --------------------------
+        # Provides viscous braking.  Higher = more sluggish but more stable.
+        # Rule of thumb: damping ≈ 2*sqrt(stiffness) for critical damping,
+        # but since stiffness ≈ 0 we tune damping independently.
+        damping: [50.0, 50.0, 50.0, 50.0, 50.0, 50.0]
+
+        # --- Desired wrench [fx, fy, fz, tx, ty, tz] in surface frame --
+        # Zero = "float freely"; the Kortex API already subtracts gravity
+        # from the measured wrench, so residual = operator-applied force only.
+        wrench:
+          force:  [0.0, 0.0, 0.0]
+          couple: [0.0, 0.0, 0.0]
+
+        # --- Safety velocity limits [m/s] and [rad/s] -------------------
+        # These are HARD caps enforced every control cycle.
+        maxVel:
+          linear:  [0.15, 0.15, 0.15]   # m/s  — conservative for lab use
+          angular: [0.30, 0.30, 0.30]   # rad/s
+
+        # QP weight — lower than joint-limit constraints so limits always win
+        weight: 1000.0
+
+        # Force sensor name as registered in the robot module.
+        # mc_kortex publishes the Kortex estimated wrench here.
+        forceSensor: EndEffectorForceSensor
+
+      # ---- Low-weight posture task ------------------------------------
+      # Keeps joints from wandering into singularities or joint limits
+      # when the admittance task has multiple IK solutions.
+      # Weight MUST be much lower than GravComp so it never fights guiding.
+      NullspacePosture:
+        type: posture
+        stiffness: 1.0
+        weight: 1.0       # very low: only acts in the QP null-space
+
+    # GUI button to return to HoldPosition (freeze the arm)
+    gui:
+      - Control:
+          - [Button, "⏹  Stop Hand-Guiding (Hold Position)", stopGuiding]
+
+    transitions:
+      - [GUI, stopGuiding, HoldPosition]
+
+# ---------------------------------------------------------------------------
+# Logging — record wrench, task error, and joint torques for post-analysis
+# ---------------------------------------------------------------------------
+log:
+  enabled: true
+  # Additional quantities beyond the defaults:
+  extra:
+    - EndEffector_wrench         # measured wrench from Kortex
+    - GravComp_task_error        # AdmittanceTask position/force error
+    - GravComp_refVelB           # velocity command from admittance law
+    - robot_joint_torques        # joint torques (from DynamicsConstraint)
+
+# ---------------------------------------------------------------------------
+# GUI panels
+# ---------------------------------------------------------------------------
+# The main control buttons appear in the "Control" panel inside the FSM GUI.
+# You can also tune gains live via:
+#   Tasks → GravComp → admittance  (slider per axis)
+#   Tasks → GravComp → damping     (slider per axis)
