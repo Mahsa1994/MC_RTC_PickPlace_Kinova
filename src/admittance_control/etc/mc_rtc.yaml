@@ -1,62 +1,35 @@
 # =============================================================================
-#  ~/.config/mc_rtc/mc_rtc.yaml
+#  mc_rtc.yaml  —  system-level config for the hand-guiding controller
 #
-#  System-level mc_rtc configuration.
-#  Place this file at the path shown above (Linux) or the equivalent on your OS.
-#
-#  This file tells mc_rtc:
-#    1. Which robot to load (KinovaGen3 from mc_kortex)
-#    2. Which controller to activate
-#    3. Global logging / GUI settings
+#  Copy to: ~/.config/mc_rtc/mc_rtc.yaml
+#  (replaces the PickPlaceController entry while testing hand-guiding)
 # =============================================================================
 
-# ---------------------------------------------------------------------------
-# Robot
-# ---------------------------------------------------------------------------
-# "KinovaGen3" must match the RobotModule name exported by mc_kortex.
-# If you are using a 7-DOF variant, change to KinovaGen3_7dof.
-MainRobot: KinovaGen3
-
-# ---------------------------------------------------------------------------
-# Controller
-# ---------------------------------------------------------------------------
-Enabled: KinovaGravityComp
-
-# Control loop timestep (must match the value in KinovaGravityComp.yaml)
+MainRobot: Kinova6DOF
+Enabled: KinovaHandGuiding
 Timestep: 0.005
 
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
-Log:
-  # Logs are written to /tmp/mc-logs/ by default
-  directory: /tmp/mc-logs
-  # Rotate log file every time the controller starts
-  rotate: true
+Plugins:
+  - ROS
 
-# ---------------------------------------------------------------------------
-# GUI server (mc_rtc_rviz_panel or rqt_mc_rtc_gui)
-# ---------------------------------------------------------------------------
-GUIServer:
-  enabled: true
-  # Publish on localhost; change to 0.0.0.0 for remote access
-  configuration:
-    - socket: "tcp://localhost:4242"
-    - socket: "ipc:///tmp/mc_rtc_pub.ipc"
+LogPolicy: threaded
 
-# ---------------------------------------------------------------------------
-# mc_kortex interface settings
-# (These keys are read by the mc_kortex plugin, not by mc_rtc core)
-# ---------------------------------------------------------------------------
-Kortex:
-  # IP address of the robot base
-  ip_address: "192.168.1.10"
-  # User / password for Kortex API login
-  username: "admin"
-  password: "admin"
-  # Publish the gravity-compensated estimated wrench as a force sensor.
-  # The sensor name here MUST match forceSensor in KinovaGravityComp.yaml.
-  publishEstimatedWrench: true
-  estimatedWrenchSensorName: EndEffectorForceSensor
-  # Control mode: VELOCITY is required for AdmittanceTask velocity integration
-  controlMode: VELOCITY
+# The controller's shared library lives here after `cmake --install`
+ControllerModulePaths:
+  - /home/vscode/workspace/install/admittance_control/lib/mc_controller
+
+# The UpdateHoldTarget FSM state lives in the same install tree
+StatesLibraries:
+  - /home/vscode/workspace/install/admittance_control/lib/mc_states
+
+ObserverPipelines:
+  - name: MainPipeline
+    observers:
+      - type: Encoder
+        update: true
+        log: true
+        config:
+          position: encoderValues
+          velocity: encoderVelocities
+          # Note: KinematicInertial is intentionally absent.
+          # kinova.cpp clears _bodySensors, so no IMU sensor is registered.
