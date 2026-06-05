@@ -1,98 +1,84 @@
+#pragma once
 // =============================================================================
-//  states/UpdateHoldTarget.h
+//  UpdateHoldTarget.h
 //
-//  Optional lightweight C++ FSM state.
+//  One-shot FSM state that fires when the operator presses "Stop Hand-Guiding".
+//  It runs for exactly one control cycle before emitting "OK".
 //
 //  PURPOSE
 //  -------
-//  When the operator releases the arm and presses "Stop Hand-Guiding", the
-//  FSM transitions from HandGuide → HoldPosition.  mc_rtc's PostureTask by
-//  default re-targets the *reference* configuration (the one set at
-//  construction time), NOT the current encoder configuration.  Without this
-//  state the arm would drift back to where it was when the controller started.
+//  Without this state, returning to HoldPosition re-targets the PostureTask
+//  to whatever joint configuration was active when the controller first
+//  started — not where the operator released the arm.
 //
-//  This state runs for exactly one control cycle before emitting "OK".  It
-//  reads the current encoder positions and writes them as the new PostureTask
-//  target, so the arm freezes exactly where the operator left it.
+//  This state reads ctl.realRobot().mbc().q (encoder-side joint positions,
+//  updated each cycle by the Encoder observer) and writes them as the new
+//  PostureTask target. The arm then holds exactly at the released pose.
 //
-//  USAGE IN FSM YAML
-//  -----------------
-//  Replace the plain MetaTasks-based HoldPosition with:
+//  INTEGRATION
+//  -----------
+//  The state is registered as "UpdateHoldTarget" by UpdateHoldTarget.cpp.
+//  To use it, insert it as an interstitial in the transition map:
 //
-//    HoldPosition:
-//      base: UpdateHoldTarget   # ← this state runs first, then MetaTasks
-//      tasks:
-//        HoldPosture:
-//          type: posture
-//          stiffness: 10.0
-//          weight: 100.0
+//    transitions:
+//      - [HandGuide,        stopGuiding,  SeedPosture,  Auto]
+//      - [SeedPosture,      OK,           HoldPosition, Auto]
 //
-//  Or use it as an interstitial state in the transition map:
-//    - [HandGuide,      stopGuiding, SeedPosture,  Auto]
-//    - [SeedPosture,    OK,          HoldPosition, Auto]
-//
+//  The current KinovaHandGuiding.yaml transitions directly
+//  HandGuide → HoldPosition because PostureTask re-reads encoder values
+//  automatically at construction when no explicit target is set.
+//  Add this state only if you observe the arm snapping back to the
+//  startup pose on return to HoldPosition.
 // =============================================================================
-#pragma once
 
+#include <mc_control/fsm/Controller.h>
 #include <mc_control/fsm/State.h>
 #include <mc_rtc/logging.h>
+#include <mc_tasks/PostureTask.h>
 
 namespace mc_control::fsm
 {
 
-/**
- * UpdateHoldTarget
- *
- * One-shot state: reads current joint encoder positions and updates the
- * PostureTask target so the arm holds exactly where it was released.
- */
 struct UpdateHoldTarget : State
 {
-  // -------------------------------------------------------------------------
   void start(Controller & ctl) override
   {
-    auto & robot    = ctl.robot();           // command-side robot
-    auto & realRobot = ctl.realRobot();      // encoder / observer-side robot
+    // realRobot() is the observer-side robot — joint positions come from
+    // the Encoder observer (encoderValues), not from the QP command output.
+    const auto & q = ctl.realRobot().mbc().q;
 
-    // Find the PostureTask that is already in the solver.
-    // mc_rtc's FSM MetaTasks base state registers tasks under their YAML key.
-    // We look for any PostureTask; adjust the name if yours differs.
+    // Find the PostureTask registered by the HoldPosition state.
+    // MetaTasks registers tasks under their YAML key; we search by type.
     mc_tasks::PostureTask * postureTask = nullptr;
     for(auto & t : ctl.solver().tasks())
     {
       postureTask = dynamic_cast<mc_tasks::PostureTask *>(t.get());
-      if(postureTask) break;
+      if(postureTask) { break; }
     }
 
     if(!postureTask)
     {
-      mc_rtc::log::warning(
-          "[UpdateHoldTarget] No PostureTask found in solver — "
-          "arm may drift back to reference pose after release.");
+      mc_rtc::log::warning("[UpdateHoldTarget] No PostureTask found in solver. "
+                           "Arm will hold at controller startup pose, not release pose.");
       output("OK");
       return;
     }
 
-    // Seed the posture target from the REAL robot's current joint positions
-    // (as estimated by the encoder observer, gravity-corrected by Kortex).
-    const auto & q = realRobot.mbc().q;
-    postureTask->posture(q);   // sets ALL joint targets to current encoder values
-
-    mc_rtc::log::success(
-        "[UpdateHoldTarget] PostureTask re-seeded from encoders — "
-        "arm will hold at released configuration.");
+    // Overwrite the posture target with current encoder values.
+    // After this call HoldPosition's PostureTask targets the exact
+    // joint angles at the moment the operator released the arm.
+    postureTask->posture(q);
+    mc_rtc::log::success("[UpdateHoldTarget] PostureTask re-seeded from encoder values.");
 
     output("OK");
   }
 
-  // -------------------------------------------------------------------------
   bool run(Controller &) override
   {
-    // Completes immediately; the one-shot work was done in start().
+    // One-shot: work is done in start(), run() just signals completion.
     return true;
   }
 
-  // -------------------------------------------------------------------------
   void teardown(Controller &) override {}
 };
 
