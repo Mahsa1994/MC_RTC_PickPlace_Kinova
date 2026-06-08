@@ -1,10 +1,3 @@
-# =============================================================================
-#  KinovaHandGuiding.yaml
-#  mc_rtc FSM Controller — Hand-Guiding / Gravity Compensation
-#  for Kinova Gen3 6-DOF (robot module: Kinova6DOF)
-#
-# =============================================================================
-
 Name: KinovaHandGuiding
 MainRobot: Kinova6DOF
 
@@ -13,7 +6,7 @@ MainRobot: Kinova6DOF
 # larger positional steps per cycle, making the arm feel jerky and
 # increasing the risk of overshoot when the operator releases.
 Timestep: 0.005
-
+StatesLibraries: [mc_control_fsm_states, AdmittanceStates]
 # ---------------------------------------------------------------------------
 # FSM settings
 # ---------------------------------------------------------------------------
@@ -89,7 +82,7 @@ states:
   # the arm to move to a safe starting pose before guiding is allowed.
   # ------------------------------------------------------------------
   Init:
-    base: MetaTasks
+    base: MetaTask
     completion:
       timeElapsed: true
       timeout: 0.01
@@ -108,7 +101,7 @@ states:
   # or joint_2 sag noticeably under payload weight.
   # ------------------------------------------------------------------
   HoldPosition:
-    base: MetaTasks
+    base: MetaTask
     tasks:
       HoldPosture:
         type: posture
@@ -143,7 +136,7 @@ states:
   # expressed in the "Arm" surface frame.
   # ------------------------------------------------------------------
   HandGuide:
-    base: MetaTasks
+    base: MetaTask
     tasks:
 
       GravComp:
