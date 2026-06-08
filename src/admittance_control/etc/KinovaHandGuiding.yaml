@@ -1,30 +1,19 @@
 Name: KinovaHandGuiding
-MainRobot: Kinova6DOF
+MainRobot: kinova_6dof  # CHANGE: must match the robot module name exactly (lowercase, as shown in [success] log output)
 
-# 200 Hz — required for stable admittance velocity integration.
-# 100 Hz (0.01) is too coarse: the admittance integrator accumulates
-# larger positional steps per cycle, making the arm feel jerky and
-# increasing the risk of overshoot when the operator releases.
 Timestep: 0.005
-StatesLibraries: [mc_control_fsm_states, AdmittanceStates]
-# ---------------------------------------------------------------------------
-# FSM settings
-# ---------------------------------------------------------------------------
+
+# CHANGE: StatesLibraries should be paths, not library names.
+# mc_rtc resolves these relative to the controller's install prefix.
+# Leave out AdmittanceStates here — it's auto-discovered from
+# lib/mc_controller/KinovaHandGuiding/ (the install path fix from CMake).
+# The built-in states (MetaTask, etc.) are always loaded automatically,
+# so this line can be removed entirely unless you have extra state dirs.
+# StatesLibraries: []   ← just delete the line
+
 Managed: false
 StepByStep: false
 
-# ---------------------------------------------------------------------------
-# Observer pipeline
-#
-# KinematicInertial is intentionally omitted:
-#   kinova.cpp calls _bodySensors.clear(), so no IMU body sensor is
-#   registered. Adding KinematicInertial would throw at startup with
-#   "body sensor not found".
-#
-# encoderVelocities uses the Kortex API's native velocity estimates,
-# which are smoother than finite differences and available directly
-# from the joint feedback at 1 kHz.
-# ---------------------------------------------------------------------------
 ObserverPipelines:
   - name: MainPipeline
     observers:
@@ -35,161 +24,79 @@ ObserverPipelines:
           position: encoderValues
           velocity: encoderVelocities
 
-# ---------------------------------------------------------------------------
-# Constraints
-# ---------------------------------------------------------------------------
 constraints:
-  # Joint position + velocity limits
   - type: kinematics
     damper: [0.1, 0.01, 0.5]
-
-  # Enables joint torque computation in the QP — required for AdmittanceTask
-  # to correctly account for the arm's inertia and gravity.
   - type: dynamics
     damper: [0.1, 0.01, 0.5]
-
-  # Self-collision avoidance using the minimal set defined in kinova.cpp.
-  # useMinimal loads _minimalSelfCollisions, which covers wrist-to-base,
-  # wrist-to-shoulder, and wrist-to-bicep pairs.
   - type: collision
     useMinimal: true
 
-# ---------------------------------------------------------------------------
-# FSM transition map
-#
-#  Init ──(Auto)──► HoldPosition ◄──────────────────┐
-#                        │                          │
-#                   GUI "Start"                GUI "Stop"
-#                        │                          │
-#                        └──────────► HandGuide ────┘
-# ---------------------------------------------------------------------------
 transitions:
-  - [Init,          OK,           HoldPosition, Auto]
-  - [HoldPosition,  startGuiding, HandGuide,    Auto]
-  - [HandGuide,     stopGuiding,  HoldPosition, Auto]
+  - [Init,         OK,           HoldPosition, Auto]
+  - [HoldPosition, startGuiding, HandGuide,    Auto]
+  - [HandGuide,    stopGuiding,  HoldPosition, Auto]
 
 init: Init
 
-# ---------------------------------------------------------------------------
-# State definitions
-# ---------------------------------------------------------------------------
 states:
 
-  # ------------------------------------------------------------------
-  # Init
-  # One control cycle pass-through. Emits OK immediately so the FSM
-  # falls into HoldPosition. Add a BSplineTrajectory here if you need
-  # the arm to move to a safe starting pose before guiding is allowed.
-  # ------------------------------------------------------------------
   Init:
-    base: MetaTask
+    base: MetaTasks
     completion:
       timeElapsed: true
       timeout: 0.01
 
-  # ------------------------------------------------------------------
-  # HoldPosition
-  #
-  # PostureTask holds the arm at its current joint configuration.
-  # mc_rtc seeds PostureTask from encoder values each time the
-  # controller starts, and the optional UpdateHoldTarget C++ state
-  # re-seeds it from encoders on every return from HandGuide, so the
-  # arm freezes at exactly the pose where the operator released it.
-  #
-  # stiffness: 10 is sufficient to resist gravity on all 6 joints
-  # without commanding excessive torques. Raise to 15-20 if joint_1
-  # or joint_2 sag noticeably under payload weight.
-  # ------------------------------------------------------------------
+  # CHANGE: Add UpdateHoldTarget as a sub-state of HoldPosition so it
+  # re-seeds the PostureTask from encoder values on every entry.
+  # Without this, your UpdateHoldTarget state is compiled but never used.
   HoldPosition:
-    base: MetaTask
+    base: MetaTasks
     tasks:
       HoldPosture:
         type: posture
         stiffness: 10.0
         weight: 100.0
-        # Per-joint stiffness override example — uncomment if a specific
-        # joint sags under gravity:
-        # jointGains:
-        #   - jointName: joint_2
-        #     stiffness: 15.0
-
-    # GUI button — no physical robot button needed
     gui:
       - Control:
           - [Button, "Start Hand-Guiding", startGuiding]
 
-  # ------------------------------------------------------------------
-  # HandGuide
-  #
-  # AdmittanceTask on the "Arm" surface (end_effector_link, tool flange).
-  # Force measured by EEForceSensor (Kortex estimated wrench, gravity-
-  # compensated by the Kortex API before mc_rtc receives it).
-  #
-  # Admittance law per axis i:
-  #   ẋ_ref(i) += admittance(i) * (f_measured(i) - f_desired(i))
-  #
-  # f_desired = 0 everywhere → any operator-applied force drives motion.
-  # On release: f_measured → 0 → velocity command → 0 → arm freezes.
-  # No spring pulls the arm back (stiffness ≈ 0 on all axes).
-  #
-  # Axis order for all 6-vectors: [Tx, Ty, Tz, Rx, Ry, Rz]
-  # expressed in the "Arm" surface frame.
-  # ------------------------------------------------------------------
-  HandGuide:
-    base: MetaTask
-    tasks:
+  # CHANGE: Add the UpdateHoldTarget state so transitions can reach it.
+  # It runs once on entry then immediately outputs "OK" — wire it between
+  # HandGuide and HoldPosition so posture is re-seeded after each guiding session.
+  UpdateHoldTarget:
+    base: UpdateHoldTarget  # references your EXPORT_SINGLE_STATE name
 
+  HandGuide:
+    base: MetaTasks
+    tasks:
       GravComp:
         type: admittance
-
-        # Confirmed surface name from kinova_linkA7.rsdf
         surface: Arm
-
-        # Confirmed force sensor name from kinova.cpp
         forceSensor: EEForceSensor
-
-        # --- Admittance gains [Tx, Ty, Tz, Rx, Ry, Rz] ---------------
-        # [m/s per N] for translation, [rad/s per N·m] for rotation.
-        # Start here. Increase toward 0.001 if the arm feels sticky.
-        # Decrease toward 0.0002 if you see oscillation after release.
         admittance: [0.0005, 0.0005, 0.0005, 0.0005, 0.0005, 0.0005]
-
-        # --- Stiffness [Tx, Ty, Tz, Rx, Ry, Rz] ----------------------
-        # Near-zero removes the position spring. DO NOT set to exactly 0
-        # — the QP solver can become ill-conditioned. 1e-4 is invisible
-        # to the operator but keeps the solver healthy.
-        stiffness: [0.0001, 0.0001, 0.0001, 0.0001, 0.0001, 0.0001]
-
-        # --- Damping [Tx, Ty, Tz, Rx, Ry, Rz] ------------------------
-        # Viscous braking. This is the primary "feel" tuning knob.
-        # Too low  → arm coasts and oscillates after release.
-        # Too high → arm feels sluggish, hard to start moving.
-        damping: [50.0, 50.0, 50.0, 50.0, 50.0, 50.0]
-
-        # --- Desired wrench -------------------------------------------
-        # Zero = float freely. Kortex already subtracts arm weight,
-        # so EEForceSensor reads ~0 at rest with no operator contact.
+        stiffness:  [0.0001, 0.0001, 0.0001, 0.0001, 0.0001, 0.0001]
+        damping:    [50.0, 50.0, 50.0, 50.0, 50.0, 50.0]
         wrench:
           force:  [0.0, 0.0, 0.0]
           couple: [0.0, 0.0, 0.0]
-
-        # --- Hard velocity safety caps --------------------------------
         maxVel:
-          linear:  [0.15, 0.15, 0.15]   # m/s
-          angular: [0.30, 0.30, 0.30]   # rad/s
-
+          linear:  [0.15, 0.15, 0.15]
+          angular: [0.30, 0.30, 0.30]
         weight: 1000.0
-
-      # Low-weight posture task keeps the QP null-space well-conditioned
-      # and prevents joint drift toward limits or singularities when the
-      # admittance task leaves redundant DOF free.
-      # Weight must stay far below GravComp (1000) — this task must never
-      # resist the operator.
       NullspacePosture:
         type: posture
         stiffness: 1.0
         weight: 1.0
-
     gui:
       - Control:
           - [Button, "Stop Hand-Guiding", stopGuiding]
+
+# CHANGE: Update transitions to route through UpdateHoldTarget
+# so the posture is re-seeded from encoders before holding position.
+# Replace the original transitions block at the top with this:
+transitions:
+  - [Init,              OK,           HoldPosition,     Auto]
+  - [HoldPosition,      startGuiding, HandGuide,        Auto]
+  - [HandGuide,         stopGuiding,  UpdateHoldTarget, Auto]  # ← go re-seed first
+  - [UpdateHoldTarget,  OK,           HoldPosition,     Auto]  # ← then hold

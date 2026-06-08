@@ -1,7 +1,3 @@
-# =============================================================================
-#  Corrected Global Config
-# =============================================================================
-
 MainRobot: Kinova6DOF
 Enabled: KinovaHandGuiding
 Timestep: 0.005
@@ -9,30 +5,19 @@ Timestep: 0.005
 Plugins:
   - ROS
 
-# 1. Where to look for Controller .so files (Directories)
 ControllerModulePaths:
   - /usr/local/lib/mc_controller
   - /home/vscode/workspace/install/admittance_control/lib/mc_controller
 
-# 2. Where to look for State .so files (Directories)
-# CHANGE: Use 'StatesLibrariesPaths' for directory lists
-StatesLibrariesPaths:
-  - /usr/local/lib/mc_states
-  - /home/vscode/workspace/install/admittance_control/lib/mc_states
+# REMOVE StatesLibrariesPaths entirely — it's not a valid mc_rtc key
 
-# 3. Which specific state libraries to load (Names)
-# mc_control_fsm_states contains MetaTasks, Init, etc.
-# AdmittanceStates contains your UpdateHoldTarget.
+# mc_rtc auto-scans <each ControllerModulePath>/fsm/states/ for built-ins
+# and <ControllerName>/states/ for controller-specific states.
+# No extra config needed if CMake installs to the right place.
 StatesLibraries:
-  - mc_control_fsm_states
-  - AdmittanceStates
-
-ObserverPipelines:
-  - name: MainPipeline
-    observers:
-      - type: Encoder
-        update: true
-        log: true
-        config:
-          position: encoderValues
-          velocity: encoderVelocities
+  #- AdmittanceStates
+  - "/usr/local/lib/mc_controller/fsm/states"
+  - "/home/vscode/workspace/install/admittance_control/lib/mc_controller/KinovaHandGuiding/states"
+StatesFiles:
+  - "/usr/local/lib/mc_controller/fsm/states/data"
+  - "/home/vscode/workspace/install/admittance_control/lib/mc_controller/KinovaHandGuiding/states/data"

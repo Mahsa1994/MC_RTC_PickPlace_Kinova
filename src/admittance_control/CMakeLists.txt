@@ -13,35 +13,38 @@ find_package(rclcpp REQUIRED)
 add_library(KinovaHandGuiding SHARED
   src/KinovaHandGuiding.cpp
 )
-
 target_compile_definitions(KinovaHandGuiding PRIVATE MC_RTC_SHARED)
-
-# Adding both control and fsm targets ensures all include paths are present
 target_link_libraries(KinovaHandGuiding
   mc_rtc::mc_control
   mc_rtc::mc_control_fsm
 )
+ament_target_dependencies(KinovaHandGuiding rclcpp)
 
 # 2. States library
 add_library(AdmittanceStates SHARED
   src/states/UpdateHoldTarget.cpp
 )
-
 target_compile_definitions(AdmittanceStates PRIVATE MC_RTC_SHARED)
-
-target_link_libraries(AdmittanceStates 
+target_link_libraries(AdmittanceStates
   mc_rtc::mc_control
   mc_rtc::mc_control_fsm
 )
+ament_target_dependencies(AdmittanceStates rclcpp)
 
 # 3. Install
-install(TARGETS KinovaHandGuiding LIBRARY DESTINATION lib/mc_controller)
-#install(TARGETS AdmittanceStates LIBRARY DESTINATION lib/mc_states)
-install(TARGETS AdmittanceStates LIBRARY DESTINATION lib/mc_controller/KinovaHandGuiding)
-install(FILES etc/KinovaHandGuiding.yaml DESTINATION lib/mc_controller/etc)
+install(TARGETS KinovaHandGuiding
+  LIBRARY DESTINATION lib/mc_controller
+)
 
-# 4. ROS
-ament_target_dependencies(KinovaHandGuiding rclcpp)
-ament_target_dependencies(AdmittanceStates rclcpp)
+#install(TARGETS AdmittanceStates
+#  LIBRARY DESTINATION lib/mc_controller/KinovaHandGuiding  # ← key fix
+#)
+install(TARGETS AdmittanceStates
+  LIBRARY DESTINATION lib/mc_controller/KinovaHandGuiding/states
+)
+
+install(FILES etc/KinovaHandGuiding.yaml
+  DESTINATION lib/mc_controller/etc
+)
 
 ament_package()

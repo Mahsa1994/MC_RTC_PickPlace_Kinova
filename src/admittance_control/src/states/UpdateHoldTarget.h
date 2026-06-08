@@ -36,19 +36,12 @@
 #include <mc_rtc/logging.h>
 #include <mc_tasks/PostureTask.h>
 
-namespace mc_control::fsm
+struct UpdateHoldTarget : mc_control::fsm::State  // fully qualify since no namespace
 {
-
-struct UpdateHoldTarget : State
-{
-  void start(Controller & ctl) override
+  void start(mc_control::fsm::Controller & ctl) override
   {
-    // realRobot() is the observer-side robot — joint positions come from
-    // the Encoder observer (encoderValues), not from the QP command output.
     const auto & q = ctl.realRobot().mbc().q;
 
-    // Find the PostureTask registered by the HoldPosition state.
-    // MetaTasks registers tasks under their YAML key; we search by type.
     mc_tasks::PostureTask * postureTask = nullptr;
     for(auto & t : ctl.solver().tasks())
     {
@@ -64,22 +57,21 @@ struct UpdateHoldTarget : State
       return;
     }
 
-    // Overwrite the posture target with current encoder values.
-    // After this call HoldPosition's PostureTask targets the exact
-    // joint angles at the moment the operator released the arm.
     postureTask->posture(q);
     mc_rtc::log::success("[UpdateHoldTarget] PostureTask re-seeded from encoder values.");
 
     output("OK");
   }
 
-  bool run(Controller &) override
+  bool run(mc_control::fsm::Controller &) override
   {
-    // One-shot: work is done in start(), run() just signals completion.
     return true;
   }
 
-  void teardown(Controller &) override {}
+ void teardown(mc_control::fsm::Controller &) override {}
 };
 
-} // namespace mc_control::fsm
+// CHANGE 2: Add the export macro here at the bottom of the header
+// (or in the .cpp — but since all your logic is header-only, put it here).
+// This registers "UpdateHoldTarget" as a discoverable FSM state with mc_rtc.
+//EXPORT_SINGLE_STATE("UpdateHoldTarget", UpdateHoldTarget)
