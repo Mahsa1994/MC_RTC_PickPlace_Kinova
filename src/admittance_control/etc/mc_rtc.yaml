@@ -1,8 +1,5 @@
 # =============================================================================
-#  mc_rtc.yaml  —  system-level config for the hand-guiding controller
-#
-#  Copy to: ~/.config/mc_rtc/mc_rtc.yaml
-#  (replaces the PickPlaceController entry while testing hand-guiding)
+#  Corrected Global Config
 # =============================================================================
 
 MainRobot: Kinova6DOF
@@ -12,15 +9,23 @@ Timestep: 0.005
 Plugins:
   - ROS
 
-LogPolicy: threaded
-
-# The controller's shared library lives here after `cmake --install`
+# 1. Where to look for Controller .so files (Directories)
 ControllerModulePaths:
+  - /usr/local/lib/mc_controller
   - /home/vscode/workspace/install/admittance_control/lib/mc_controller
 
-# The UpdateHoldTarget FSM state lives in the same install tree
-StatesLibraries:
+# 2. Where to look for State .so files (Directories)
+# CHANGE: Use 'StatesLibrariesPaths' for directory lists
+StatesLibrariesPaths:
+  - /usr/local/lib/mc_states
   - /home/vscode/workspace/install/admittance_control/lib/mc_states
+
+# 3. Which specific state libraries to load (Names)
+# mc_control_fsm_states contains MetaTasks, Init, etc.
+# AdmittanceStates contains your UpdateHoldTarget.
+StatesLibraries:
+  - mc_control_fsm_states
+  - AdmittanceStates
 
 ObserverPipelines:
   - name: MainPipeline
@@ -31,5 +36,3 @@ ObserverPipelines:
         config:
           position: encoderValues
           velocity: encoderVelocities
-          # Note: KinematicInertial is intentionally absent.
-          # kinova.cpp clears _bodySensors, so no IMU sensor is registered.
