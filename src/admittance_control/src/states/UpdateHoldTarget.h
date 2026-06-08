@@ -52,7 +52,7 @@ struct UpdateHoldTarget : State
     mc_tasks::PostureTask * postureTask = nullptr;
     for(auto & t : ctl.solver().tasks())
     {
-      postureTask = dynamic_cast<mc_tasks::PostureTask *>(t.get());
+      postureTask = dynamic_cast<mc_tasks::PostureTask *>(t);
       if(postureTask) { break; }
     }
 
