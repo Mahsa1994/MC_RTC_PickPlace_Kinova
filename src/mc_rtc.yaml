@@ -1,48 +1,23 @@
 MainRobot: Kinova6DOF
-Enabled:
-  - PickPlaceController
-#Timestep: 0.005
-Timestep: 0.01
+Enabled: KinovaHandGuiding
+Timestep: 0.005
 
 Plugins:
   - ROS
 
-LogPolicy: threaded
-
 ControllerModulePaths:
-  - /home/vscode/workspace/install/pick_and_place/lib/mc_controller
+  - /usr/local/lib/mc_controller
+  - /home/vscode/workspace/install/admittance_control/lib/mc_controller
 
-ObserverPipelines:
-  - name: MainPipeline
-    observers:
-      - type: Encoder
-        update: true
-        log: true
-        position: encoderValues
-        # velocity: encoderFiniteDifferences
-        velocity: encoderVelocities
+# REMOVE StatesLibrariesPaths entirely — it's not a valid mc_rtc key
 
-
-#MainRobot: Kinova6DOF
-#Enabled:
-#  - PickPlaceController
-#Timestep: 0.005
-#LogPolicy: threaded
-
-#ControllerModulePaths:
-#  - /home/vscode/workspace/install/pick_and_place/lib/mc_controller
-
-#ObserverPipelines:
-#  - name: MainPipeline
-#    observers:
-#      - type: Encoder
-#        update: true
-#        log: true
-#        position: encoderValues
-#        velocity: encoderFiniteDifferences
-
-#GlobalPlugins:
-#  - RealRobotSensor
-#
-#GlobalPluginPaths:
-#  - /home/vscode/workspace/install/pick_and_place/lib/mc_plugins
+# mc_rtc auto-scans <each ControllerModulePath>/fsm/states/ for built-ins
+# and <ControllerName>/states/ for controller-specific states.
+# No extra config needed if CMake installs to the right place.
+StatesLibraries:
+  #- AdmittanceStates
+  - "/usr/local/lib/mc_controller/fsm/states"
+  - "/home/vscode/workspace/install/admittance_control/lib/mc_controller/KinovaHandGuiding/states"
+StatesFiles:
+  - "/usr/local/lib/mc_controller/fsm/states/data"
+  - "/home/vscode/workspace/install/admittance_control/lib/mc_controller/KinovaHandGuiding/states/data"
