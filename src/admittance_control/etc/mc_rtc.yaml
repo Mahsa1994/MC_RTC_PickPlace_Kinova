@@ -21,3 +21,12 @@ StatesLibraries:
 StatesFiles:
   - "/usr/local/lib/mc_controller/fsm/states/data"
   - "/home/vscode/workspace/install/admittance_control/lib/mc_controller/KinovaHandGuiding/states/data"
+# Overrides the default stance for the kinova_6dof robot module
+kinova_6dof:
+  stance:
+    joint_1: [-0.1188]
+    joint_2: [0.2618]
+    joint_3: [3.13497]
+    joint_4: [-2.269]
+    joint_5: [0.0]
+    joint_6: [0.959879]
