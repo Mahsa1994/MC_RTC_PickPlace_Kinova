@@ -1,5 +1,5 @@
 Name: KinovaHandGuiding
-MainRobot: kinova_6dof
+MainRobot: Kinova6DOF
 
 Timestep: 0.005
 
@@ -16,13 +16,28 @@ ObserverPipelines:
           position: encoderValues
           velocity: encoderVelocities
 
+#constraints:
+#  - type: kinematics
+#    damper: [0.1, 0.01, 0.5]
+##  - type: dynamics
+##   damper: [0.1, 0.01, 0.5]
+#  - type: collision
+#    useMinimal: true
 constraints:
   - type: kinematics
     damper: [0.1, 0.01, 0.5]
-#  - type: dynamics
-#   damper: [0.1, 0.01, 0.5]
-#  - type: collision
-#    useMinimal: true
+  - type: collision
+    collisions:
+      - body1: bracelet_link
+        body2: base_link
+        iDist: 0.05
+        sDist: 0.02
+        damping: 0.0
+      - body1: forearm_link
+        body2: base_link
+        iDist: 0.05
+        sDist: 0.02
+        damping: 0.0
 
 # Consolidated transitions routing through your custom C++ state
 transitions:
