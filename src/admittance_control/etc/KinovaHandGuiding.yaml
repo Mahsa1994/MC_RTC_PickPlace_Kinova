@@ -1,15 +1,7 @@
 Name: KinovaHandGuiding
-MainRobot: kinova_6dof  # CHANGE: must match the robot module name exactly (lowercase, as shown in [success] log output)
+MainRobot: kinova_6dof
 
 Timestep: 0.005
-
-# CHANGE: StatesLibraries should be paths, not library names.
-# mc_rtc resolves these relative to the controller's install prefix.
-# Leave out AdmittanceStates here — it's auto-discovered from
-# lib/mc_controller/KinovaHandGuiding/ (the install path fix from CMake).
-# The built-in states (MetaTask, etc.) are always loaded automatically,
-# so this line can be removed entirely unless you have extra state dirs.
-# StatesLibraries: []   ← just delete the line
 
 Managed: false
 StepByStep: false
@@ -32,10 +24,12 @@ constraints:
   - type: collision
     useMinimal: true
 
+# Consolidated transitions routing through your custom C++ state
 transitions:
-  - [Init,         OK,           HoldPosition, Auto]
-  - [HoldPosition, startGuiding, HandGuide,    Auto]
-  - [HandGuide,    stopGuiding,  HoldPosition, Auto]
+  - [Init,              OK,           HoldPosition,     Auto]
+  - [HoldPosition,      startGuiding, HandGuide,        Auto]
+  - [HandGuide,         stopGuiding,  UpdateHoldTarget, Auto]  # Route through the C++ state to re-seed posture
+  - [UpdateHoldTarget,  OK,           HoldPosition,     Auto]  # Then return to holding position
 
 init: Init
 
@@ -47,9 +41,6 @@ states:
       timeElapsed: true
       timeout: 0.01
 
-  # CHANGE: Add UpdateHoldTarget as a sub-state of HoldPosition so it
-  # re-seeds the PostureTask from encoder values on every entry.
-  # Without this, your UpdateHoldTarget state is compiled but never used.
   HoldPosition:
     base: MetaTasks
     tasks:
@@ -61,11 +52,7 @@ states:
       - Control:
           - [Button, "Start Hand-Guiding", startGuiding]
 
-  # CHANGE: Add the UpdateHoldTarget state so transitions can reach it.
-  # It runs once on entry then immediately outputs "OK" — wire it between
-  # HandGuide and HoldPosition so posture is re-seeded after each guiding session.
-  UpdateHoldTarget:
-    base: UpdateHoldTarget  # references your EXPORT_SINGLE_STATE name
+  # UpdateHoldTarget is removed from here because the C++ state is loaded automatically
 
   HandGuide:
     base: MetaTasks
@@ -91,12 +78,3 @@ states:
     gui:
       - Control:
           - [Button, "Stop Hand-Guiding", stopGuiding]
-
-# CHANGE: Update transitions to route through UpdateHoldTarget
-# so the posture is re-seeded from encoders before holding position.
-# Replace the original transitions block at the top with this:
-transitions:
-  - [Init,              OK,           HoldPosition,     Auto]
-  - [HoldPosition,      startGuiding, HandGuide,        Auto]
-  - [HandGuide,         stopGuiding,  UpdateHoldTarget, Auto]  # ← go re-seed first
-  - [UpdateHoldTarget,  OK,           HoldPosition,     Auto]  # ← then hold
