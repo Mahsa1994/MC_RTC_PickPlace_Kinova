@@ -113,6 +113,18 @@ def generate_launch_description():
         )]
     )
 
+    spawn_jtc = TimerAction(
+        period=11.0,
+        actions=[Node(
+            package='controller_manager',
+            executable='spawner',
+            arguments=['joint_trajectory_controller',
+                       '--controller-manager-timeout', '30'],
+            output='screen'
+        )]
+    )
+
+
     # Reuse the same bridge binary from pick_and_place
     mc_rtc_bridge = TimerAction(
         period=20.0,
@@ -136,6 +148,7 @@ def generate_launch_description():
         gz_bridge,
         unpause,
         spawn_jsb,
+        spawn_jtc,
         # No spawn_jtc — admittance controller doesn't use joint_trajectory_controller
         mc_rtc_bridge,
     ])
