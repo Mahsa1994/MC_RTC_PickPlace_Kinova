@@ -10,7 +10,7 @@
 
   <!-- Removed mc_rtc from here to match your working pick_and_place package -->
   <depend>rclcpp</depend>
-
+  <depend>geometry_msgs</depend>
   <export>
     <build_type>ament_cmake</build_type>
   </export>
