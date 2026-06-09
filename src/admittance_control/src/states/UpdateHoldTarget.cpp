@@ -7,4 +7,4 @@
 #include "UpdateHoldTarget.h"
 #include <mc_control/fsm/State.h>
 
-EXPORT_SINGLE_STATE("UpdateHoldTarget", UpdateHoldTarget)
+EXPORT_SINGLE_STATE("KHG::UpdateHoldTarget", UpdateHoldTarget)
