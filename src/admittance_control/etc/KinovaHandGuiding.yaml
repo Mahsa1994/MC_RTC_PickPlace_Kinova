@@ -43,8 +43,9 @@ constraints:
 transitions:
   - [Init,              OK,           HoldPosition,     Auto]
   - [HoldPosition,      startGuiding, HandGuide,        Auto]
-  - [HandGuide,         stopGuiding,  UpdateHoldTarget, Auto]  # Route through the C++ state to re-seed posture
-  - [UpdateHoldTarget,  OK,           HoldPosition,     Auto]  # Then return to holding position
+  - [HandGuide,         OK,  HandGuide, Auto]  # Route through the C++ state to re-seed posture
+  - [HandGuide,         stopGuiding,  UpdateHoldTarget, Auto]
+  - [UpdateHoldTarget,  OK,           HoldPosition,     Auto]
 
 init: Init
 
@@ -75,7 +76,7 @@ states:
       GravComp:
         type: admittance
 #        surface: Arm
-        surface: tool_frame
+        frame: tool_frame
         forceSensor: EEForceSensor
         admittance: [0.0005, 0.0005, 0.0005, 0.0005, 0.0005, 0.0005]
         stiffness:  [0.0001, 0.0001, 0.0001, 0.0001, 0.0001, 0.0001]
@@ -91,6 +92,7 @@ states:
         type: posture
         stiffness: 1.0
         weight: 1.0
+    RemovePostureTask: false
     gui:
       - Control:
           - [Button, "Stop Hand-Guiding", stopGuiding]
