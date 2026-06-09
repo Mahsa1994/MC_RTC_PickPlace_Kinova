@@ -1,8 +1,6 @@
 Name: KinovaHandGuiding
 MainRobot: Kinova6DOF
-
 Timestep: 0.005
-
 Managed: false
 StepByStep: false
 
@@ -12,17 +10,9 @@ ObserverPipelines:
       - type: Encoder
         update: true
         log: true
-        config:
-          position: encoderValues
-          velocity: encoderVelocities
+        position: encoderValues
+        velocity: encoderVelocities
 
-#constraints:
-#  - type: kinematics
-#    damper: [0.1, 0.01, 0.5]
-##  - type: dynamics
-##   damper: [0.1, 0.01, 0.5]
-#  - type: collision
-#    useMinimal: true
 constraints:
   - type: kinematics
     damper: [0.1, 0.01, 0.5]
@@ -39,13 +29,11 @@ constraints:
         sDist: 0.02
         damping: 0.0
 
-# Consolidated transitions routing through your custom C++ state
 transitions:
-  - [Init,              OK,           HoldPosition,     Auto]
-  - [HoldPosition,      startGuiding, HandGuide,        Auto]
-  - [HandGuide,         OK,  HandGuide, Auto]  # Route through the C++ state to re-seed posture
-  - [HandGuide,         stopGuiding,  UpdateHoldTarget, Auto]
-  - [UpdateHoldTarget,  OK,           HoldPosition,     Auto]
+  - [Init,              OK,           HoldPosition,        Auto]
+  - [HoldPosition,      startGuiding, HandGuide,           Auto]
+  - [HandGuide,         stopGuiding,  UpdateHoldTarget,    Auto]
+  - [UpdateHoldTarget,  OK,           HoldPosition,        Auto]
 
 init: Init
 
@@ -68,31 +56,8 @@ states:
       - Control:
           - [Button, "Start Hand-Guiding", startGuiding]
 
-  # UpdateHoldTarget is removed from here because the C++ state is loaded automatically
-
   HandGuide:
-    base: MetaTasks
-    tasks:
-      GravComp:
-        type: admittance
-#        surface: Arm
-        frame: tool_frame
-        forceSensor: EEForceSensor
-        admittance: [0.0005, 0.0005, 0.0005, 0.0005, 0.0005, 0.0005]
-        stiffness:  [0.0001, 0.0001, 0.0001, 0.0001, 0.0001, 0.0001]
-        damping:    [50.0, 50.0, 50.0, 50.0, 50.0, 50.0]
-        wrench:
-          force:  [0.0, 0.0, 0.0]
-          couple: [0.0, 0.0, 0.0]
-        maxVel:
-          linear:  [0.15, 0.15, 0.15]
-          angular: [0.30, 0.30, 0.30]
-        weight: 1000.0
-      NullspacePosture:
-        type: posture
-        stiffness: 1.0
-        weight: 1.0
-    RemovePostureTask: false
-    gui:
-      - Control:
-          - [Button, "Stop Hand-Guiding", stopGuiding]
+    base: KHG::HandGuideState
+
+  UpdateHoldTarget:
+    base: KHG::UpdateHoldTarget
