@@ -304,7 +304,7 @@
   <gazebo>
     <plugin filename="gz_ros2_control-system"
             name="gz_ros2_control::GazeboSimROS2ControlPlugin">
-      <parameters>/home/vscode/workspace/src/pick_and_place/config/ros2_controllers.yaml</parameters>
+      <parameters>/home/vscode/workspace/src/admittance_control/config/ros2_controllers.yaml</parameters>
     </plugin>
   </gazebo>
 <!-- Force/Torque sensor on wrist joint -->
