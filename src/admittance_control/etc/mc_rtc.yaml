@@ -9,19 +9,13 @@ ControllerModulePaths:
   - /usr/local/lib/mc_controller
   - /home/vscode/workspace/install/admittance_control/lib/mc_controller
 
-# REMOVE StatesLibrariesPaths entirely — it's not a valid mc_rtc key
-
-# mc_rtc auto-scans <each ControllerModulePath>/fsm/states/ for built-ins
-# and <ControllerName>/states/ for controller-specific states.
-# No extra config needed if CMake installs to the right place.
 StatesLibraries:
-  #- AdmittanceStates
   - "/usr/local/lib/mc_controller/fsm/states"
   - "/home/vscode/workspace/install/admittance_control/lib/mc_controller/KinovaHandGuiding/states"
+
 StatesFiles:
   - "/usr/local/lib/mc_controller/fsm/states/data"
-  - "/home/vscode/workspace/install/admittance_control/lib/mc_controller/KinovaHandGuiding/states/data"
-# Overrides the default stance for the kinova_6dof robot module
+
 kinova_6dof:
   stance:
     joint_1: [-0.1188]
