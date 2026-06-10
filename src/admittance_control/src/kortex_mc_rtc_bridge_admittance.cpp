@@ -17,7 +17,7 @@ public:
   KortexMcRtcBridge() : Node("kortex_mc_rtc_bridge")
   {
     pub_ = this->create_publisher<trajectory_msgs::msg::JointTrajectory>(
-        "/joint_trajectory_controller/joint_trajectory", 10);
+        "/joint_trajectory_controller/joint_trajectory", 1);
 
     gc_ = std::make_shared<mc_control::MCGlobalController>();
 
@@ -34,6 +34,7 @@ public:
         [this](const geometry_msgs::msg::WrenchStamped::SharedPtr msg) {
           std::lock_guard<std::mutex> lock(wrench_mutex_);
           latest_wrench_ = msg;
+          last_wrench_time_ = this->now();
         });
 
     mc_rtc::log::info("[KortexBridge] Waiting for first /joint_states...");
@@ -41,17 +42,14 @@ public:
   }
 
 private:
-  std::vector<double> last_published_q_ = std::vector<double>(6, 0.0);
-  int settle_ticks_ = 0;
-  static constexpr int SETTLE_TICKS_MAX = 50;
   std::mutex init_mutex_;
   std::atomic<bool> initialized_{false};
-  std::vector<double> last_alpha_ = std::vector<double>(6, 0.0);
-  double dt_ = 0.01;
 
   rclcpp::Subscription<geometry_msgs::msg::WrenchStamped>::SharedPtr wrench_sub_;
   geometry_msgs::msg::WrenchStamped::SharedPtr latest_wrench_;
   std::mutex wrench_mutex_;
+  rclcpp::Time last_wrench_time_{0, 0, RCL_ROS_TIME};
+  bool wrench_active_ = false;
 
   void jointStateCallback(const sensor_msgs::msg::JointState::SharedPtr msg)
   {
@@ -61,17 +59,13 @@ private:
       std::vector<double> enc_q(ref_order.size(), 0.0);
       std::vector<double> enc_alpha(ref_order.size(), 0.0);
       for (size_t i = 0; i < ref_order.size(); ++i)
-      {
         for (size_t j = 0; j < msg->name.size(); ++j)
-        {
           if (msg->name[j] == ref_order[i])
           {
-            enc_q[i]    = msg->position[j];
+            enc_q[i]     = msg->position[j];
             enc_alpha[i] = msg->velocity[j];
             break;
           }
-        }
-      }
       gc_->setEncoderValues(gc_->robot().name(), enc_q);
       gc_->setEncoderVelocities(gc_->robot().name(), enc_alpha);
       return;
@@ -81,25 +75,18 @@ private:
     if (initialized_) return;
 
     RCLCPP_INFO(this->get_logger(), "Seeding mc_rtc with first real joint states...");
-
     auto ref_order = gc_->robot().refJointOrder();
     std::vector<double> init_q(ref_order.size(), 0.0);
     for (size_t i = 0; i < ref_order.size(); ++i)
-    {
       for (size_t j = 0; j < msg->name.size(); ++j)
-      {
         if (msg->name[j] == ref_order[i])
         {
           init_q[i] = msg->position[j];
           break;
         }
-      }
-    }
 
     gc_->init(init_q);
-    last_published_q_ = init_q;
     gc_->running = true;
-    dt_ = gc_->timestep();
 
     for (size_t i = 0; i < ref_order.size(); ++i)
     {
@@ -117,18 +104,51 @@ private:
   {
     if (!initialized_) return;
 
-    // Feed force sensor into mc_rtc
+    // Check if wrench has gone stale (>100ms without update = no force)
+    bool has_fresh_wrench = false;
     {
       std::lock_guard<std::mutex> lock(wrench_mutex_);
       if (latest_wrench_)
       {
-        std::map<std::string, sva::ForceVecd> wrenches;
-        auto & w = latest_wrench_->wrench;
-        wrenches["EEForceSensor"] = sva::ForceVecd(
-            Eigen::Vector3d(w.torque.x, w.torque.y, w.torque.z),
-            Eigen::Vector3d(w.force.x,  w.force.y,  w.force.z));
-        gc_->setWrenches(wrenches);
+        auto age = (this->now() - last_wrench_time_).seconds();
+        has_fresh_wrench = (age < 0.1);
+
+        if (has_fresh_wrench)
+        {
+          std::map<std::string, sva::ForceVecd> wrenches;
+          auto & w = latest_wrench_->wrench;
+          wrenches["EEForceSensor"] = sva::ForceVecd(
+              Eigen::Vector3d(w.torque.x, w.torque.y, w.torque.z),
+              Eigen::Vector3d(w.force.x,  w.force.y,  w.force.z));
+          gc_->setWrenches(wrenches);
+
+          static int log_count = 0;
+          if(++log_count % 500 == 0)
+            mc_rtc::log::info("[KortexBridge] Wrench fed: force=({},{},{}) torque=({},{},{})",
+              w.force.x, w.force.y, w.force.z,
+              w.torque.x, w.torque.y, w.torque.z);
+        }
+        else
+        {
+          // Stale — zero out the wrench
+          std::map<std::string, sva::ForceVecd> wrenches;
+          wrenches["EEForceSensor"] = sva::ForceVecd(
+              Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
+          gc_->setWrenches(wrenches);
+
+          if (wrench_active_)
+          {
+            mc_rtc::log::info("[KortexBridge] Wrench stopped — sending hold.");
+            wrench_active_ = false;
+          }
+        }
       }
+    }
+
+    if (has_fresh_wrench && !wrench_active_)
+    {
+      mc_rtc::log::info("[KortexBridge] Wrench active.");
+      wrench_active_ = true;
     }
 
     if (gc_->run())
@@ -136,79 +156,21 @@ private:
       trajectory_msgs::msg::JointTrajectory traj;
       traj.joint_names = {"joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"};
 
-      trajectory_msgs::msg::JointTrajectoryPoint pt1;
-      bool intent_to_move = false;
-
+      trajectory_msgs::msg::JointTrajectoryPoint pt;
       for (size_t i = 0; i < traj.joint_names.size(); ++i)
       {
         if (gc_->robot().hasJoint(traj.joint_names[i]))
         {
-          auto mbc_idx = gc_->robot().jointIndexByName(traj.joint_names[i]);
-          double q     = gc_->robot().mbc().q[mbc_idx][0];
-          double alpha = gc_->robot().mbc().alpha[mbc_idx][0];
-          pt1.positions.push_back(q);
-          pt1.velocities.push_back(alpha);
-          last_alpha_[i] = alpha;
-          if (std::abs(q - last_published_q_[i]) > 1e-5 || std::abs(alpha) > 1e-4)
-            intent_to_move = true;
+          auto idx = gc_->robot().jointIndexByName(traj.joint_names[i]);
+          pt.positions.push_back(gc_->robot().mbc().q[idx][0]);
         }
         else
-        {
-          pt1.positions.push_back(0.0);
-          pt1.velocities.push_back(0.0);
-          last_alpha_[i] = 0.0;
-        }
+          pt.positions.push_back(0.0);
+        pt.velocities.push_back(0.0);
       }
-
-      if (intent_to_move) settle_ticks_ = 0;
-      else                settle_ticks_++;
-
-      if (settle_ticks_ == SETTLE_TICKS_MAX)
-      {
-        trajectory_msgs::msg::JointTrajectory hold;
-        hold.joint_names = traj.joint_names;
-        trajectory_msgs::msg::JointTrajectoryPoint hold_pt;
-        hold_pt.positions  = last_published_q_;
-        hold_pt.velocities = std::vector<double>(last_published_q_.size(), 0.0);
-        hold_pt.time_from_start.nanosec = 200'000'000;
-        hold.points.push_back(hold_pt);
-        pub_->publish(hold);
-      }
-
-      if (settle_ticks_ < SETTLE_TICKS_MAX)
-      {
-        pt1.time_from_start.nanosec = 20'000'000;
-        traj.points.push_back(pt1);
-
-        trajectory_msgs::msg::JointTrajectoryPoint pt2;
-        for (size_t i = 0; i < pt1.positions.size(); ++i)
-        {
-          pt2.positions.push_back(pt1.positions[i] + last_alpha_[i] * dt_);
-          pt2.velocities.push_back(last_alpha_[i]);
-        }
-        pt2.time_from_start.nanosec = 40'000'000;
-        traj.points.push_back(pt2);
-
-        double max_alpha = 0.0, max_delta = 0.0;
-        for (size_t i = 0; i < last_alpha_.size(); ++i)
-          max_alpha = std::max(max_alpha, std::abs(last_alpha_[i]));
-        for (size_t i = 0; i < pt1.positions.size(); ++i)
-          max_delta = std::max(max_delta, std::abs(pt1.positions[i] - last_published_q_[i]));
-        const bool genuinely_stopping = (max_alpha < 0.002 && max_delta < 0.0005);
-
-        trajectory_msgs::msg::JointTrajectoryPoint pt3;
-        for (size_t i = 0; i < pt2.positions.size(); ++i)
-        {
-          double step = (max_delta > 0.0005 && !genuinely_stopping) ? last_alpha_[i] * dt_ : 0.0;
-          pt3.positions.push_back(pt2.positions[i] + step);
-          pt3.velocities.push_back(0.0);
-        }
-        pt3.time_from_start.nanosec = 60'000'000;
-        traj.points.push_back(pt3);
-
-        pub_->publish(traj);
-        last_published_q_ = pt1.positions;
-      }
+      pt.time_from_start.nanosec = 20'000'000; // 20ms
+      traj.points.push_back(pt);
+      pub_->publish(traj);
     }
   }
 
