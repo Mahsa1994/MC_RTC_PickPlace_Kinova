@@ -30,10 +30,10 @@ constraints:
         damping: 0.0
 
 transitions:
-  - [Init,              OK,           HoldPosition,        Auto]
-  - [HoldPosition,      startGuiding, HandGuide,           Auto]
-  - [HandGuide,         stopGuiding,  UpdateHoldTarget,    Auto]
-  - [UpdateHoldTarget,  OK,           HoldPosition,        Auto]
+  - [Init,              OK,             HoldPosition,     Auto]
+  - [HoldPosition,      startGuiding,   HandGuide,        Auto]
+  - [HandGuide,         stopGuiding,    UpdateHoldTarget, Auto]
+  - [UpdateHoldTarget,  OK,             HoldPosition,     Auto]
 
 init: Init
 
@@ -46,15 +46,7 @@ states:
       timeout: 0.01
 
   HoldPosition:
-    base: MetaTasks
-    tasks:
-      HoldPosture:
-        type: posture
-        stiffness: 10.0
-        weight: 100.0
-    gui:
-      - Control:
-          - [Button, "Start Hand-Guiding", startGuiding]
+    base: KHG::HoldPositionState
 
   HandGuide:
     base: KHG::HandGuideState

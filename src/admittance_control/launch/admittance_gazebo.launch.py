@@ -1,6 +1,7 @@
 from launch import LaunchDescription
-from launch.actions import ExecuteProcess, SetEnvironmentVariable, TimerAction
+from launch.actions import ExecuteProcess, SetEnvironmentVariable, TimerAction, RegisterEventHandler
 from launch_ros.actions import Node
+from launch.event_handlers import OnShutdown
 import os
 from ament_index_python.packages import get_package_share_directory
 
@@ -17,7 +18,7 @@ set_gz_resource = SetEnvironmentVariable(
 
 def generate_launch_description():
     # Reuse pick_and_place's URDF and world — same robot
-    urdf_file  = '/home/vscode/workspace/src/pick_and_place/urdf/kinova_6dof_sim.urdf'
+    urdf_file  = '/home/vscode/workspace/src/admittance_control/urdf/kinova_6dof_sim.urdf'
     world_file = os.path.join(
         get_package_share_directory('pick_and_place'), 'worlds', 'pick_place.world'
     )
@@ -138,6 +139,26 @@ def generate_launch_description():
         ]
     )
 
+    shutdown_cleanup = RegisterEventHandler(
+        OnShutdown(
+            on_shutdown=[
+                ExecuteProcess(
+                    cmd=[
+                        'bash', '-c',
+                        '''
+                        pkill -f "gz sim" 2>/dev/null || true
+                        pkill -f ros_gz_bridge 2>/dev/null || true
+                        pkill -f robot_state_publisher 2>/dev/null || true
+                        pkill -f kortex_mc_rtc_bridge_admittance 2>/dev/null || true
+                        pkill -f controller_manager 2>/dev/null || true
+                        '''
+                    ],
+                    output='screen'
+                )
+            ]
+        )
+    )
+
     return LaunchDescription([
         cleanup,
         set_gz_plugin_path,
@@ -151,4 +172,5 @@ def generate_launch_description():
         spawn_jtc,
         # No spawn_jtc — admittance controller doesn't use joint_trajectory_controller
         mc_rtc_bridge,
+        shutdown_cleanup,
     ])
