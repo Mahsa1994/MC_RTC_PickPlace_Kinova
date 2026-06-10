@@ -21,8 +21,8 @@ struct HandGuideState : mc_control::fsm::State
     admTask_->damping(50.0);
     admTask_->weight(1000.0);
 
-    admTask_->maxLinearVel(Eigen::Vector3d(0.15, 0.15, 0.15));
-    admTask_->maxAngularVel(Eigen::Vector3d(0.30, 0.30, 0.30));
+    admTask_->maxLinearVel(Eigen::Vector3d(0.05, 0.05, 0.05));
+    admTask_->maxAngularVel(Eigen::Vector3d(0.10, 0.10, 0.10));
 
     ctl.solver().addTask(admTask_);
 

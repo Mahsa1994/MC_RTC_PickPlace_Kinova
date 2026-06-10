@@ -79,3 +79,17 @@ install(DIRECTORY launch
 )
 
 ament_package()
+
+add_library(KHG_HoldPositionState SHARED
+  src/states/HoldPositionState.cpp
+)
+target_compile_definitions(KHG_HoldPositionState PRIVATE MC_RTC_SHARED)
+target_link_libraries(KHG_HoldPositionState
+  mc_rtc::mc_control
+  mc_rtc::mc_control_fsm
+)
+ament_target_dependencies(KHG_HoldPositionState rclcpp)
+
+install(TARGETS KHG_HoldPositionState
+  LIBRARY DESTINATION lib/mc_controller/KinovaHandGuiding/states
+)
