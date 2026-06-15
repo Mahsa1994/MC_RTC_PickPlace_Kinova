@@ -17,8 +17,7 @@ set_gz_resource = SetEnvironmentVariable(
 )
 
 def generate_launch_description():
-    # Reuse pick_and_place's URDF and world — same robot
-    urdf_file  = '/home/vscode/workspace/src/admittance_control/urdf/kinova_6dof_sim.urdf'
+    urdf_file  = '/home/vscode/workspace/src/impedance_control/urdf/kinova_6dof_sim.urdf'
     world_file = os.path.join(
         get_package_share_directory('pick_and_place'), 'worlds', 'pick_place.world'
     )
@@ -58,8 +57,10 @@ def generate_launch_description():
         output='screen'
     )
 
-    # Admittance only needs joint_state + clock + FORCE SENSOR bridged
-    # No joint_trajectory topic needed
+    # Impedance: wrench is estimated internally via Jacobian transpose —
+    # no force/torque sensor topic needed. Only bridge joint states + clock
+    # + joint trajectory commands (needed because impedance outputs positions
+    # to joint_trajectory_controller, same as admittance).
     gz_bridge = TimerAction(
         period=4.0,
         actions=[
@@ -69,22 +70,21 @@ def generate_launch_description():
                 name='gz_bridge',
                 parameters=[{'use_sim_time': True}],
                 arguments=[
-                    # Joint states
+                    # Joint states (carries position, velocity AND effort — all three
+                    # are used by the bridge for Jacobian-based wrench estimation)
                     '/world/pick_place_world/model/robot/joint_state'
                     '@sensor_msgs/msg/JointState'
                     '[gz.msgs.Model',
                     # Clock
                     '/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock',
-                    # *** Force/torque sensor — critical for admittance ***
-                    '/world/pick_place_world/model/robot/link/bracelet_link/sensor/EEForceSensor/forcetorque'
-                    '@geometry_msgs/msg/WrenchStamped'
-                    '[gz.msgs.Wrench',
-#                    '/EEForceSensor@geometry_msgs/msg/WrenchStamped[gz.msgs.Wrench',
+                    # Joint trajectory commands (impedance outputs position commands)
+                    '/joint_trajectory_controller/joint_trajectory'
+                    '@trajectory_msgs/msg/JointTrajectory'
+                    ']gz.msgs.JointTrajectory',
+                    # /EEForceSensor bridge removed �wrench is now estimated from joint efforts via Jacobian transpose in the bridge node, not read from a Gazebo sensor topic.
                 ],
                 remappings=[
                     ('/world/pick_place_world/model/robot/joint_state', '/joint_states'),
-                    ('/world/pick_place_world/model/robot/link/bracelet_link/sensor/EEForceSensor/forcetorque',
-                     '/EEForceSensor'),
                 ],
                 output='screen'
             )
@@ -114,6 +114,7 @@ def generate_launch_description():
         )]
     )
 
+    # Impedance outputs position commands → joint_trajectory_controller must be active
     spawn_jtc = TimerAction(
         period=11.0,
         actions=[Node(
@@ -125,14 +126,12 @@ def generate_launch_description():
         )]
     )
 
-
-    # Reuse the same bridge binary from pick_and_place
     mc_rtc_bridge = TimerAction(
         period=20.0,
         actions=[
             Node(
-                package='admittance_control',       # ← same package, same binary
-                executable='kortex_mc_rtc_bridge_admittance',
+                package='impedance_control',
+                executable='kortex_mc_rtc_bridge_impedance',
                 output='screen',
                 parameters=[{'use_sim_time': True}]
             )
@@ -149,7 +148,7 @@ def generate_launch_description():
                         pkill -f "gz sim" 2>/dev/null || true
                         pkill -f ros_gz_bridge 2>/dev/null || true
                         pkill -f robot_state_publisher 2>/dev/null || true
-                        pkill -f kortex_mc_rtc_bridge_admittance 2>/dev/null || true
+                        pkill -f kortex_mc_rtc_bridge_impedance 2>/dev/null || true
                         pkill -f controller_manager 2>/dev/null || true
                         '''
                     ],
@@ -170,7 +169,6 @@ def generate_launch_description():
         unpause,
         spawn_jsb,
         spawn_jtc,
-        # No spawn_jtc — admittance controller doesn't use joint_trajectory_controller
         mc_rtc_bridge,
         shutdown_cleanup,
     ])

@@ -14,8 +14,8 @@ def generate_launch_description():
     )
 
     mc_rtc_bridge = Node(
-        package='admittance_control',
-        executable='kortex_mc_rtc_bridge_admittance',
+        package='impedance_control',
+        executable='kortex_mc_rtc_bridge_impedance',
         output='screen'
     )
 
