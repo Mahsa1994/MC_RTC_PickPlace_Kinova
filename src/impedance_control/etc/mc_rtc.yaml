@@ -1,5 +1,5 @@
 MainRobot: Kinova6DOF
-Enabled: KinovaHandGuiding
+Enabled: KinovaImpedance
 Timestep: 0.005
 
 Plugins:
@@ -7,20 +7,15 @@ Plugins:
 
 ControllerModulePaths:
   - /usr/local/lib/mc_controller
-  - /home/vscode/workspace/install/admittance_control/lib/mc_controller
+  - /home/vscode/workspace/install/impedance_control/lib/mc_controller
 
+# REMOVE StatesLibrariesPaths entirely — it's not a valid mc_rtc key
+
+# mc_rtc auto-scans <each ControllerModulePath>/fsm/states/ for built-ins
+# and <ControllerName>/states/ for controller-specific states.
+# No extra config needed if CMake installs to the right place.
 StatesLibraries:
+  #- AdmittanceStates
   - "/usr/local/lib/mc_controller/fsm/states"
-  - "/home/vscode/workspace/install/admittance_control/lib/mc_controller/KinovaHandGuiding/states"
-
 StatesFiles:
   - "/usr/local/lib/mc_controller/fsm/states/data"
-
-kinova_6dof:
-  stance:
-    joint_1: [-0.1188]
-    joint_2: [0.2618]
-    joint_3: [3.13497]
-    joint_4: [-2.269]
-    joint_5: [0.0]
-    joint_6: [0.959879]
