@@ -13,7 +13,6 @@ ObserverPipelines:
         position: encoderValues
         velocity: encoderVelocities
 
-# ImpedanceTask internally computes joint torques, so switch to dynamics constraint
 constraints:
   - type: dynamics
     damper: [0.1, 0.01, 0.5]
@@ -44,27 +43,10 @@ states:
       timeout: 0.01
 
   ImpedanceHold:
-    base: MetaTasks
-    tasks:
-      impedance_ee:
-        type: impedance
-        frame: bracelet_link   # <-- your EE frame name (check your URDF)
-        weight: 1000
-        stiffness: 5
-        # target: set at runtime in C++ using targetPose(), or set a fixed world pose here
-        wrench:
-          couple: [0.0, 0.0, 0.0]
-          force:  [0.0, 0.0, 0.0]   # desired external force = 0 (free space)
-        gains:
-          spring:                    # K — stiffness that pulls back to path
-            angular: [10.0, 10.0, 10.0]
-            linear:  [200.0, 200.0, 200.0]
-          damper:                    # D — damps oscillations
-            angular: [6.32, 6.32, 6.32]
-            linear:  [28.28, 28.28, 28.28]
-          mass:                      # M — virtual inertia (tune last)
-            angular: [1.0, 1.0, 1.0]
-            linear:  [1.0, 1.0, 1.0]
-          wrench:                    # gain on wrench error (0 = pure position tracking)
-            angular: [1.0, 1.0, 1.0]
-            linear:  [1.0, 1.0, 1.0]
+    base: KI::ImpedanceHoldState
+    # Impedance gains [angular(3), linear(3)] — tune here without recompiling
+    K: [10.0, 10.0, 10.0, 200.0, 200.0, 200.0]   # stiffness: pulls back to path
+    D: [6.32, 6.32, 6.32, 28.28, 28.28, 28.28]   # damping: D = 2*sqrt(K*M)
+    M: [1.0,  1.0,  1.0,  1.0,   1.0,   1.0  ]   # virtual mass: tune last
+    task_stiffness: 200.0
+    task_weight: 1000.0
