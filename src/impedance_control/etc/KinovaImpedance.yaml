@@ -14,7 +14,8 @@ ObserverPipelines:
         velocity: encoderVelocities
 
 constraints:
-  - type: dynamics
+#  - type: dynamics
+  - type: kinematics
     damper: [0.1, 0.01, 0.5]
   - type: collision
     collisions:
