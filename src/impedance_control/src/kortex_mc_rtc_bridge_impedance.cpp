@@ -20,7 +20,7 @@ using namespace std::chrono_literals;
 class KortexMcRtcBridge : public rclcpp::Node
 {
 public:
-  KortexMcRtcBridge() : Node("kortex_mc_rtc_bridge")
+  KortexMcRtcBridge() : Node("kortex_mc_rtc_bridge_impedance")
   {
     pub_ = this->create_publisher<trajectory_msgs::msg::JointTrajectory>(
         "/joint_trajectory_controller/joint_trajectory", 1);
@@ -35,7 +35,6 @@ public:
         "/joint_states", qos,
         std::bind(&KortexMcRtcBridge::jointStateCallback, this, std::placeholders::_1));
 
-    // Initialize effort tracking
     auto ref_order = gc_->robot().refJointOrder();
     latest_efforts_.resize(ref_order.size(), 0.0);
 
@@ -47,9 +46,26 @@ private:
   std::mutex init_mutex_;
   std::atomic<bool> initialized_{false};
 
-  // Effort (torque) storage
   std::vector<double> latest_efforts_;
   std::mutex effort_mutex_;
+
+  // ── Helper: build a map from joint name → DOF start index in the nrDof vector
+  // RBDyn does not expose jointVelocityIndex(); we reconstruct it by walking
+  // the joint list and accumulating DOF counts.
+  std::map<std::string, int> buildJointDofMap(const rbd::MultiBody & mb)
+  {
+    std::map<std::string, int> dof_map;
+    int dof_offset = 0;
+    for (int i = 0; i < mb.nrJoints(); ++i)
+    {
+      const auto & j = mb.joint(i);
+      // Only record joints with DOFs (skip fixed/root anchor joints)
+      if (j.dof() > 0)
+        dof_map[j.name()] = dof_offset;
+      dof_offset += j.dof();
+    }
+    return dof_map;
+  }
 
   void jointStateCallback(const sensor_msgs::msg::JointState::SharedPtr msg)
   {
@@ -61,18 +77,14 @@ private:
       std::vector<double> enc_tau(ref_order.size(), 0.0);
 
       for (size_t i = 0; i < ref_order.size(); ++i)
-      {
         for (size_t j = 0; j < msg->name.size(); ++j)
-        {
           if (msg->name[j] == ref_order[i])
           {
             enc_q[i]     = msg->position[j];
             enc_alpha[i] = msg->velocity[j];
-            enc_tau[i]   = msg->effort[j];
+            enc_tau[i]   = (j < msg->effort.size()) ? msg->effort[j] : 0.0;
             break;
           }
-        }
-      }
 
       gc_->setEncoderValues(gc_->robot().name(), enc_q);
       gc_->setEncoderVelocities(gc_->robot().name(), enc_alpha);
@@ -92,16 +104,12 @@ private:
     auto ref_order = gc_->robot().refJointOrder();
     std::vector<double> init_q(ref_order.size(), 0.0);
     for (size_t i = 0; i < ref_order.size(); ++i)
-    {
       for (size_t j = 0; j < msg->name.size(); ++j)
-      {
         if (msg->name[j] == ref_order[i])
         {
           init_q[i] = msg->position[j];
           break;
         }
-      }
-    }
 
     gc_->init(init_q);
     gc_->running = true;
@@ -123,102 +131,90 @@ private:
     if (!initialized_) return;
 
     const auto & robot = gc_->robot();
+    const auto & mb    = robot.mb();
 
-    // 1. Construct measured torque vector aligned with MultiBody DOFs
-    Eigen::VectorXd tau_meas = Eigen::VectorXd::Zero(robot.mb().nrDof());
+    // ── Build joint-name → DOF-index map (replaces missing jointVelocityIndex)
+    auto dof_map = buildJointDofMap(mb);
+
+    // ── 1. Map measured joint torques → full nrDof vector
+    Eigen::VectorXd tau_meas = Eigen::VectorXd::Zero(mb.nrDof());
     {
       std::lock_guard<std::mutex> lock(effort_mutex_);
       auto ref_order = robot.refJointOrder();
       for (size_t i = 0; i < ref_order.size(); ++i)
       {
-        if (robot.hasJoint(ref_order[i]))
-        {
-          auto joint_idx = robot.jointIndexByName(ref_order[i]);
-          auto dof_idx = robot.mb().jointVelocityIndex(joint_idx);
-          if (dof_idx >= 0 && dof_idx < tau_meas.size())
-          {
-            tau_meas[dof_idx] = latest_efforts_[i];
-          }
-        }
+        auto it = dof_map.find(ref_order[i]);
+        if (it != dof_map.end() && i < latest_efforts_.size())
+          tau_meas[it->second] = latest_efforts_[i];
       }
     }
 
-    // 2. Compute bias torques (gravity + Coriolis) using Inverse Dynamics
-    // Create a copy of mbc where joint accelerations (alphaD) are set to zero
+    // ── 2. Inverse dynamics to get gravity + Coriolis bias torques
     rbd::MultiBodyConfig mbc_id = robot.mbc();
+    mbc_id.gravity = Eigen::Vector3d(0, 0, 9.81); // must be set — zeroed by default
     for (auto & ad : mbc_id.alphaD)
+      std::fill(ad.begin(), ad.end(), 0.0);        // zero acceleration → pure bias
+
+    rbd::InverseDynamics id(mb);
+    id.inverseDynamics(mb, mbc_id);
+
+    // ── 3. Extract bias torques into nrDof vector
+    Eigen::VectorXd tau_bias = Eigen::VectorXd::Zero(mb.nrDof());
+    for (int i = 0; i < mb.nrJoints(); ++i)
     {
-      std::fill(ad.begin(), ad.end(), 0.0);
-    }
-    
-    rbd::InverseDynamics id(robot.mb());
-    rbd::MultiBodyConfig mbc_id = robot.mbc();
-    mbc_id.gravity = Eigen::Vector3d(0, 0, 9.81); // <-- add this line
-    for (auto & ad : mbc_id.alphaD)
-       std::fill(ad.begin(), ad.end(), 0.0);
-    id.inverseDynamics(robot.mb(), mbc_id);
-    
-    // Extract tau_bias from mbc_id.jointTorque
-    Eigen::VectorXd tau_bias = Eigen::VectorXd::Zero(robot.mb().nrDof());
-    for (int i = 0; i < robot.mb().nrJoints(); ++i)
-    {
-      auto dof_idx = robot.mb().jointVelocityIndex(i);
-      if (dof_idx >= 0 && dof_idx < tau_bias.size())
-      {
-        if (!mbc_id.jointTorque[i].empty())
-        {
-          tau_bias[dof_idx] = mbc_id.jointTorque[i][0];
-        }
-      }
+      auto it = dof_map.find(mb.joint(i).name());
+      if (it != dof_map.end() && !mbc_id.jointTorque[i].empty())
+        tau_bias[it->second] = mbc_id.jointTorque[i][0];
     }
 
-    // 3. Compute Jacobian of the end-effector "bracelet_link"
-    rbd::Jacobian jac(robot.mb(), "bracelet_link");
-    Eigen::MatrixXd J_body = jac.jacobian(robot.mb(), robot.mbc());
-    
-    // 4. Solve J_body^T * F_ext = tau_bias - tau_meas
-    // Using completeOrthogonalDecomposition is safe near singular configurations
-    Eigen::MatrixXd JT = J_body.transpose();
-    Eigen::VectorXd tau_ext = tau_bias - tau_meas;
-    Eigen::VectorXd F_est_vec = JT.completeOrthogonalDecomposition().solve(tau_ext);
+    // ── 4. Jacobian of end-effector frame
+    rbd::Jacobian jac(mb, "bracelet_link");
+    Eigen::MatrixXd J = jac.jacobian(mb, robot.mbc()); // 6 × nrDof
 
-    // 5. Inject estimated wrench into mc_rtc under the "EEForceSensor" name
+    // ── 5. Solve  Jᵀ · F_ext = tau_meas - tau_bias
+    //    (external torque = measured − gravity/Coriolis bias)
+    Eigen::VectorXd tau_ext = tau_meas - tau_bias;
+    // completeOrthogonalDecomposition handles the redundancy of a 6-DOF arm gracefully
+    Eigen::VectorXd F_est = J.transpose()
+                              .completeOrthogonalDecomposition()
+                              .solve(tau_ext); // → [moment(3); force(3)]
+
+    // ── 6. Inject estimated wrench into mc_rtc
+    // sva::ForceVecd layout: (couple/moment, force)
     std::map<std::string, sva::ForceVecd> wrenches;
     wrenches["EEForceSensor"] = sva::ForceVecd(
-        Eigen::Vector3d(F_est_vec[0], F_est_vec[1], F_est_vec[2]), // estimated torque
-        Eigen::Vector3d(F_est_vec[3], F_est_vec[4], F_est_vec[5])  // estimated force
+        Eigen::Vector3d(F_est[0], F_est[1], F_est[2]),  // moment (Nm)
+        Eigen::Vector3d(F_est[3], F_est[4], F_est[5])   // force  (N)
     );
     gc_->setWrenches(wrenches);
 
     static int log_count = 0;
     if (++log_count % 500 == 0)
-    {
-      mc_rtc::log::info("[KortexBridge] Est. Wrench: force=({},{},{}) torque=({},{},{})",
-                        F_est_vec[3], F_est_vec[4], F_est_vec[5],
-                        F_est_vec[0], F_est_vec[1], F_est_vec[2]);
-    }
+      mc_rtc::log::info(
+          "[KortexBridge] Est. wrench — force: ({:.2f}, {:.2f}, {:.2f}) N  "
+          "moment: ({:.2f}, {:.2f}, {:.2f}) Nm",
+          F_est[3], F_est[4], F_est[5],
+          F_est[0], F_est[1], F_est[2]);
 
-    // 6. Run the controller step
+    // ── 7. Run controller and publish joint trajectory
     if (gc_->run())
     {
       trajectory_msgs::msg::JointTrajectory traj;
       traj.joint_names = {"joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"};
 
       trajectory_msgs::msg::JointTrajectoryPoint pt;
-      for (size_t i = 0; i < traj.joint_names.size(); ++i)
+      for (const auto & name : traj.joint_names)
       {
-        if (gc_->robot().hasJoint(traj.joint_names[i]))
+        if (gc_->robot().hasJoint(name))
         {
-          auto idx = gc_->robot().jointIndexByName(traj.joint_names[i]);
+          auto idx = gc_->robot().jointIndexByName(name);
           pt.positions.push_back(gc_->robot().mbc().q[idx][0]);
         }
         else
-        {
           pt.positions.push_back(0.0);
-        }
         pt.velocities.push_back(0.0);
       }
-      pt.time_from_start.nanosec = 20'000'000; // 20ms
+      pt.time_from_start.nanosec = 20'000'000; // 20 ms
       traj.points.push_back(pt);
       pub_->publish(traj);
     }
