@@ -1,27 +1,39 @@
 cmake_minimum_required(VERSION 3.10)
 cmake_policy(SET CMP0167 NEW)
-project(admittance_control VERSION 1.0.0)
+
+project(impedance_control VERSION 1.0.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# -----------------------------
+# Dependencies (merged)
+# -----------------------------
 find_package(ament_cmake REQUIRED)
 find_package(mc_rtc REQUIRED)
+
 find_package(rclcpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(trajectory_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 
-# 1. Bridge executable
-add_executable(kortex_mc_rtc_bridge_admittance
-  src/kortex_mc_rtc_bridge_admittance.cpp
+find_package(RBDyn REQUIRED)
+
+# -----------------------------
+# Impedance Controller
+# -----------------------------
+add_executable(kortex_mc_rtc_bridge_impedance
+  src/kortex_mc_rtc_bridge_impedance.cpp
 )
-target_link_libraries(kortex_mc_rtc_bridge_admittance
+
+target_link_libraries(kortex_mc_rtc_bridge_impedance
   mc_rtc::mc_control
   mc_rtc::mc_rtc_utils
+  RBDyn::RBDyn
 )
-ament_target_dependencies(kortex_mc_rtc_bridge_admittance
+
+ament_target_dependencies(kortex_mc_rtc_bridge_impedance
   rclcpp
   sensor_msgs
   trajectory_msgs
@@ -29,67 +41,40 @@ ament_target_dependencies(kortex_mc_rtc_bridge_admittance
   std_msgs
 )
 
-# 2. Controller library
-add_library(KinovaHandGuiding SHARED
-  src/KinovaHandGuiding.cpp
+add_library(KinovaImpedance SHARED
+  src/KinovaImpedance.cpp
 )
-target_compile_definitions(KinovaHandGuiding PRIVATE MC_RTC_SHARED)
-target_link_libraries(KinovaHandGuiding
+
+target_compile_definitions(KinovaImpedance PRIVATE MC_RTC_SHARED)
+
+target_link_libraries(KinovaImpedance
   mc_rtc::mc_control
   mc_rtc::mc_control_fsm
 )
-ament_target_dependencies(KinovaHandGuiding rclcpp)
 
-# 3. States — prefixed library names to avoid clashing with state names
-add_library(KHG_UpdateHoldTarget SHARED
-  src/states/UpdateHoldTarget.cpp
-)
-target_compile_definitions(KHG_UpdateHoldTarget PRIVATE MC_RTC_SHARED)
-target_link_libraries(KHG_UpdateHoldTarget
-  mc_rtc::mc_control
-  mc_rtc::mc_control_fsm
-)
-ament_target_dependencies(KHG_UpdateHoldTarget rclcpp)
+ament_target_dependencies(KinovaImpedance rclcpp)
 
-add_library(KHG_HandGuideState SHARED
-  src/states/HandGuideState.cpp
-)
-target_compile_definitions(KHG_HandGuideState PRIVATE MC_RTC_SHARED)
-target_link_libraries(KHG_HandGuideState
-  mc_rtc::mc_control
-  mc_rtc::mc_control_fsm
-)
-ament_target_dependencies(KHG_HandGuideState rclcpp)
-
-# 4. Install
-install(TARGETS kortex_mc_rtc_bridge_admittance
+# -----------------------------
+# Install rules (merged)
+# -----------------------------
+install(TARGETS
+  kortex_mc_rtc_bridge_impedance
+  KinovaImpedance
   DESTINATION lib/${PROJECT_NAME}
 )
-install(TARGETS KinovaHandGuiding
+
+install(TARGETS
+  KinovaImpedance
   LIBRARY DESTINATION lib/mc_controller
 )
-install(TARGETS KHG_UpdateHoldTarget KHG_HandGuideState
-  LIBRARY DESTINATION lib/mc_controller/KinovaHandGuiding/states
-)
-install(FILES etc/KinovaHandGuiding.yaml
+
+install(FILES
+  etc/KinovaImpedance.yaml
   DESTINATION lib/mc_controller/etc
 )
+
 install(DIRECTORY launch
   DESTINATION share/${PROJECT_NAME}
 )
 
 ament_package()
-
-add_library(KHG_HoldPositionState SHARED
-  src/states/HoldPositionState.cpp
-)
-target_compile_definitions(KHG_HoldPositionState PRIVATE MC_RTC_SHARED)
-target_link_libraries(KHG_HoldPositionState
-  mc_rtc::mc_control
-  mc_rtc::mc_control_fsm
-)
-ament_target_dependencies(KHG_HoldPositionState rclcpp)
-
-install(TARGETS KHG_HoldPositionState
-  LIBRARY DESTINATION lib/mc_controller/KinovaHandGuiding/states
-)
