@@ -2,122 +2,69 @@
 #include <mc_control/fsm/Controller.h>
 #include <mc_rtc/logging.h>
 
-// ── Configuration ─────────────────────────────────────────────────────────────
 void ImpedanceHoldState::configure(const mc_rtc::Configuration & config)
 {
-  // Allow gains to be overridden from KinovaImpedance.yaml, e.g.:
-  //   ImpedanceHold:
-  //     base: KI::ImpedanceHoldState
-  //     K: [10, 10, 10, 300, 300, 300]
-  if (config.has("K")) { auto v = config("K"); K_ << v[0],v[1],v[2],v[3],v[4],v[5]; }
-  if (config.has("D")) { auto v = config("D"); D_ << v[0],v[1],v[2],v[3],v[4],v[5]; }
-  if (config.has("M")) { auto v = config("M"); M_ << v[0],v[1],v[2],v[3],v[4],v[5]; }
-  if (config.has("task_stiffness")) task_stiffness_ = config("task_stiffness");
-  if (config.has("task_weight"))    task_weight_    = config("task_weight");
+  if (config.has("stiffness"))     task_stiffness_ = config("stiffness");
+  if (config.has("damping"))       task_damping_   = config("damping");
+  if (config.has("weight"))        task_weight_    = config("weight");
 }
 
-// ── Start ─────────────────────────────────────────────────────────────────────
 void ImpedanceHoldState::start(mc_control::fsm::Controller & ctl)
 {
-  dt_  = ctl.timeStep;
-  vel_ = Eigen::Vector6d::Zero();
+  dt_ = ctl.timeStep;
 
-  // Capture current EE pose as the impedance reference
+  // Capture current EE pose as the hold target (the "path point")
   X_0_target_ = ctl.robot().frame("bracelet_link").position();
 
-  // TransformTask tracks a 6-DOF pose — no force sensor needed
+  // TransformTask with LOW stiffness = compliant behavior:
+  // - When pushed: arm yields because task force < external force
+  // - When released: task pulls arm back to X_0_target_ (the path)
+  // - Damping prevents oscillation on return
+  //
+  // Compliance law implicit in QP:  F_task = stiffness * x_err + damping * vel_err
+  // The arm yields when F_ext > F_task, returns when F_ext = 0
   task_ = std::make_shared<mc_tasks::TransformTask>(
       ctl.robot().frame("bracelet_link"),
       task_stiffness_,
       task_weight_);
+
+  // Set per-axis stiffness and damping explicitly
+  // [angular stiffness(3), linear stiffness(3)]
+  task_->stiffness(task_stiffness_);
+  task_->damping(task_damping_);
   task_->target(X_0_target_);
+
   ctl.solver().addTask(task_);
 
-  mc_rtc::log::success("[ImpedanceHoldState] Holding at current EE pose");
-  mc_rtc::log::info("[ImpedanceHoldState] K=[{},{},{},{},{},{}]  D=[{},{},{},{},{},{}]  M=[{},{},{},{},{},{}]",
-    K_[0],K_[1],K_[2],K_[3],K_[4],K_[5],
-    D_[0],D_[1],D_[2],D_[3],D_[4],D_[5],
-    M_[0],M_[1],M_[2],M_[3],M_[4],M_[5]);
+  mc_rtc::log::success("[ImpedanceHoldState] Compliant hold active");
+  mc_rtc::log::info("[ImpedanceHoldState] stiffness={} damping={} weight={}",
+    task_stiffness_, task_damping_, task_weight_);
 }
 
-// ── Run (called every control cycle) ─────────────────────────────────────────
 bool ImpedanceHoldState::run(mc_control::fsm::Controller & ctl)
 {
-  // ── 1. Read estimated wrench from the bridge
-  // The bridge calls gc_->setWrenches({"EEForceSensor": wrench}) each cycle.
-  // mc_rtc stores this in the robot's wrench map regardless of whether a
-  // formal ForceSensor is registered — access via robot().data()->wrenches.
-  // We use a try/catch so the state degrades to pure position hold if the
-  // wrench isn't available yet (first few cycles).
-  F_ext_ = sva::ForceVecd::Zero();
-  try
-  {
-    // robot().forceSensor() throws if sensor not in module — use controller
-    // wrenches map instead, which is populated by setWrenches() unconditionally
-    const auto & wrenches = ctl.robot().forceSensors();
-    for (const auto & fs : wrenches)
-    {
-      if (fs.name() == "EEForceSensor")
-      {
-        F_ext_ = fs.wrench();
-        break;
-      }
-    }
-  }
-  catch (...) {}
+  // The QP solver handles compliance implicitly — no wrench estimation needed.
+  // task_->target() stays fixed at X_0_target_ (the path reference).
+  // The arm naturally:
+  //   1. Yields when pushed (external force > task restoring force)
+  //   2. Returns to X_0_target_ when released (task dominates again)
+  //   3. Damping prevents overshoot on return
 
-  // ── 2. Impedance law: M·ẍ + D·ẋ + K·x_err = F_ext
-  // x_err = deviation of the integrated target from the original hold pose
-  // (we integrate onto X_0_target_ directly, so x_err is always 0 here —
-  //  instead we treat the hold pose as a spring anchor and let the target drift)
-
-  // Current actual EE pose
-  const sva::PTransformd X_0_actual = ctl.robot().frame("bracelet_link").position();
-
-  // Error: from anchor (original hold) to current integrated target
-  // Angular: rotation error as a 3-vector
-  Eigen::Vector3d ang_err = sva::rotationError(
-      X_0_target_.rotation(), X_0_actual.rotation());
-  Eigen::Vector3d lin_err = X_0_actual.translation() - X_0_target_.translation();
-
-  Eigen::Vector6d x_err;
-  x_err << ang_err, lin_err;
-
-  // Impedance ODE integrated with Euler:
-  //   acc = (F_ext - D*vel - K*x_err) / M
-  //   vel += acc * dt
-  Eigen::Vector6d acc = (F_ext_.vector() - D_.cwiseProduct(vel_) - K_.cwiseProduct(x_err))
-                        .cwiseQuotient(M_);
-  vel_ += acc * dt_;
-
-  // ── 3. Integrate velocity onto the target pose
-  Eigen::Vector3d dang = vel_.head<3>() * dt_;
-  Eigen::Vector3d dlin = vel_.tail<3>() * dt_;
-
-  // Build incremental transform: small rotation + translation
-  sva::PTransformd delta(
-      sva::RotX(dang.x()) * sva::RotY(dang.y()) * sva::RotZ(dang.z()),
-      dlin);
-  X_0_target_ = delta * X_0_target_;
-  task_->target(X_0_target_);
-
-  // ── 4. Periodic logging
+  // Periodic logging of tracking error
   static int log_count = 0;
-  if (++log_count % 500 == 0)
+  if (++log_count % 200 == 0)
   {
-    mc_rtc::log::info(
-        "[ImpedanceHoldState] F_ext=({:.2f},{:.2f},{:.2f})N  "
-        "vel=({:.4f},{:.4f},{:.4f})m/s  "
-        "pos_err=({:.4f},{:.4f},{:.4f})m",
-        F_ext_.force().x(), F_ext_.force().y(), F_ext_.force().z(),
-        vel_[3], vel_[4], vel_[5],
-        lin_err.x(), lin_err.y(), lin_err.z());
+    const sva::PTransformd X_actual = ctl.robot().frame("bracelet_link").position();
+    Eigen::Vector3d lin_err = X_actual.translation() - X_0_target_.translation();
+    mc_rtc::log::info("[ImpedanceHoldState] pos_err=({:.4f},{:.4f},{:.4f})m  "
+                      "dist={:.4f}m",
+                      lin_err.x(), lin_err.y(), lin_err.z(),
+                      lin_err.norm());
   }
 
-  return false; // state never self-transitions
+  return false;
 }
 
-// ── Teardown ──────────────────────────────────────────────────────────────────
 void ImpedanceHoldState::teardown(mc_control::fsm::Controller & ctl)
 {
   ctl.solver().removeTask(task_);
