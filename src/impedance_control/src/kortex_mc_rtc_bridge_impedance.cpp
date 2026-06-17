@@ -112,6 +112,14 @@ private:
         }
 
     gc_->init(init_q);
+
+    for (const auto & fs : gc_->robot().forceSensors())
+    {
+        mc_rtc::log::info("[KortexBridge] Registered Robot Force Sensor: '{}' on body: '{}'",
+                    fs.name(), fs.parentBody());
+     }
+
+
     gc_->running = true;
 
     for (size_t i = 0; i < ref_order.size(); ++i)
@@ -126,17 +134,17 @@ private:
     mc_rtc::log::success("[KortexBridge] mc_rtc seeded. Control loop started!");
   }
 
-  void controlLoop()
+void controlLoop()
   {
     if (!initialized_) return;
 
     const auto & robot = gc_->robot();
     const auto & mb    = robot.mb();
 
-    // ── Build joint-name → DOF-index map (replaces missing jointVelocityIndex)
+    // ── Build joint-name → DOF-index map
     auto dof_map = buildJointDofMap(mb);
 
-    // ── 1. Map measured joint torques → full nrDof vector
+    // ── 1. Map measured joint torques → full nrDof vector (size 12)
     Eigen::VectorXd tau_meas = Eigen::VectorXd::Zero(mb.nrDof());
     {
       std::lock_guard<std::mutex> lock(effort_mutex_);
@@ -151,14 +159,14 @@ private:
 
     // ── 2. Inverse dynamics to get gravity + Coriolis bias torques
     rbd::MultiBodyConfig mbc_id = robot.mbc();
-    mbc_id.gravity = Eigen::Vector3d(0, 0, 9.81); // must be set — zeroed by default
+    mbc_id.gravity = Eigen::Vector3d(0, 0, 9.81); 
     for (auto & ad : mbc_id.alphaD)
-      std::fill(ad.begin(), ad.end(), 0.0);        // zero acceleration → pure bias
+      std::fill(ad.begin(), ad.end(), 0.0);        
 
     rbd::InverseDynamics id(mb);
     id.inverseDynamics(mb, mbc_id);
 
-    // ── 3. Extract bias torques into nrDof vector
+    // ── 3. Extract bias torques into nrDof vector (size 12)
     Eigen::VectorXd tau_bias = Eigen::VectorXd::Zero(mb.nrDof());
     for (int i = 0; i < mb.nrJoints(); ++i)
     {
@@ -167,36 +175,57 @@ private:
         tau_bias[it->second] = mbc_id.jointTorque[i][0];
     }
 
-    // ── 4. Jacobian of end-effector frame
+    // ── 4. Full Jacobian of end-effector frame (size 6 × 12)
     rbd::Jacobian jac(mb, "bracelet_link");
-    Eigen::MatrixXd J = jac.jacobian(mb, robot.mbc()); // 6 × nrDof
+    Eigen::MatrixXd J_full = jac.jacobian(mb, robot.mbc()); 
 
-    // ── 5. Solve  Jᵀ · F_ext = tau_meas - tau_bias
-    //    (external torque = measured − gravity/Coriolis bias)
-    Eigen::VectorXd tau_ext = tau_meas - tau_bias;
-    // completeOrthogonalDecomposition handles the redundancy of a 6-DOF arm gracefully
-    Eigen::VectorXd F_est = J.transpose()
-                              .completeOrthogonalDecomposition()
-                              .solve(tau_ext); // → [moment(3); force(3)]
+    // ── 5. Extract only active joint components (size 6 × 6)
+    auto ref_order = robot.refJointOrder();
+    Eigen::MatrixXd J_active = Eigen::MatrixXd::Zero(6, ref_order.size());
+    Eigen::VectorXd tau_ext_active = Eigen::VectorXd::Zero(ref_order.size());
 
-    // ── 6. Inject estimated wrench into mc_rtc
-    // sva::ForceVecd layout: (couple/moment, force)
+    for (size_t i = 0; i < ref_order.size(); ++i)
+    {
+      auto it = dof_map.find(ref_order[i]);
+      if (it != dof_map.end())
+      {
+        int col_idx = it->second;
+        J_active.col(i) = J_full.col(col_idx);
+        tau_ext_active[i] = tau_meas[col_idx] - tau_bias[col_idx];
+      }
+    }
+
+    // ── 6. Solve J_activeᵀ · F_world = tau_ext_active (size 6 × 6 solve)
+    Eigen::VectorXd F_world = J_active.transpose()
+                                .completeOrthogonalDecomposition()
+                                .solve(tau_ext_active);
+
+    // ── 7. Rotate the estimated wrench from World Frame to Sensor Local Frame
+    // robot.bodyPosW() returns a transformation where .rotation() rotates world -> body
+    Eigen::Matrix3d R_world_sensor = robot.bodyPosW("bracelet_link").rotation();
+    
+    Eigen::Vector3d moment_world(F_world[0], F_world[1], F_world[2]);
+    Eigen::Vector3d force_world(F_world[3], F_world[4], F_world[5]);
+
+    Eigen::Vector3d moment_sensor = R_world_sensor * moment_world;
+    Eigen::Vector3d force_sensor  = R_world_sensor * force_world;
+
+    // ── 8. Inject estimated wrench into mc_rtc (ensure "EEForceSensor" exists in your robot module)
     std::map<std::string, sva::ForceVecd> wrenches;
-    wrenches["EEForceSensor"] = sva::ForceVecd(
-        Eigen::Vector3d(F_est[0], F_est[1], F_est[2]),  // moment (Nm)
-        Eigen::Vector3d(F_est[3], F_est[4], F_est[5])   // force  (N)
-    );
+    wrenches["EEForceSensor"] = sva::ForceVecd(moment_sensor, force_sensor);
     gc_->setWrenches(wrenches);
 
     static int log_count = 0;
     if (++log_count % 500 == 0)
+    {
       mc_rtc::log::info(
-          "[KortexBridge] Est. wrench — force: ({:.2f}, {:.2f}, {:.2f}) N  "
+          "[KortexBridge] Est. wrench (Local) — force: ({:.2f}, {:.2f}, {:.2f}) N  "
           "moment: ({:.2f}, {:.2f}, {:.2f}) Nm",
-          F_est[3], F_est[4], F_est[5],
-          F_est[0], F_est[1], F_est[2]);
+          force_sensor.x(), force_sensor.y(), force_sensor.z(),
+          moment_sensor.x(), moment_sensor.y(), moment_sensor.z());
+    }
 
-    // ── 7. Run controller and publish joint trajectory
+    // ── 9. Run controller and publish joint trajectory
     if (gc_->run())
     {
       trajectory_msgs::msg::JointTrajectory traj;

@@ -43,21 +43,24 @@ states:
       timeout: 0.01
 
   ImpedanceHold:
-    base: KI::ImpedanceHoldState
-    # Compliance tuning — no recompile needed, edit here and rebuild package
-    #
-    # stiffness: how hard the arm pulls back to path (lower = more compliant)
-    #   - too low:  arm drifts and doesn't return well
-    #   - too high: arm is stiff, hard to push
-    #   - start: 50, tune up to 200 for stiffer return
-    stiffness: 3.0
-    #
-    # damping: 2*sqrt(stiffness) for critical damping (no overshoot on return)
-    #   stiffness=50  → damping=14.14
-    #   stiffness=100 → damping=20.0
-    #   stiffness=200 → damping=28.28
-    damping: 2 #14.14
-    #
-    # weight: priority in QP — lower weight yields more easily to joint limits
-    # and collision constraints. Keep below posture task weight (typically 1).
-    weight: 100.0
+      base: KI::ImpedanceHoldState
+
+      # ── Kinematic Tracking Gains (reduced slightly to smooth out high-frequency target jumps)
+      stiffness: 50.0
+      damping: 14.0
+      weight: 100.0
+
+      # ── Impedance Filter Gains (Highly Overdamped for Simulation)
+      # Lower stiffness (5.0) makes the virtual spring soft and easy to push.
+      # High damping (25.0) absorbs the Gazebo PID chatter and prevents jerky limit cycles.
+      gains:
+        mass:
+          angular: [1.0, 1.0, 1.0]
+          linear: [1.0, 1.0, 1.0]
+        stiffness:
+          angular: [5.0, 5.0, 5.0]     # Much softer spring
+          linear: [5.0, 5.0, 5.0]
+        damping:
+          angular: [25.0, 25.0, 25.0]   # Heavily damped to eliminate chattering
+          linear: [25.0, 25.0, 25.0]
+
