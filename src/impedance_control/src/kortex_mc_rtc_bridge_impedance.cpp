@@ -176,7 +176,7 @@ void controlLoop()
     }
 
     // ── 4. Full Jacobian of end-effector frame (size 6 × 12)
-    rbd::Jacobian jac(mb, "bracelet_link");
+    rbd::Jacobian jac(mb, "tool_frame"); //bracelet_link
     Eigen::MatrixXd J_full = jac.jacobian(mb, robot.mbc()); 
 
     // ── 5. Extract only active joint components (size 6 × 6)
@@ -202,7 +202,8 @@ void controlLoop()
 
     // ── 7. Rotate the estimated wrench from World Frame to Sensor Local Frame
     // robot.bodyPosW() returns a transformation where .rotation() rotates world -> body
-    Eigen::Matrix3d R_world_sensor = robot.bodyPosW("bracelet_link").rotation();
+//    Eigen::Matrix3d R_world_sensor = robot.bodyPosW("bracelet_link").rotation();
+    Eigen::Matrix3d R_world_sensor = robot.bodyPosW("tool_frame").rotation();
     
     Eigen::Vector3d moment_world(F_world[0], F_world[1], F_world[2]);
     Eigen::Vector3d force_world(F_world[3], F_world[4], F_world[5]);
