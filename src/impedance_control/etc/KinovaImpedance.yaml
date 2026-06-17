@@ -14,7 +14,6 @@ ObserverPipelines:
         velocity: encoderVelocities
 
 constraints:
-#  - type: dynamics
   - type: kinematics
     damper: [0.1, 0.01, 0.5]
   - type: collision
@@ -45,9 +44,20 @@ states:
 
   ImpedanceHold:
     base: KI::ImpedanceHoldState
-    # Impedance gains [angular(3), linear(3)] — tune here without recompiling
-    K: [10.0, 10.0, 10.0, 200.0, 200.0, 200.0]   # stiffness: pulls back to path
-    D: [6.32, 6.32, 6.32, 28.28, 28.28, 28.28]   # damping: D = 2*sqrt(K*M)
-    M: [1.0,  1.0,  1.0,  1.0,   1.0,   1.0  ]   # virtual mass: tune last
-    task_stiffness: 200.0
-    task_weight: 1000.0
+    # Compliance tuning — no recompile needed, edit here and rebuild package
+    #
+    # stiffness: how hard the arm pulls back to path (lower = more compliant)
+    #   - too low:  arm drifts and doesn't return well
+    #   - too high: arm is stiff, hard to push
+    #   - start: 50, tune up to 200 for stiffer return
+    stiffness: 3.0
+    #
+    # damping: 2*sqrt(stiffness) for critical damping (no overshoot on return)
+    #   stiffness=50  → damping=14.14
+    #   stiffness=100 → damping=20.0
+    #   stiffness=200 → damping=28.28
+    damping: 2 #14.14
+    #
+    # weight: priority in QP — lower weight yields more easily to joint limits
+    # and collision constraints. Keep below posture task weight (typically 1).
+    weight: 100.0
