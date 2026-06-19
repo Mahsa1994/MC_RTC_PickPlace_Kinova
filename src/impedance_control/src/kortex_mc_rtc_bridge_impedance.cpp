@@ -14,6 +14,7 @@
 #include <atomic>
 #include <vector>
 #include <map>
+#include <thread>
 
 using namespace std::chrono_literals;
 
@@ -40,6 +41,41 @@ public:
 
     mc_rtc::log::info("[KortexBridge] Waiting for first /joint_states...");
     mc_rtc::log::info("[KortexBridge] Operating in joint torque estimation mode.");
+  }
+
+  /// Destructor
+  ~KortexMcRtcBridge()
+  {
+    mc_rtc::log::info("[KortexBridge] Shutting down. Sending final hold command...");
+    if (initialized_ && pub_)
+    {
+      trajectory_msgs::msg::JointTrajectory traj;
+      traj.joint_names = {"joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"};
+
+      trajectory_msgs::msg::JointTrajectoryPoint pt;
+      
+      // Query the real robot's actual joint encoders
+      const auto & real_robot = gc_->realRobot();
+      for (const auto & name : traj.joint_names)
+      {
+        if (real_robot.hasJoint(name))
+        {
+          auto idx = real_robot.jointIndexByName(name);
+          pt.positions.push_back(real_robot.mbc().q[idx][0]);
+        }
+        else
+        {
+          pt.positions.push_back(0.0);
+        }
+        pt.velocities.push_back(0.0);
+      }
+      pt.time_from_start.nanosec = 50'000'000; // 50 ms hold buffer
+      traj.points.push_back(pt);
+      pub_->publish(traj);
+      
+      // Give the ROS 2 publisher a tiny moment to send the message before the socket closes
+      std::this_thread::sleep_for(100ms);
+    }
   }
 
 private:
