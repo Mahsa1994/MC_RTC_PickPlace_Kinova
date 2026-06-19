@@ -135,7 +135,7 @@ private:
     }
 
     initialized_ = true;
-    timer_ = this->create_wall_timer(10ms, std::bind(&KortexMcRtcBridge::controlLoop, this));
+    timer_ = this->create_wall_timer(1ms, std::bind(&KortexMcRtcBridge::controlLoop, this)); //10ms
     mc_rtc::log::success("[KortexBridge] mc_rtc seeded. Control loop started!");
   }
 
@@ -280,7 +280,7 @@ private:
       }
       pt.time_from_start.nanosec = 20'000'000; // 20 ms
       traj.points.push_back(pt);
-      // pub_->publish(traj); // Commented out for initial dry-run safety
+      pub_->publish(traj); // Commented out for initial dry-run safety
     }
   }
 
