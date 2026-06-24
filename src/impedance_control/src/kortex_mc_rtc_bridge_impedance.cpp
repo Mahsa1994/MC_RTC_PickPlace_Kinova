@@ -232,7 +232,9 @@ private:
       {
         int col_idx = it->second;
         J_active.col(i) = J_full.col(col_idx);
-        tau_ext_active[i] = tau_meas[col_idx] - tau_bias[col_idx];
+//        tau_ext_active[i] = tau_meas[col_idx] - tau_bias[col_idx];
+        tau_ext_active[i] = tau_bias[col_idx] - tau_meas[col_idx];
+
       }
     }
 
