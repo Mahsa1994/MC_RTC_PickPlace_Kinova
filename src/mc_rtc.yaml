@@ -5,6 +5,15 @@ Timestep: 0.005
 Plugins:
   - ROS
 
+ObserverPipelines:
+  - name: MainPipeline
+    observers:
+      - type: Encoder
+        update: true
+        log: true
+        position: encoderValues
+        velocity: encoderFiniteDifferences
+
 ControllerModulePaths:
   - /usr/local/lib/mc_controller
   - /home/vscode/workspace/install/impedance_control/lib/mc_controller
