@@ -4,6 +4,7 @@ from launch_ros.actions import Node
 from launch.event_handlers import OnShutdown
 import os
 from ament_index_python.packages import get_package_share_directory
+from launch.substitutions import Command
 
 set_gz_plugin_path = SetEnvironmentVariable(
     name='GZ_SIM_SYSTEM_PLUGIN_PATH',
@@ -17,13 +18,19 @@ set_gz_resource = SetEnvironmentVariable(
 )
 
 def generate_launch_description():
-    urdf_file  = '/home/vscode/workspace/src/impedance_control/urdf/kinova_6dof_sim.urdf'
+    urdf_file  = '/home/vscode/workspace/src/impedance_control/urdf/kinova_6dof_sim.urdf.xacro'
     world_file = os.path.join(
         get_package_share_directory('pick_and_place'), 'worlds', 'pick_place.world'
     )
 
-    with open(urdf_file, 'r') as f:
-        robot_description = f.read()
+
+    robot_description = Command([
+        'xacro ',
+        urdf_file
+    ])
+
+#    with open(urdf_file, 'r') as f:
+#        robot_description = f.read()
 
     cleanup = ExecuteProcess(
         cmd=['bash', '-c',
@@ -126,6 +133,17 @@ def generate_launch_description():
         )]
     )
 
+    spawn_gripper_controller = TimerAction(
+        period=12.0,
+        actions=[Node(
+            package='controller_manager',
+            executable='spawner',
+            arguments=['robotiq_gripper_controller',
+                       '--controller-manager-timeout', '30'],
+            output='screen'
+        )]
+    )
+
     mc_rtc_bridge = TimerAction(
         period=20.0,
         actions=[
@@ -169,6 +187,7 @@ def generate_launch_description():
         unpause,
         spawn_jsb,
         spawn_jtc,
+        spawn_gripper_controller,
         mc_rtc_bridge,
         shutdown_cleanup,
     ])
