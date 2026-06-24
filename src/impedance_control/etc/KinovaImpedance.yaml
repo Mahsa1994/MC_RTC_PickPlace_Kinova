@@ -57,7 +57,8 @@ states:
       # ── Impedance Filter Gains (Highly Overdamped for Simulation)
       # Lower stiffness (5.0) makes the virtual spring soft and easy to push.
       # High damping (25.0) absorbs the Gazebo PID chatter and prevents jerky limit cycles.
-      gains:
+      #gains:
+      impedance:
         mass:
           angular: [2.0, 2.0, 2.0]
           linear: [3.0, 3.0, 3.0]
