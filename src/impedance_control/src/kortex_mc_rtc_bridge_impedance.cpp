@@ -283,6 +283,14 @@ private:
     Eigen::Vector3d moment_sensor = R_world_sensor * moment_world;
     Eigen::Vector3d force_sensor  = R_world_sensor * force_world;
 
+    // ── Sensor Deadband: Zero out sub-threshold forces/torques to prevent drift
+    if (force_sensor.norm() < 3.0) {
+      force_sensor.setZero();
+    }
+    if (moment_sensor.norm() < 1.0) {
+      moment_sensor.setZero();
+    }
+
     // ── 8. Inject estimated wrench into mc_rtc
     std::map<std::string, sva::ForceVecd> wrenches;
     wrenches["EEForceSensor"] = sva::ForceVecd(moment_sensor, force_sensor);
