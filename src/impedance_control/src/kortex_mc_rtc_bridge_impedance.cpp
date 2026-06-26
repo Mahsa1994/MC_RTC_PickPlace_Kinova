@@ -182,10 +182,10 @@ private:
     const auto & robot = gc_->robot();
     const auto & mb    = robot.mb();
 
-    // ── Build joint-name → DOF-index map
+    // Build joint-name → DOF-index map
     auto dof_map = buildJointDofMap(mb);
 
-    // ── 1. Map measured joint torques → full nrDof vector (size 12)
+    // �1. Map measured joint torques -  full nrDof vector (size 12)
     Eigen::VectorXd tau_meas = Eigen::VectorXd::Zero(mb.nrDof());
     {
       std::lock_guard<std::mutex> lock(effort_mutex_);
@@ -198,7 +198,7 @@ private:
       }
     }
 
-    // ── 2. Inverse dynamics to get gravity + Coriolis bias torques
+    // 2. Inverse dynamics to get gravity + Coriolis bias torques
     rbd::MultiBodyConfig mbc_id = robot.mbc();
     mbc_id.gravity = Eigen::Vector3d(0, 0, 9.81); 
     for (auto & ad : mbc_id.alphaD)
@@ -207,7 +207,7 @@ private:
     rbd::InverseDynamics id(mb);
     id.inverseDynamics(mb, mbc_id);
 
-    // ── 3. Extract bias torques into nrDof vector (size 12)
+    // 3. Extract bias torques into nrDof vector (size 12)
     Eigen::VectorXd tau_bias = Eigen::VectorXd::Zero(mb.nrDof());
     for (int i = 0; i < mb.nrJoints(); ++i)
     {
@@ -216,11 +216,11 @@ private:
         tau_bias[it->second] = mbc_id.jointTorque[i][0];
     }
 
-    // ── 4. Full Jacobian of end-effector frame (size 6 × 12)
+    // 4. Full Jacobian of end-effector frame (size 6 × 12)
     rbd::Jacobian jac(mb, "tool_frame"); 
     Eigen::MatrixXd J_full = jac.jacobian(mb, robot.mbc()); 
 
-    // ── 5. Extract only active joint components (size 6 × 6)
+    // �5. Extract only active joint components (size 6 × 6)
     auto ref_order = robot.refJointOrder();
     Eigen::MatrixXd J_active = Eigen::MatrixXd::Zero(6, ref_order.size());
     Eigen::VectorXd tau_ext_active = Eigen::VectorXd::Zero(ref_order.size());
@@ -238,7 +238,7 @@ private:
       }
     }
 
-    // ── 6. Solve J_activeᵀ · F_world = tau_ext_active (size 6 × 6 solve)
+    // �6. Solve J_active�- F_world = tau_ext_active (size 6 × 6 solve)
     Eigen::VectorXd F_world = J_active.transpose()
                                 .completeOrthogonalDecomposition()
                                 .solve(tau_ext_active);
@@ -246,54 +246,99 @@ private:
     Eigen::Vector3d moment_world(F_world[0], F_world[1], F_world[2]);
     Eigen::Vector3d force_world(F_world[3], F_world[4], F_world[5]);
 
-    // ── Dynamic World-Frame Tare (Zeroing)
-    if (!tared_)
+    static int startup_delay_ticks = 0;
+    if (startup_delay_ticks < 3000)
     {
-      if (tare_ticks_ < 200) // Collect 2 seconds of baseline data at 100 Hz (10ms timer)
-      {
-        bias_force_world_  += force_world;
-        bias_moment_world_ += moment_world;
-        tare_ticks_++;
-      }
-      else
-      {
-        bias_force_world_  /= tare_ticks_;
-        bias_moment_world_ /= tare_ticks_;
-        tared_ = true;
-        mc_rtc::log::success("[KortexBridge] World-frame wrench tared successfully!");
-        mc_rtc::log::info("[KortexBridge] Active Bias — Force: ({:.2f}, {:.2f}, {:.2f}) N  "
-                          "Moment: ({:.2f}, {:.2f}, {:.2f}) Nm",
-                          bias_force_world_.x(), bias_force_world_.y(), bias_force_world_.z(),
-                          bias_moment_world_.x(), bias_moment_world_.y(), bias_moment_world_.z());
-      }
-      // Output zero force during calibration
+      // During the 3-second startup delay, we keep command tracking active but force wrench to 0
+      startup_delay_ticks++;
       force_world.setZero();
       moment_world.setZero();
     }
     else
     {
-      // Subtract the unmodeled payload gravity / sensor bias in the world frame
-      force_world  -= bias_force_world_;
-      moment_world -= bias_moment_world_;
+      // Dynamic World-Frame Tare (Zeroing) - runs AFTER the 3-second delay is complete
+      if (!tared_)
+      {
+        if (tare_ticks_ < 200) // Collect 200 ticks of quiet baseline data
+        {
+          bias_force_world_  += force_world;
+          bias_moment_world_ += moment_world;
+          tare_ticks_++;
+        }
+        else
+        {
+          bias_force_world_  /= tare_ticks_;
+          bias_moment_world_ /= tare_ticks_;
+          tared_ = true;
+          mc_rtc::log::success("[KortexBridge] World-frame wrench tared successfully!");
+        }
+        force_world.setZero();
+        moment_world.setZero();
+      }
+      else
+      {
+        // Subtract tared gravity offsets
+        force_world  -= bias_force_world_;
+        moment_world -= bias_moment_world_;
+      }
     }
 
-    // ── 7. Rotate the tared wrench from World Frame to Sensor Local Frame
+    // �7. Rotate the tared wrench from World Frame to Sensor Local Frame
     Eigen::Matrix3d R_world_sensor = robot.bodyPosW("tool_frame").rotation();
     
     Eigen::Vector3d moment_sensor = R_world_sensor * moment_world;
     Eigen::Vector3d force_sensor  = R_world_sensor * force_world;
 
-    // ── Sensor Deadband: Zero out sub-threshold forces/torques to prevent drift
-    if (force_sensor.norm() < 3.0) {
-      force_sensor.setZero();
-    }
-    if (moment_sensor.norm() < 1.0) {
-      moment_sensor.setZero();
+     static Eigen::Vector3d filtered_force = Eigen::Vector3d::Zero();
+    static Eigen::Vector3d filtered_moment = Eigen::Vector3d::Zero();
+    if (tared_)
+    {
+      // 1. Accumulate the filter state normally (no resetting here!)
+      filtered_force = 0.90 * filtered_force + 0.10 * force_sensor;
+      filtered_moment = 0.90 * filtered_moment + 0.10 * moment_sensor;
+
+      // 2. Create temporary copies for output thresholding
+      Eigen::Vector3d output_force = filtered_force;
+      Eigen::Vector3d output_moment = filtered_moment;
+
+      // 3. Apply Deadband on the temporary copies
+      if (output_force.norm() < 1.5) {
+        output_force.setZero();
+      }
+      if (output_moment.norm() < 0.5) {
+        output_moment.setZero();
+      }
+
+      // 4. Update the active sensor readings to send to mc_rtc
+      force_sensor = output_force;
+      moment_sensor = output_moment;
     }
 
     // ── 8. Inject estimated wrench into mc_rtc
     std::map<std::string, sva::ForceVecd> wrenches;
     wrenches["EEForceSensor"] = sva::ForceVecd(moment_sensor, force_sensor);
+
+   // �Velocity-scaled wrench gate
+   // When the arm is moving fast, the ID-based estimator is unreliable.
+   // Scale the injected wrench toward zero as joint velocity increases.
+     double max_qd = 0.0;
+for (int i = 0; i < mb.nrJoints(); ++i)
+{
+  if (mb.joint(i).dof() == 1)  // only 1-DOF revolute joints
+  {
+    double qd = std::abs(robot.mbc().alpha[i][0]);
+    if (qd > max_qd) max_qd = qd;
+  }
+}
+// Gate: full wrench below 0.05 rad/s, zero above 0.15 rad/s
+const double qd_low  = 0.05;
+const double qd_high = 0.15;
+double gate = 1.0 - std::clamp((max_qd - qd_low) / (qd_high - qd_low), 0.0, 1.0);
+force_sensor  *= gate;
+moment_sensor *= gate;
+
+
+//    wrenches["EEForceSensor"] = sva::ForceVecd(filtered_moment, filtered_force);
     gc_->setWrenches(wrenches);
 
     static int log_count = 0;

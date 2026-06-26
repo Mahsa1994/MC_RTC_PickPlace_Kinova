@@ -68,4 +68,6 @@ states:
         damping:
           angular: [15.0, 15.0, 15.0]   # Heavily damped to eliminate chattering
           linear: [25.0, 25.0, 25.0]
-
+        wrench:
+          angular: [1.0, 1.0, 1.0]
+          linear: [1.0, 1.0, 1.0]
