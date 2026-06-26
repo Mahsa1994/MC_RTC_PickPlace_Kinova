@@ -14,7 +14,7 @@ find_package(sensor_msgs REQUIRED)
 find_package(trajectory_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 
-# ── 1. Bridge executable ──────────────────────────────────────────────────────
+#### Bridge executable 
 add_executable(kortex_mc_rtc_bridge_impedance
   src/kortex_mc_rtc_bridge_impedance.cpp
 )
@@ -31,7 +31,7 @@ ament_target_dependencies(kortex_mc_rtc_bridge_impedance
   std_msgs
 )
 
-# ── 2. Controller library ─────────────────────────────────────────────────────
+##### Controller library 
 add_library(KinovaImpedance SHARED
   src/KinovaImpedance.cpp
 )
@@ -42,10 +42,8 @@ target_link_libraries(KinovaImpedance
 )
 ament_target_dependencies(KinovaImpedance rclcpp)
 
-# ── 3. Custom impedance FSM state ─────────────────────────────────────────────
-# Implements M*xdd + D*xd + K*x = F_ext using TransformTask.
-# No ForceSensor registration required — wrench is read from the bridge's
-# setWrenches() call via the robot's sensor store.
+##### Custom impedance FSM state ─
+
 add_library(KI_ImpedanceHoldState SHARED
   src/states/ImpedanceHoldState.cpp
 )
@@ -57,7 +55,7 @@ target_link_libraries(KI_ImpedanceHoldState
 )
 ament_target_dependencies(KI_ImpedanceHoldState rclcpp)
 
-# ── 4. Install ────────────────────────────────────────────────────────────────
+######## Install 
 install(TARGETS kortex_mc_rtc_bridge_impedance
   DESTINATION lib/${PROJECT_NAME}
 )

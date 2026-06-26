@@ -45,7 +45,7 @@ states:
   ImpedanceHold:
       base: KI::ImpedanceHoldState
 
-      # ── Kinematic Tracking Gains (reduced slightly to smooth out high-frequency target jumps)
+      # Kinematic Tracking Gains (reduced slightly to smooth out high-frequency target jumps)
       stiffness: 20.0
       damping: 10.0
       weight: 100.0
@@ -54,7 +54,7 @@ states:
         force: [3.0, 3.0, 3.0]
         torque: [1.0, 1.0, 1.0]
 
-      # ── Impedance Filter Gains (Highly Overdamped for Simulation)
+      # Impedance Filter Gains (Highly Overdamped for Simulation)
       # Lower stiffness (5.0) makes the virtual spring soft and easy to push.
       # High damping (25.0) absorbs the Gazebo PID chatter and prevents jerky limit cycles.
       #gains:

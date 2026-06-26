@@ -14,6 +14,6 @@ struct KinovaImpedance : public fsm::Controller
   }
 };
 
-} // namespace mc_control
+} 
 
 CONTROLLER_CONSTRUCTOR("KinovaImpedance", mc_control::KinovaImpedance)

@@ -64,7 +64,7 @@ def generate_launch_description():
         output='screen'
     )
 
-    # Impedance: wrench is estimated internally via Jacobian transpose â€”
+    # Impedance: wrench is estimated internally via Jacobian transpose
     # no force/torque sensor topic needed. Only bridge joint states + clock
     # + joint trajectory commands (needed because impedance outputs positions
     # to joint_trajectory_controller, same as admittance).
@@ -77,7 +77,7 @@ def generate_launch_description():
                 name='gz_bridge',
                 parameters=[{'use_sim_time': True}],
                 arguments=[
-                    # Joint states (carries position, velocity AND effort â€” all three
+                    # Joint states (carries position, velocity AND effort - all three
                     # are used by the bridge for Jacobian-based wrench estimation)
                     '/world/pick_place_world/model/robot/joint_state'
                     '@sensor_msgs/msg/JointState'
@@ -88,7 +88,7 @@ def generate_launch_description():
                     '/joint_trajectory_controller/joint_trajectory'
                     '@trajectory_msgs/msg/JointTrajectory'
                     ']gz.msgs.JointTrajectory',
-                    # /EEForceSensor bridge removed âwrench is now estimated from joint efforts via Jacobian transpose in the bridge node, not read from a Gazebo sensor topic.
+                    # /EEForceSensor bridge removed â- wrench is now estimated from joint efforts via Jacobian transpose in the bridge node, not read from a Gazebo sensor topic.
                 ],
                 remappings=[
                     ('/world/pick_place_world/model/robot/joint_state', '/joint_states'),
@@ -121,7 +121,7 @@ def generate_launch_description():
         )]
     )
 
-    # Impedance outputs position commands â†’ joint_trajectory_controller must be active
+    # Impedance outputs position commands - joint_trajectory_controller must be active
     spawn_jtc = TimerAction(
         period=11.0,
         actions=[Node(

@@ -3,15 +3,20 @@
 #include <mc_rtc/logging.h>
 #include <mc_tasks/ImpedanceTask.h>
 
-void ImpedanceHoldState::configure(const mc_rtc::Configuration & config)
+// Load configuration
+void ImpedanceHoldState::configure(const mc_rtc::Configuration &config)
 {
   config_ = config;
-  if (config.has("stiffness")) task_stiffness_ = config("stiffness");
-  if (config.has("damping"))   task_damping_   = config("damping");
-  if (config.has("weight"))    task_weight_    = config("weight");
+  if (config.has("stiffness"))
+    task_stiffness_ = config("stiffness");
+  if (config.has("damping"))
+    task_damping_ = config("damping");
+  if (config.has("weight"))
+    task_weight_ = config("weight");
 }
 
-void ImpedanceHoldState::start(mc_control::fsm::Controller & ctl)
+// State initialization: create impedance controller on EE frame
+void ImpedanceHoldState::start(mc_control::fsm::Controller &ctl)
 {
   dt_ = ctl.timeStep;
 
@@ -24,7 +29,7 @@ void ImpedanceHoldState::start(mc_control::fsm::Controller & ctl)
       task_stiffness_,
       task_weight_);
 
-  // 3. Cutoff period — 50ms is much more responsive than 300ms
+  // 3. Limits how fast wrench feedback affects control - 50ms is much more responsive than 300ms
   task_->cutoffPeriod(0.05);
 
   // 4. Kinematic tracking gains
@@ -33,41 +38,40 @@ void ImpedanceHoldState::start(mc_control::fsm::Controller & ctl)
   task_->targetPose(X_0_target_);
 
   // 5. Impedance model gains
-  auto & gains = task_->gains();
+  auto &gains = task_->gains();
   gains.mass().linear(Eigen::Vector3d(3.0, 3.0, 3.0));
   gains.mass().angular(Eigen::Vector3d(2.0, 2.0, 2.0));
-  
+
   gains.spring().linear(Eigen::Vector3d(800.0, 800.0, 800.0));
   gains.spring().angular(Eigen::Vector3d(40.0, 40.0, 40.0));
-  
+
   gains.damper().linear(Eigen::Vector3d(120.0, 120.0, 120.0));
   gains.damper().angular(Eigen::Vector3d(30.0, 30.0, 30.0));
-  
+
   gains.wrench().linear(Eigen::Vector3d(1.0, 1.0, 1.0));
   gains.wrench().angular(Eigen::Vector3d(1.0, 1.0, 1.0));
 
   ctl.solver().addTask(task_);
 
-  // 6. Sensor wiring diagnostic — uses the correct mc_rtc API
+  // 6. Sensor wiring diagnostic - uses the correct mc_rtc API
   bool sensor_found = false;
-  for (const auto & fs : ctl.robot().forceSensors())
+  for (const auto &fs : ctl.robot().forceSensors())
   {
     mc_rtc::log::info(
         "[ImpedanceHoldState] Robot has force sensor '{}' on body '{}'",
         fs.name(), fs.parentBody());
-    if (fs.name() == "EEForceSensor")
+    if (fs.name() == "EEForceSensor") // EEForceSensor is the virtual sensor giving wrench - not REAL external sensor
       sensor_found = true;
   }
   if (!sensor_found)
   {
     mc_rtc::log::error(
         "[ImpedanceHoldState] 'EEForceSensor' not found in robot module! "
-        "measuredWrench() will be zero — compliance will not work.");
+        "measuredWrench() will be zero - compliance will not work.");
   }
   else
   {
     // Confirm the task picked it up by reading back measuredWrench immediately
-    // (will be zero at t=0 but confirms the path is wired)
     const auto w = task_->measuredWrench();
     mc_rtc::log::info(
         "[ImpedanceHoldState] EEForceSensor found. "
@@ -76,16 +80,16 @@ void ImpedanceHoldState::start(mc_control::fsm::Controller & ctl)
   }
 }
 
-bool ImpedanceHoldState::run(mc_control::fsm::Controller & ctl)
+bool ImpedanceHoldState::run(mc_control::fsm::Controller &ctl)
 {
   static int log_count = 0;
   if (++log_count % 200 == 0)
   {
-    const sva::ForceVecd wrench_measured = task_->measuredWrench();
-    const sva::PTransformd X_compliance  = task_->compliancePose();
-    const sva::PTransformd X_actual      = ctl.robot().frame("tool_frame").position();
+    const sva::ForceVecd wrench_measured = task_->measuredWrench(); 
+    const sva::PTransformd X_compliance = task_->compliancePose(); // Current compliance target pose (where impedance model thinks it should be)
+    const sva::PTransformd X_actual = ctl.robot().frame("tool_frame").position(); // Actual end-effector pose from robot model
 
-    Eigen::Vector3d deflection  = X_compliance.translation() - X_0_target_.translation();
+    Eigen::Vector3d deflection = X_compliance.translation() - X_0_target_.translation();
     Eigen::Vector3d track_error = X_actual.translation() - X_compliance.translation();
 
     mc_rtc::log::info(
@@ -102,9 +106,9 @@ bool ImpedanceHoldState::run(mc_control::fsm::Controller & ctl)
   }
 
   return false;
-} // ← this closing brace was missing, causing all downstream errors
+} 
 
-void ImpedanceHoldState::teardown(mc_control::fsm::Controller & ctl)
+void ImpedanceHoldState::teardown(mc_control::fsm::Controller &ctl)
 {
   ctl.solver().removeTask(task_);
   mc_rtc::log::info("[ImpedanceHoldState] Task removed");
