@@ -23,6 +23,16 @@ class KortexMcRtcBridge : public rclcpp::Node
 public:
   KortexMcRtcBridge() : Node("kortex_mc_rtc_bridge_impedance")
   {
+
+    dry_run_    = this->declare_parameter("dry_run", false);
+    delta_max_  = this->declare_parameter("delta_max", 0.05); 
+    pub_decim_  = this->declare_parameter("publish_decimation", 10); // 1kHz/10 = 100Hz
+    loop_dt_ = this->declare_parameter("loop_dt", 0.001);   // seconds; sim keeps 0.001
+
+    torque_sign_    = this->declare_parameter("torque_sign", 1.0);   // flip to -1.0 if inverted on real
+    deadband_force_ = this->declare_parameter("deadband_force", 1.5);  // sim value; real: start 6.0
+    deadband_moment_= this->declare_parameter("deadband_moment", 0.5); // sim value; real: start 1.5
+
     pub_ = this->create_publisher<trajectory_msgs::msg::JointTrajectory>(
         "/joint_trajectory_controller/joint_trajectory", 1);
 
@@ -91,6 +101,20 @@ private:
   Eigen::Vector3d bias_force_world_{0.0, 0.0, 0.0};
   Eigen::Vector3d bias_moment_world_{0.0, 0.0, 0.0};
 
+
+  bool dry_run_{true};
+  double delta_max_{0.05};
+  int pub_decim_{10};
+  std::atomic<int64_t> last_js_stamp_ns_{0};
+  std::vector<double> last_enc_q_;
+  bool first_cmd_checked_{false};
+  int pub_count_{0};
+  double loop_dt_{0.001};
+
+  double torque_sign_{1.0};
+  double deadband_force_{1.5};
+  double deadband_moment_{0.5};
+
   // Helper: build a map from joint name �- DOF start index in the nrDof vector
   // RBDyn does not expose jointVelocityIndex(), we reconstruct it by walking
   // the joint list and accumulating DOF counts.
@@ -135,6 +159,13 @@ private:
       gc_->setEncoderVelocities(gc_->robot().name(), enc_alpha);
       gc_->setJointTorques(gc_->robot().name(), enc_tau);
 
+      last_js_stamp_ns_ = this->now().nanoseconds();
+      {
+        std::lock_guard<std::mutex> lock(effort_mutex_);
+        latest_efforts_ = enc_tau;
+        last_enc_q_ = enc_q;
+      }
+
       {
         std::lock_guard<std::mutex> lock(effort_mutex_);
         latest_efforts_ = enc_tau;
@@ -176,7 +207,11 @@ private:
     }
 
     initialized_ = true;
-    timer_ = this->create_wall_timer(1ms, std::bind(&KortexMcRtcBridge::controlLoop, this)); // 10ms
+//    timer_ = this->create_wall_timer(1ms, std::bind(&KortexMcRtcBridge::controlLoop, this)); // 10ms
+    timer_ = this->create_wall_timer(
+      std::chrono::duration<double>(loop_dt_),
+      std::bind(&KortexMcRtcBridge::controlLoop, this));
+
     mc_rtc::log::success("[KortexBridge] mc_rtc seeded. Control loop started!");
   }
 
@@ -184,6 +219,16 @@ private:
   {
     if (!initialized_)
       return;
+
+    // Watchdog: stale joint states -> zero wrench, no commands
+    const int64_t age_ns = this->now().nanoseconds() - last_js_stamp_ns_.load();
+    const bool comms_ok = (age_ns < 100'000'000);  // 100 ms
+    if (!comms_ok)
+    {
+      static int warn_count = 0;
+      if (++warn_count % 1000 == 0)
+        mc_rtc::log::error("[KortexBridge] /joint_states stale ({} ms) - holding", age_ns / 1'000'000);
+    }
 
     const auto &robot = gc_->robot();
     const auto &mb = robot.mb(); // multi-body structure for mc_rtc
@@ -240,7 +285,8 @@ private:
         int col_idx = it->second;
         J_active.col(i) = J_full.col(col_idx);
         //        tau_ext_active[i] = tau_meas[col_idx] - tau_bias[col_idx];
-        tau_ext_active[i] = tau_bias[col_idx] - tau_meas[col_idx]; /// Estimate external torque (bias - measured)
+        // tau_ext_active[i] = tau_bias[col_idx] - tau_meas[col_idx]; /// Estimate external torque (bias - measured)
+         tau_ext_active[i] = tau_bias[col_idx] - torque_sign_ * tau_meas[col_idx];
       }
     }
 
@@ -258,7 +304,9 @@ private:
     static int startup_delay_ticks = 0;
 
     // Ignore wrench during initial stabilization period
-    if (startup_delay_ticks < 3000)
+    const int startup_ticks_max = static_cast<int>(3.0 / loop_dt_);
+
+    if (startup_delay_ticks < startup_ticks_max) //3000
     {
       // During the 3-second startup delay, we keep command tracking active but force wrench to 0
       startup_delay_ticks++;
@@ -270,7 +318,8 @@ private:
       // Dynamic World-Frame Tare (Zeroing) - runs AFTER the 3s delay is complete
       if (!tared_)
       {
-        if (tare_ticks_ < 200) // Collect 200 ticks of quiet baseline data
+        const int tare_ticks_max = static_cast<int>(0.5 / loop_dt_);   // 0.5 s of samples
+        if (tare_ticks_ < tare_ticks_max) // it was 200 ticks 
         {
           bias_force_world_ += force_world;
           bias_moment_world_ += moment_world;
@@ -282,6 +331,10 @@ private:
           bias_moment_world_ /= tare_ticks_;
           tared_ = true;
           mc_rtc::log::success("[KortexBridge] World-frame wrench tared successfully!");
+          tared_ = true;
+          mc_rtc::log::success("[KortexBridge] Tared. Bias force: ({:.2f},{:.2f},{:.2f}) N, norm={:.2f}",
+                     bias_force_world_.x(), bias_force_world_.y(), bias_force_world_.z(),
+                     bias_force_world_.norm());
         }
         force_world.setZero();
         moment_world.setZero();
@@ -306,22 +359,28 @@ private:
     if (tared_)
     {
       // 1. Accumulate the filter state normally (no resetting here!)
-      filtered_force = 0.90 * filtered_force + 0.10 * force_sensor; // 90% memory + 10% new
-      filtered_moment = 0.90 * filtered_moment + 0.10 * moment_sensor;
+      const double tau_f = 0.05;                          // 50 ms time constant
+      const double alpha_f = loop_dt_ / (loop_dt_ + tau_f);
+      filtered_force  = (1.0 - alpha_f) * filtered_force  + alpha_f * force_sensor;
+      filtered_moment = (1.0 - alpha_f) * filtered_moment + alpha_f * moment_sensor;
+      //filtered_force = 0.90 * filtered_force + 0.10 * force_sensor; // 90% memory + 10% new
+      //filtered_moment = 0.90 * filtered_moment + 0.10 * moment_sensor;
 
       // 2. temporary copies for output thresholding
       Eigen::Vector3d output_force = filtered_force;
       Eigen::Vector3d output_moment = filtered_moment;
 
       // 3. Apply Deadband on the temporary copies
-      if (output_force.norm() < 1.5)
-      {
-        output_force.setZero();
-      }
-      if (output_moment.norm() < 0.5)
-      {
-        output_moment.setZero();
-      }
+      //if (output_force.norm() < 1.5)
+      //{
+       // output_force.setZero();
+      //}
+      //if (output_moment.norm() < 0.5)
+      //{
+       // output_moment.setZero();
+      //}
+      if (output_force.norm()  < deadband_force_)  output_force.setZero();
+      if (output_moment.norm() < deadband_moment_) output_moment.setZero();
 
       // 4. Update the active sensor readings to send to mc_rtc
       force_sensor = output_force;
@@ -330,11 +389,7 @@ private:
 
     ///// 8- Inject estimated wrench into mc_rtc
     std::map<std::string, sva::ForceVecd> wrenches;
-    wrenches["EEForceSensor"] = sva::ForceVecd(moment_sensor, force_sensor);
 
-    // velocity-scaled wrench gate
-    // When the arm is moving fast, the ID-based estimator is unreliable.
-    // Scale the injected wrench toward zero as joint velocity increases.
     double max_qd = 0.0;
     for (int i = 0; i < mb.nrJoints(); ++i)
     {
@@ -345,6 +400,7 @@ private:
           max_qd = qd;
       }
     }
+
     // Gate: full wrench (1) below 0.05 rad/s, zero above 0.15 rad/s
     const double qd_low = 0.05;
     const double qd_high = 0.15;
@@ -352,6 +408,30 @@ private:
     force_sensor *= gate;
     moment_sensor *= gate;
 
+    wrenches["EEForceSensor"] = sva::ForceVecd(moment_sensor, force_sensor);
+
+    // velocity-scaled wrench gate
+    // When the arm is moving fast, the ID-based estimator is unreliable.
+    // Scale the injected wrench toward zero as joint velocity increases.
+
+    //double max_qd = 0.0;
+    //for (int i = 0; i < mb.nrJoints(); ++i)
+    //{
+     // if (mb.joint(i).dof() == 1) // only 1-DOF revolute joints
+      //{
+       // double qd = std::abs(robot.mbc().alpha[i][0]);
+        //if (qd > max_qd)
+         // max_qd = qd;
+      //}
+    //}
+    // Gate: full wrench (1) below 0.05 rad/s, zero above 0.15 rad/s
+    //const double qd_low = 0.05;
+    //const double qd_high = 0.15;
+    //double gate = 1.0 - std::clamp((max_qd - qd_low) / (qd_high - qd_low), 0.0, 1.0);
+    //force_sensor *= gate;
+    //moment_sensor *= gate;
+
+    if (!comms_ok) { force_sensor.setZero(); moment_sensor.setZero(); }
     //    wrenches["EEForceSensor"] = sva::ForceVecd(filtered_moment, filtered_force);
     gc_->setWrenches(wrenches);
 
@@ -366,7 +446,70 @@ private:
     }
 
     //// 9- Run controller and publish joint trajectory
-    if (gc_->run())
+
+    if (gc_->run() && comms_ok)
+    {
+      // --- Decimate: mc_rtc runs at 1 kHz, publish at ~100 Hz ---
+      if (++pub_count_ % pub_decim_ != 0) return;
+
+      static const std::vector<std::string> names =
+          {"joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"};
+
+      // Snapshot encoders
+      std::vector<double> enc_q;
+      {
+        std::lock_guard<std::mutex> lock(effort_mutex_);
+        enc_q = last_enc_q_;
+      }
+      if (enc_q.size() < names.size()) return;
+
+      trajectory_msgs::msg::JointTrajectory traj;
+      traj.joint_names = names;
+      trajectory_msgs::msg::JointTrajectoryPoint pt;
+
+      bool sane = true;
+      for (size_t k = 0; k < names.size(); ++k)
+      {
+        double q_cmd = 0.0, qd_cmd = 0.0;
+        if (gc_->robot().hasJoint(names[k]))
+        {
+          auto idx = gc_->robot().jointIndexByName(names[k]);
+          q_cmd  = gc_->robot().mbc().q[idx][0];
+          qd_cmd = gc_->robot().mbc().alpha[idx][0];   // velocities for smooth JTC interp
+        }
+
+        // --- First-command sanity check ---
+        if (!first_cmd_checked_ && std::abs(q_cmd - enc_q[k]) > 0.05)
+        {
+          mc_rtc::log::error(
+              "[KortexBridge] FIRST CMD MISMATCH joint {} cmd={:.3f} enc={:.3f} - NOT publishing",
+              names[k], q_cmd, enc_q[k]);
+          sane = false;
+        }
+
+        // --- Per-cycle clamp around measured position ---
+        q_cmd = std::clamp(q_cmd, enc_q[k] - delta_max_, enc_q[k] + delta_max_);
+
+        pt.positions.push_back(q_cmd);
+        pt.velocities.push_back(qd_cmd);
+      }
+      if (!sane) return;               // never publish a jumping first command
+      first_cmd_checked_ = true;
+
+      pt.time_from_start = rclcpp::Duration(0, 20'000'000); // 20 ms ≈ 2x publish period @100Hz
+      traj.points.push_back(pt);
+
+      if (dry_run_)
+      {
+        static int dr_count = 0;
+        if (++dr_count % 100 == 0)
+          mc_rtc::log::warning("[KortexBridge] DRY RUN - command not published");
+        return;
+      }
+      pub_->publish(traj);
+    }
+   }
+/*    if (gc_->run())
     {
       trajectory_msgs::msg::JointTrajectory traj;
       traj.joint_names = {"joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"};
@@ -387,7 +530,7 @@ private:
       traj.points.push_back(pt);
       pub_->publish(traj); 
     }
-  }
+  } */
 
   std::shared_ptr<mc_control::MCGlobalController> gc_;
   rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr pub_;

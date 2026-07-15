@@ -13,6 +13,9 @@ void ImpedanceHoldState::configure(const mc_rtc::Configuration &config)
     task_damping_ = config("damping");
   if (config.has("weight"))
     task_weight_ = config("weight");
+  if (config.has("gains"))
+    gains_config_ = config("gains");
+
 }
 
 // State initialization: create impedance controller on EE frame
@@ -38,7 +41,24 @@ void ImpedanceHoldState::start(mc_control::fsm::Controller &ctl)
   task_->targetPose(X_0_target_);
 
   // 5. Impedance model gains
-  auto &gains = task_->gains();
+  auto & gains = task_->gains();
+  auto readV3 = [&](const char * grp, const char * key, const Eigen::Vector3d & def) -> Eigen::Vector3d {
+  if (gains_config_.has(grp) && gains_config_(grp).has(key))
+  {
+      Eigen::Vector3d v = gains_config_(grp)(key);   // copy-init: uses Configuration's conversion operator
+      return v;
+  }
+    return def;
+  };
+  gains.mass().linear(   readV3("mass",      "linear",  {3,3,3}));
+  gains.mass().angular(  readV3("mass",      "angular", {2,2,2}));
+  gains.spring().linear( readV3("stiffness", "linear",  {800,800,800}));
+  gains.spring().angular(readV3("stiffness", "angular", {40,40,40}));
+  gains.damper().linear( readV3("damping",   "linear",  {120,120,120}));
+  gains.damper().angular(readV3("damping",   "angular", {30,30,30}));
+  gains.wrench().linear( readV3("wrench",    "linear",  {1,1,1}));
+  gains.wrench().angular(readV3("wrench",    "angular", {1,1,1}));
+/*  auto &gains = task_->gains();
   gains.mass().linear(Eigen::Vector3d(3.0, 3.0, 3.0));
   gains.mass().angular(Eigen::Vector3d(2.0, 2.0, 2.0));
 
@@ -50,7 +70,7 @@ void ImpedanceHoldState::start(mc_control::fsm::Controller &ctl)
 
   gains.wrench().linear(Eigen::Vector3d(1.0, 1.0, 1.0));
   gains.wrench().angular(Eigen::Vector3d(1.0, 1.0, 1.0));
-
+*/
   ctl.solver().addTask(task_);
 
   // 6. Sensor wiring diagnostic - uses the correct mc_rtc API

@@ -16,6 +16,7 @@ private:
   std::shared_ptr<mc_tasks::force::ImpedanceTask> task_;
   sva::PTransformd X_0_target_;  // fixed path reference — never changes
   mc_rtc::Configuration config_;
+  mc_rtc::Configuration gains_config_;
 
   double dt_             = 0.005;
   double task_stiffness_ = 50.0;   // low = compliant (yields to pushes)
