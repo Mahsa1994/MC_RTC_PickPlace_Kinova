@@ -63,11 +63,11 @@ states:
           angular: [2.0, 2.0, 2.0]
           linear: [3.0, 3.0, 3.0]
         stiffness:
-          angular: [8.0, 8.0, 8.0]     # Much softer spring
-          linear: [10.0, 10.0, 10.0]
+          angular: [20.0, 20.0, 20.0]     # Much softer spring
+          linear: [100.0, 100.0, 100.0]
         damping:
-          angular: [15.0, 15.0, 15.0]   # Heavily damped to eliminate chattering
-          linear: [25.0, 25.0, 25.0]
+          angular: [20.0, 20.0, 20.0]   # Heavily damped to eliminate chattering
+          linear: [60.0, 60.0, 60.0]
         wrench:
           angular: [1.0, 1.0, 1.0]
           linear: [1.0, 1.0, 1.0]
