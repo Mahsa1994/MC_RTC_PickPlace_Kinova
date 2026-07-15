@@ -1,6 +1,6 @@
 MainRobot: Kinova6DOF
 Enabled: KinovaImpedance
-Timestep: 0.001 #0.005
+Timestep: 0.002 #last 0.001 - 0.005
 
 Plugins:
   - ROS
@@ -12,7 +12,8 @@ ObserverPipelines:
         update: true
         log: true
         position: encoderValues
-        velocity: encoderFiniteDifferences
+        velocity: encoderVelocities
+        #velocity: encoderFiniteDifferences
 
 ControllerModulePaths:
   - /usr/local/lib/mc_controller
