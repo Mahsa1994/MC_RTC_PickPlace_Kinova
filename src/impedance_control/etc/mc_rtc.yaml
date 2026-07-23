@@ -1,9 +1,11 @@
 MainRobot: Kinova6DOF
-Enabled: KinovaImpedance
-Timestep: 0.002 #last 0.001 - 0.005
+Enabled:
+  - PickPlaceController
+Timestep: 0.005
+LogPolicy: threaded
 
-Plugins:
-  - ROS
+ControllerModulePaths:
+  - /home/vscode/workspace/install/pick_and_place/lib/mc_controller
 
 ObserverPipelines:
   - name: MainPipeline
@@ -12,16 +14,10 @@ ObserverPipelines:
         update: true
         log: true
         position: encoderValues
-        velocity: encoderVelocities
-        #velocity: encoderFiniteDifferences
+        velocity: encoderFiniteDifferences
 
-ControllerModulePaths:
-  - /usr/local/lib/mc_controller
-  - /home/vscode/workspace/install/impedance_control/lib/mc_controller
+GlobalPlugins:
+  - RealRobotSensor
 
-StatesLibraries:
-  - /usr/local/lib/mc_controller/fsm/states
-  - /home/vscode/workspace/install/impedance_control/lib/mc_controller/KinovaImpedance/states
-
-StatesFiles:
-  - /usr/local/lib/mc_controller/fsm/states/data
+GlobalPluginPaths:
+  - /home/vscode/workspace/install/pick_and_place/lib/mc_plugins
