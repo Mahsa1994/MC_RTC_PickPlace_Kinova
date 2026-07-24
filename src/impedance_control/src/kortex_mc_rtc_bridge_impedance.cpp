@@ -24,8 +24,8 @@ public:
   KortexMcRtcBridge() : Node("kortex_mc_rtc_bridge_impedance")
   {
 
-    dry_run_    = this->declare_parameter("dry_run", false);
-    delta_max_  = this->declare_parameter("delta_max", 0.05); 
+    dry_run_    = this->declare_parameter("dry_run", true);
+    delta_max_  = this->declare_parameter("delta_max", 0.05);
     pub_decim_  = this->declare_parameter("publish_decimation", 10); // 1kHz/10 = 100Hz
     loop_dt_ = this->declare_parameter("loop_dt", 0.001);   // seconds; sim keeps 0.001
 
