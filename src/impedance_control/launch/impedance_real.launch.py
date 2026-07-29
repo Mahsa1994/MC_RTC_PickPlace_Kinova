@@ -27,7 +27,17 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'use_sim_time': False,
-            'dry_run': False,           # FLIP TO False ONLY AFTER SIGN CHECK
+            # SAFETY DEFAULT - do not set to False until you have:
+            #   1) run a manual push test in every direction with dry_run:true,
+            #      watched the logged force_sensor/moment_sensor, and confirmed
+            #      the sign makes the arm YIELD (not push back) - see README.md;
+            #   2) re-validated wrench_dls_lambda2 / max_force_estimate /
+            #      max_moment_estimate / qd_gate_low / qd_gate_high against that
+            #      data (these were just changed - see README.md changelog).
+            # This was previously left at False with a comment saying the
+            # opposite ("flip to False only after sign check") - reset to the
+            # safe state.
+            'dry_run': True,
             'loop_dt': 0.001,
             'publish_decimation': 10,
             'delta_max': 0.01,         # tight for first trials

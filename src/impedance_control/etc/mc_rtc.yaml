@@ -1,6 +1,9 @@
 MainRobot: Kinova6DOF
 Enabled: KinovaImpedance
-Timestep: 0.002
+# Aligned with etc/KinovaImpedance.yaml and the bridge's loop_dt (1kHz) - see
+# the comment there. Previously 0.002 here vs 0.001 in KinovaImpedance.yaml
+# and the bridge's wall-clock loop.
+Timestep: 0.001
 LogPolicy: threaded
 
 Plugins:

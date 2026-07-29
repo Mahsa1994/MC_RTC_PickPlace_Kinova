@@ -1,6 +1,10 @@
 Name: KinovaImpedance
 MainRobot: Kinova6DOF
-Timestep: 0.001  #0.005
+# Must match mc_rtc.yaml's global Timestep and the bridge's loop_dt (1kHz).
+# A mismatch here desyncs the impedance model's integration rate from
+# wall-clock time, which can turn an intentionally overdamped virtual
+# spring-damper into an underdamped/oscillatory one in real time.
+Timestep: 0.001
 Managed: false
 StepByStep: false
 
@@ -50,9 +54,18 @@ states:
       damping: 10.0
       weight: 100.0
 
-      wrenchThreshold:
-        force: [3.0, 3.0, 3.0]
-        torque: [1.0, 1.0, 1.0]
+      # Warn (not a hard stop yet) if the compliance pose strays further than
+      # this from the held target - see ImpedanceHoldState::run().
+      maxDeflection: 0.15
+
+      # NOTE: force/torque deadbanding is NOT done here - it's already
+      # applied upstream in kortex_mc_rtc_bridge_impedance.cpp
+      # (deadband_force / deadband_moment params) before the wrench ever
+      # reaches this state, for both the real robot and Gazebo (same bridge
+      # executable - see launch/impedance_gazebo.launch.py). A
+      # `wrenchThreshold` key used to live here but was never read by
+      # ImpedanceHoldState - removed so it doesn't look like protection that
+      # wasn't actually wired up.
 
       # Impedance Filter Gains (Highly Overdamped for Simulation)
       # Lower stiffness (5.0) makes the virtual spring soft and easy to push.

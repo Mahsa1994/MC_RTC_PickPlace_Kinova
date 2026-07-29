@@ -22,4 +22,5 @@ private:
   double task_stiffness_ = 50.0;   // low = compliant (yields to pushes)
   double task_damping_   = 14.14;  // 2*sqrt(stiffness) for critical damping
   double task_weight_    = 100.0;  // low weight = yields in QP priority
+  double max_deflection_ = 0.15;   // m; warn if compliance pose strays this far from X_0_target_
 };

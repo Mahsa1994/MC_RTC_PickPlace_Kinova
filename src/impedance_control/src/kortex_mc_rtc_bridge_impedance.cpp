@@ -33,6 +33,25 @@ public:
     deadband_force_ = this->declare_parameter("deadband_force", 1.5);  // sim value; real: start 6.0
     deadband_moment_= this->declare_parameter("deadband_moment", 0.5); // sim value; real: start 1.5
 
+    // Damped-least-squares regularization for the Jacobian-transpose wrench
+    // solve, and hard clamps on the result. Both exist because a plain
+    // inverse blows up near kinematic singularities (noise gets amplified
+    // into huge spurious force spikes) - see README.md.
+    wrench_dls_lambda2_ = this->declare_parameter("wrench_dls_lambda2", 4.0);
+    max_force_norm_     = this->declare_parameter("max_force_estimate", 60.0);   // N
+    max_moment_norm_    = this->declare_parameter("max_moment_estimate", 15.0);  // Nm
+
+    // Velocity gate for the wrench estimate (rad/s). Raised from the old
+    // 0.05/0.15 defaults now that inertial torque is compensated (see the
+    // alphaD estimation below) - re-validate against real push-while-moving
+    // tests before trusting these numbers on hardware.
+    qd_gate_low_  = this->declare_parameter("qd_gate_low", 0.05);
+    qd_gate_high_ = this->declare_parameter("qd_gate_high", 0.3);
+
+    // Low-pass time constant for the finite-differenced joint-acceleration
+    // estimate used to compensate inertial torque in the bias computation.
+    accel_filter_tau_ = this->declare_parameter("accel_filter_tau", 0.1);
+
     pub_ = this->create_publisher<trajectory_msgs::msg::JointTrajectory>(
         "/joint_trajectory_controller/joint_trajectory", 1);
 
@@ -115,6 +134,19 @@ private:
   double deadband_force_{1.5};
   double deadband_moment_{0.5};
 
+  double wrench_dls_lambda2_{4.0};
+  double max_force_norm_{60.0};
+  double max_moment_norm_{15.0};
+  double qd_gate_low_{0.05};
+  double qd_gate_high_{0.3};
+  double accel_filter_tau_{0.1};
+
+  // Finite-differenced, filtered joint acceleration (DOF-space) fed into the
+  // inverse-dynamics bias so genuine inertial torque isn't misread as contact.
+  Eigen::VectorXd filtered_alphaD_;
+  Eigen::VectorXd prev_alpha_dof_;
+  bool has_prev_alpha_{false};
+
   // Helper: build a map from joint name �- DOF start index in the nrDof vector
   // RBDyn does not expose jointVelocityIndex(), we reconstruct it by walking
   // the joint list and accumulating DOF counts.
@@ -164,11 +196,6 @@ private:
         std::lock_guard<std::mutex> lock(effort_mutex_);
         latest_efforts_ = enc_tau;
         last_enc_q_ = enc_q;
-      }
-
-      {
-        std::lock_guard<std::mutex> lock(effort_mutex_);
-        latest_efforts_ = enc_tau;
       }
       return;
     }
@@ -249,11 +276,46 @@ private:
       }
     }
 
-    ///// 2- Inverse dynamics to get gravity + Coriolis bias torques
+    ///// 2- Inverse dynamics to get gravity + Coriolis + inertial bias torques
+    //
+    // alphaD used to be forced to zero here, which implicitly assumes the arm
+    // is never accelerating. In reality it almost always is at least a
+    // little (even small corrective jitter while "holding still"), so the
+    // real inertial torque M(q)*qddot was silently misattributed to external
+    // contact - a likely cause of jerky motion with nobody touching the arm.
+    // Estimate qddot via a filtered finite-difference of encoder velocity so
+    // it's accounted for in the bias instead.
+    Eigen::VectorXd alpha_dof = Eigen::VectorXd::Zero(mb.nrDof());
+    for (int i = 0; i < mb.nrJoints(); ++i)
+    {
+      if (mb.joint(i).dof() == 1)
+      {
+        auto it = dof_map.find(mb.joint(i).name());
+        if (it != dof_map.end())
+          alpha_dof[it->second] = robot.mbc().alpha[i][0];
+      }
+    }
+
+    if (filtered_alphaD_.size() != mb.nrDof())
+      filtered_alphaD_ = Eigen::VectorXd::Zero(mb.nrDof());
+
+    if (has_prev_alpha_)
+    {
+      Eigen::VectorXd raw_alphaD = (alpha_dof - prev_alpha_dof_) / loop_dt_;
+      const double alpha_f_acc = loop_dt_ / (loop_dt_ + accel_filter_tau_);
+      filtered_alphaD_ = (1.0 - alpha_f_acc) * filtered_alphaD_ + alpha_f_acc * raw_alphaD;
+    }
+    prev_alpha_dof_  = alpha_dof;
+    has_prev_alpha_  = true;
+
     rbd::MultiBodyConfig mbc_id = robot.mbc();
     mbc_id.gravity = Eigen::Vector3d(0, 0, 9.81);
-    for (auto &ad : mbc_id.alphaD)
-      std::fill(ad.begin(), ad.end(), 0.0);
+    for (int i = 0; i < mb.nrJoints(); ++i)
+    {
+      auto it = dof_map.find(mb.joint(i).name());
+      if (it != dof_map.end() && !mbc_id.alphaD[i].empty())
+        mbc_id.alphaD[i][0] = filtered_alphaD_[it->second];
+    }
 
     rbd::InverseDynamics id(mb);
     id.inverseDynamics(mb, mbc_id);
@@ -290,14 +352,32 @@ private:
       }
     }
 
-    ///// 6- Solve J_active - F_world = tau_ext_active
-    Eigen::VectorXd F_world = J_active.transpose()
-                                  .completeOrthogonalDecomposition()
-                                  .solve(tau_ext_active);
+    ///// 6- Solve J_active^T * F_world = tau_ext_active via damped least squares.
+    // A plain solve/pseudo-inverse blows up near kinematic singularities
+    // (routine during reach/pick-place motion): any torque-sensor noise in
+    // that direction gets amplified into a huge spurious force spike. This is
+    // the most likely cause of "goes crazy" behavior at specific
+    // configurations. lambda2 trades singularity robustness for estimate bias
+    // - re-tune wrench_dls_lambda2_ against real data if needed.
+    Eigen::MatrixXd JT  = J_active.transpose(); // 6x6 for a 6-DOF arm
+    Eigen::MatrixXd JJT = JT * JT.transpose();
+    Eigen::VectorXd F_world =
+        JT.transpose() * (JJT + wrench_dls_lambda2_ * Eigen::MatrixXd::Identity(JJT.rows(), JJT.rows()))
+                              .ldlt()
+                              .solve(tau_ext_active);
 
     // Split wrench into moment and force components (world frame)
     Eigen::Vector3d moment_world(F_world[0], F_world[1], F_world[2]);
     Eigen::Vector3d force_world(F_world[3], F_world[4], F_world[5]);
+
+    // Hard safety clamp: whatever the estimator produces, never inject a
+    // wrench larger than this into the compliance controller. Bounds how far
+    // a single bad estimate (residual singularity ringing, glitch) can
+    // deflect the arm, independent of how well-tuned lambda2 is.
+    if (force_world.norm() > max_force_norm_)
+      force_world *= max_force_norm_ / force_world.norm();
+    if (moment_world.norm() > max_moment_norm_)
+      moment_world *= max_moment_norm_ / moment_world.norm();
 
 
     // delat at startup 
@@ -401,35 +481,17 @@ private:
       }
     }
 
-    // Gate: full wrench (1) below 0.05 rad/s, zero above 0.15 rad/s
-    const double qd_low = 0.05;
-    const double qd_high = 0.15;
-    double gate = 1.0 - std::clamp((max_qd - qd_low) / (qd_high - qd_low), 0.0, 1.0);
+    // Gate: full wrench (1) below qd_gate_low_, zero above qd_gate_high_.
+    // Raised from the original 0.05/0.15 rad/s default, which zeroed
+    // compliance during essentially any real pick-and-place motion (well
+    // below normal cruise speed) - now that inertial torque is compensated
+    // above, the estimate should stay usable at higher speeds too, but
+    // re-validate against real push-while-moving tests before trusting this.
+    double gate = 1.0 - std::clamp((max_qd - qd_gate_low_) / (qd_gate_high_ - qd_gate_low_), 0.0, 1.0);
     force_sensor *= gate;
     moment_sensor *= gate;
 
     wrenches["EEForceSensor"] = sva::ForceVecd(moment_sensor, force_sensor);
-
-    // velocity-scaled wrench gate
-    // When the arm is moving fast, the ID-based estimator is unreliable.
-    // Scale the injected wrench toward zero as joint velocity increases.
-
-    //double max_qd = 0.0;
-    //for (int i = 0; i < mb.nrJoints(); ++i)
-    //{
-     // if (mb.joint(i).dof() == 1) // only 1-DOF revolute joints
-      //{
-       // double qd = std::abs(robot.mbc().alpha[i][0]);
-        //if (qd > max_qd)
-         // max_qd = qd;
-      //}
-    //}
-    // Gate: full wrench (1) below 0.05 rad/s, zero above 0.15 rad/s
-    //const double qd_low = 0.05;
-    //const double qd_high = 0.15;
-    //double gate = 1.0 - std::clamp((max_qd - qd_low) / (qd_high - qd_low), 0.0, 1.0);
-    //force_sensor *= gate;
-    //moment_sensor *= gate;
 
     if (!comms_ok) { force_sensor.setZero(); moment_sensor.setZero(); }
     //    wrenches["EEForceSensor"] = sva::ForceVecd(filtered_moment, filtered_force);
@@ -509,28 +571,6 @@ private:
       pub_->publish(traj);
     }
    }
-/*    if (gc_->run())
-    {
-      trajectory_msgs::msg::JointTrajectory traj;
-      traj.joint_names = {"joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"};
-
-      trajectory_msgs::msg::JointTrajectoryPoint pt;
-      for (const auto &name : traj.joint_names)
-      {
-        if (gc_->robot().hasJoint(name))
-        {
-          auto idx = gc_->robot().jointIndexByName(name);
-          pt.positions.push_back(gc_->robot().mbc().q[idx][0]);
-        }
-        else
-          pt.positions.push_back(0.0);
-        pt.velocities.push_back(0.0);
-      }
-      pt.time_from_start.nanosec = 20'000'000; // 20 ms - duration for 1 trajectory point
-      traj.points.push_back(pt);
-      pub_->publish(traj); 
-    }
-  } */
 
   std::shared_ptr<mc_control::MCGlobalController> gc_;
   rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr pub_;

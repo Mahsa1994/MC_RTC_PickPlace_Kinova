@@ -18,10 +18,13 @@
 ### Why no external F/T sensor?
 
 The Kinova Gen3 estimates the end-effector wrench from joint torque sensors
-and a dynamics model, with gravity compensation applied internally.  The
-`mc_kortex` driver publishes this as a virtual force sensor named
-`EndEffectorForceSensor`.  Performance is slightly noisier than a dedicated
-ATI or Rokubi sensor, but sufficient for hand-guiding at low speeds.
+and a dynamics model, with gravity compensation applied internally.  This
+repo's own bridge (`kortex_mc_rtc_bridge_impedance.cpp`) does that estimation
+(joint torques + Jacobian transpose, damped-least-squares regularized) and
+injects it under the sensor name `EEForceSensor` - that's the exact name
+`ImpedanceHoldState::start()` checks for. Keep them in sync if you ever
+rename it. Performance is slightly noisier than a dedicated ATI or Rokubi
+sensor, but sufficient for hand-guiding at low speeds.
 
 ### FSM State Machine
 

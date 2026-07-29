@@ -15,7 +15,8 @@ void ImpedanceHoldState::configure(const mc_rtc::Configuration &config)
     task_weight_ = config("weight");
   if (config.has("gains"))
     gains_config_ = config("gains");
-
+  if (config.has("maxDeflection"))
+    max_deflection_ = config("maxDeflection");
 }
 
 // State initialization: create impedance controller on EE frame
@@ -58,19 +59,7 @@ void ImpedanceHoldState::start(mc_control::fsm::Controller &ctl)
   gains.damper().angular(readV3("damping",   "angular", {30,30,30}));
   gains.wrench().linear( readV3("wrench",    "linear",  {1,1,1}));
   gains.wrench().angular(readV3("wrench",    "angular", {1,1,1}));
-/*  auto &gains = task_->gains();
-  gains.mass().linear(Eigen::Vector3d(3.0, 3.0, 3.0));
-  gains.mass().angular(Eigen::Vector3d(2.0, 2.0, 2.0));
 
-  gains.spring().linear(Eigen::Vector3d(800.0, 800.0, 800.0));
-  gains.spring().angular(Eigen::Vector3d(40.0, 40.0, 40.0));
-
-  gains.damper().linear(Eigen::Vector3d(120.0, 120.0, 120.0));
-  gains.damper().angular(Eigen::Vector3d(30.0, 30.0, 30.0));
-
-  gains.wrench().linear(Eigen::Vector3d(1.0, 1.0, 1.0));
-  gains.wrench().angular(Eigen::Vector3d(1.0, 1.0, 1.0));
-*/
   ctl.solver().addTask(task_);
 
   // 6. Sensor wiring diagnostic - uses the correct mc_rtc API
@@ -123,6 +112,19 @@ bool ImpedanceHoldState::run(mc_control::fsm::Controller &ctl)
         deflection.x(), deflection.y(), deflection.z(),
         deflection.norm(),
         track_error.norm());
+
+    // Sanity check: the bridge clamps its wrench estimate (see
+    // kortex_mc_rtc_bridge_impedance.cpp), which bounds this in steady state,
+    // but flag it loudly if it ever doesn't - this is not an automatic
+    // safety stop, just a warning, since this single-state controller has
+    // nowhere else to transition to yet.
+    if (deflection.norm() > max_deflection_)
+    {
+      mc_rtc::log::warning(
+          "[ImpedanceHoldState] Deflection {:.3f} m exceeds max_deflection_ ({:.3f} m) - "
+          "check the bridge's wrench estimate/clamp.",
+          deflection.norm(), max_deflection_);
+    }
   }
 
   return false;
