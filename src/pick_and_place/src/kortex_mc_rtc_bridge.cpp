@@ -1,3 +1,10 @@
+// NOTE: this bridge only relays position/velocity (no effort -> no wrench
+// estimation), so it cannot drive ComplianceCartesianMove or any other
+// force-feedback state - it's a plain rigid relay. The launch files in this
+// package now use impedance_control's kortex_mc_rtc_bridge_impedance
+// instead, which does the same joint_states <-> joint_trajectory relay plus
+// wrench estimation/injection. Kept here as a simple non-compliant
+// reference/fallback.
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <trajectory_msgs/msg/joint_trajectory.hpp>

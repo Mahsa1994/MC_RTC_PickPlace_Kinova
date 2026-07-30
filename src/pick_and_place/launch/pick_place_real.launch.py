@@ -52,15 +52,28 @@ def generate_launch_description():
 #        ]
 #    )
 
-    # ── 2. The new Custom C++ Closed-Loop Bridge ──────────────────────────
+    # ── 2. Closed-Loop Bridge ──────────────────────────────────────────────
+    # Uses impedance_control's wrench-aware bridge (not this package's own
+    # kortex_mc_rtc_bridge, see the note at the top of that file) so
+    # ComplianceCartesianMove has a real measuredWrench() to react to.
     mc_rtc_bridge = TimerAction(
         period=12.0, # Wait 8 seconds for kortex driver to load
         actions=[
             Node(
-                package='pick_and_place',
-                executable='kortex_mc_rtc_bridge',
+                package='impedance_control',
+                executable='kortex_mc_rtc_bridge_impedance',
                 output='screen',
-                parameters=[{'use_sim_time': False}]
+                parameters=[{
+                    'use_sim_time': False,
+                    # SAFETY DEFAULT - see impedance_control's
+                    # impedance_real.launch.py and README.md for the
+                    # push-test verification procedure before flipping this.
+                    'dry_run': True,
+                    'torque_sign': -1.0,
+                    'deadband_force': 6.0,
+                    'deadband_moment': 1.5,
+                    'delta_max': 0.01,
+                }]
             )
         ]
     )

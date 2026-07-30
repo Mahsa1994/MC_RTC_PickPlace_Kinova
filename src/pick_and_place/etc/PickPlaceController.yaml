@@ -23,12 +23,12 @@ init: Unfold
 
 states:
 
-  # ── STEP 1: Only testing Unfold ─────────────────────────────────────
-  # Arm is currently at the monitoring snapshot pose:
+  # Arm is expected to start at the monitoring snapshot pose:
   #   joints (deg): [119.6, 0.5, 87.9, 174.3, 263.6, 87.9]
   # Target is the SAME pose converted to radians — so the arm should
   # barely move. This confirms joint naming and direction are correct
-  # before you command any real motion.
+  # before commanding any real motion, before chaining into the full
+  # pick-and-place cycle below.
   Unfold:
     base: JointMove
     #target: [-0.6933, 0.0449, -1.4642, 3.0964, 1.5793, -1.3926]
@@ -36,9 +36,10 @@ states:
     duration: 15.0      # very slow — 15 s to move essentially nowhere
     stiffness: 50.0      # minimal gain — arm will move gently
     threshold: 0.05     # 0.05 rad (~3°) convergence threshold
-    next: MoveHome          # stop at Idle, do NOT chain to MoveHome yet
+    next: MoveHome
 
-  # ── Placeholder states (not used yet) ───────────────────────────────
+  # Rigid (non-compliant) - fine here since this runs before/after the task,
+  # not while a human is expected to be reaching into the workspace.
   MoveHome:
     base: CartesianMove
     target:
@@ -48,23 +49,75 @@ states:
     weight: 1000.0
     pos_threshold: 0.02
     settle_timeout: 5.0
-    next: Idle
+    next: MoveToPick
+
+  # ── Pick-and-place cycle ─────────────────────────────────────────────
+  # MoveToPick and MoveToPlace are ComplianceCartesianMove: they yield if
+  # the human pushes the arm off its path (trajectory clock pauses until
+  # the wrench clears), then resume toward the same target. MoveToPlace is
+  # the experimentally-relevant leg - `waypoints` sets the trajectory shape
+  # and `duration` sets the average speed, both changeable here without
+  # recompiling for different HRI trial conditions.
+  MoveToPick:
+    base: ComplianceCartesianMove
+    target:
+      ref: pick
+    waypoints:
+      - [0.40, 0.10, 0.25]   # hover ~10cm above pick_pose before descending
+    duration: 4.0
+    stiffness: 25.0
+    damping: 12.0
+    weight: 100.0
+    contact_force_threshold: 8.0   # must stay above deadband_force on the bridge
+    clear_hold_time: 0.3
+    next: CloseGripper
 
   CloseGripper:
     base: Gripper
     action: close
     timeout: 2.0
-    next: Idle
+    next: MoveToPlace
+
+  # THE experiment-manipulation state: vary `waypoints` for trajectory shape
+  # and `duration` for velocity between trials.
+  MoveToPlace:
+    base: ComplianceCartesianMove
+    target:
+      ref: place
+    waypoints: []   # add via-points here to change the trajectory shape
+    duration: 5.0    # shorten/lengthen to change arm velocity
+    stiffness: 20.0
+    damping: 10.0
+    weight: 100.0
+    contact_force_threshold: 8.0
+    clear_hold_time: 0.3
+    next: OpenGripper
 
   OpenGripper:
     base: Gripper
     action: open
     timeout: 3.0
+    next: ReturnHome
+
+  ReturnHome:
+    base: CartesianMove
+    target:
+      ref: home
+    duration: 4.0
+    stiffness: 4.0
+    weight: 1000.0
+    pos_threshold: 0.02
+    settle_timeout: 5.0
     next: Idle
 
 transitions:
-  - [Unfold,    MoveHome, MoveHome, Auto]
-  - [MoveHome,  Idle,     Idle,     Auto]
+  - [Unfold,       MoveHome,     MoveHome,     Auto]
+  - [MoveHome,     MoveToPick,   MoveToPick,   Auto]
+  - [MoveToPick,   CloseGripper, CloseGripper, Auto]
+  - [CloseGripper, MoveToPlace,  MoveToPlace,  Auto]
+  - [MoveToPlace,  OpenGripper,  OpenGripper,  Auto]
+  - [OpenGripper,  ReturnHome,   ReturnHome,   Auto]
+  - [ReturnHome,   Idle,         Idle,         Auto]
 constraints:
   - type: kinematics
   - type: dynamics

@@ -133,14 +133,20 @@ def generate_launch_description():
     )
 
     # t=20s: controllers active by t=11s, bridge gets 9s of margin.
+    # Uses impedance_control's wrench-aware bridge (not this package's own
+    # kortex_mc_rtc_bridge, see the note at the top of that file) so
+    # ComplianceCartesianMove has a real measuredWrench() to react to.
     mc_rtc_bridge = TimerAction(
         period=20.0,
         actions=[
             Node(
-                package='pick_and_place',
-                executable='kortex_mc_rtc_bridge',
+                package='impedance_control',
+                executable='kortex_mc_rtc_bridge_impedance',
                 output='screen',
-                parameters=[{'use_sim_time': True}]
+                parameters=[{
+                    'use_sim_time': True,
+                    'dry_run': False,  # safe here - Gazebo only, not the real robot
+                }]
             )
         ]
     )
