@@ -433,6 +433,15 @@ private:
     Eigen::Vector3d moment_sensor = R_world_sensor * moment_world;
     Eigen::Vector3d force_sensor = R_world_sensor * force_world;
 
+    // Raw wrench (Local frame), post-tare but before the 50ms low-pass
+    // filter and the deadband - kept aside purely so the periodic log below
+    // can show what the estimator actually computed vs. what survived
+    // filtering/deadbanding, to tell "real signal below threshold" apart
+    // from "estimator produced ~nothing" when a pull doesn't show up in
+    // EEForceSensor_f*/c*.
+    const Eigen::Vector3d raw_force_sensor  = force_sensor;
+    const Eigen::Vector3d raw_moment_sensor = moment_sensor;
+
     // Filtering + deadbanding (only after taring)
     static Eigen::Vector3d filtered_force = Eigen::Vector3d::Zero();
     static Eigen::Vector3d filtered_moment = Eigen::Vector3d::Zero();
@@ -500,6 +509,11 @@ private:
     static int log_count = 0;
     if (++log_count % 500 == 0)
     {
+      mc_rtc::log::info(
+          "[KortexBridge] RAW wrench (Local, pre-filter/deadband) -- force: ({:.3f}, {:.3f}, {:.3f}) N  "
+          "moment: ({:.3f}, {:.3f}, {:.3f}) Nm",
+          raw_force_sensor.x(), raw_force_sensor.y(), raw_force_sensor.z(),
+          raw_moment_sensor.x(), raw_moment_sensor.y(), raw_moment_sensor.z());
       mc_rtc::log::info(
           "[KortexBridge] Est. wrench (Local) -- force: ({:.2f}, {:.2f}, {:.2f}) N  "
           "moment: ({:.2f}, {:.2f}, {:.2f}) Nm",
