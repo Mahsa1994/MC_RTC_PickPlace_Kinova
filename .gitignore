@@ -26,3 +26,7 @@ compile_commands.json
 
 # python venv (if any)
 venv/
+
+# downloaded/generated dataset artifacts (multi-hundred-MB, regenerate with
+# prepare_dataset.py rather than committing)
+research/multiphysio_poc/data/
