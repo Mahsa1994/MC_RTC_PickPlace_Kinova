@@ -70,7 +70,7 @@ def generate_launch_description():
                     # push-test verification procedure before flipping this.
                     'dry_run': True,
                     'torque_sign': -1.0,
-                    'deadband_force': 6.0,
+                    'deadband_force': 1.5,
                     'deadband_moment': 1.5,
                     'delta_max': 0.01,
                 }]
