@@ -71,6 +71,7 @@ static sva::PTransformd resolveTarget(mc_control::fsm::Controller & ctl,
   if(ref == "home")       base = ppc(ctl).homePose();
   else if(ref == "pick")  base = ppc(ctl).pickPose();
   else if(ref == "place") base = ppc(ctl).placePose();
+  else if(ref == "current") base = ctl.robot().frame(ee_frame).position();
   else throw std::runtime_error("[resolveTarget] Unknown reference: " + ref);
 
   Eigen::Vector3d t = base.translation();

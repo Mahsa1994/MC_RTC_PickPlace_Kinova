@@ -19,9 +19,33 @@ StatesLibraries:
 
 StatesFiles: []
 IdleKeepState: true
-init: Unfold
+# SAFETY SCOPE (temporary): hold-in-place push/release test only. Does not
+# move toward Unfold/MoveHome/pick/place at all - captures wherever the arm
+# physically is at startup as the compliance target and holds there. See
+# HoldCurrent below. To restore the full sequence starting from Unfold, set
+# this back to `init: Unfold`.
+init: HoldCurrent
 
 states:
+
+  # Push/release sanity check: capture the arm's current pose as the
+  # ImpedanceTask target and hold it there (duration is a long fixed
+  # ceiling, not an actual move - target == start pose, so there is no
+  # motion to converge to). Push the arm -> it should yield; release ->
+  # it should settle back toward this same captured pose. Ctrl+C the
+  # bridge when done; there's no natural exit from this state.
+  HoldCurrent:
+    base: ComplianceCartesianMove
+    target:
+      ref: current
+    waypoints: []
+    duration: 3600.0
+    stiffness: 25.0
+    damping: 12.0
+    weight: 100.0
+    contact_force_threshold: 8.0   # must stay above deadband_force on the bridge
+    clear_hold_time: 0.3
+    next: HoldCurrent
 
   # Arm is expected to start at the monitoring snapshot pose:
   #   joints (deg): [119.6, 0.5, 87.9, 174.3, 263.6, 87.9]
@@ -119,6 +143,7 @@ states:
   #   next: Idle
 
 transitions:
+  - [HoldCurrent,  HoldCurrent,  HoldCurrent,  Auto]
   - [Unfold,       MoveHome,     MoveHome,     Auto]
   - [MoveHome,     MoveToPick,   MoveToPick,   Auto]
   - [MoveToPick,   Idle,         Idle,         Auto]
