@@ -14,10 +14,11 @@ Plugins:
 ObserverPipelines:
   - name: MainPipeline
     observers:
-      update: true
-      log: true
-      position: encoderValues
-      velocity: encoderVelocities
+      - type: Encoder
+        update: true
+        log: true
+        position: encoderValues
+        velocity: encoderVelocities
 
 ControllerModulePaths:
   - /usr/local/lib/mc_controller
