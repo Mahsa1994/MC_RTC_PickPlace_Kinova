@@ -435,6 +435,29 @@ struct ComplianceCartesianMove : mc_control::fsm::State
 
     task_->targetPose(targetAt(std::min(t_elapsed_, duration_)));
 
+    // SIGN CHECK (safe under dry_run - no hardware command involved).
+    // task_->compliancePose() is the ImpedanceTask's own internal target:
+    // where the impedance model thinks the end-effector should be, given the
+    // measured wrench (same signal ImpedanceHoldState used for its
+    // "Deflection" log). It updates from the compliance law regardless of
+    // dry_run, since the task doesn't know the resulting command is being
+    // dropped. Comparing it to the fixed hold anchor tells you the direction
+    // the controller is actually trying to move in response to the measured
+    // wrench, without ever touching the real arm.
+    // Expected: deflection should point the SAME way as measured force while
+    // pushing (yielding), then relax back toward zero after release. If it
+    // points the OPPOSITE way from the push, that's a sign error - stop and
+    // do not proceed to dry_run:false until it's fixed.
+    if((tick_ % 20) == 0)
+    {
+      Eigen::Vector3d deflection = task_->compliancePose().translation() - waypts_.back().translation();
+      Eigen::Vector3d meas_f     = task_->measuredWrench().force();
+      Eigen::Vector3d meas_m     = task_->measuredWrench().couple();
+      mc_rtc::log::info(
+        "[{}] SIGN CHECK -- deflection (m): ({:+.4f}, {:+.4f}, {:+.4f}) | measured force (N): ({:+.3f}, {:+.3f}, {:+.3f}) | measured moment (Nm): ({:+.3f}, {:+.3f}, {:+.3f})",
+        name(), deflection.x(), deflection.y(), deflection.z(), meas_f.x(), meas_f.y(), meas_f.z(), meas_m.x(), meas_m.y(), meas_m.z());
+    }
+
     if(t_elapsed_ < duration_) { tick_++; return false; }
 
     auto cur = ctl.robot().frame(ee_frame_).position();
