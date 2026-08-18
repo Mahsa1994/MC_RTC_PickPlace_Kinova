@@ -450,11 +450,18 @@ struct ComplianceCartesianMove : mc_control::fsm::State
     // do not proceed to dry_run:false until it's fixed.
     if((tick_ % 20) == 0)
     {
-      Eigen::Vector3d deflection = task_->compliancePose().translation() - waypts_.back().translation();
+      // deltaCompliancePose() IS Delta p_cd from the ImpedanceTask equation
+      // (K * Delta p_cd = K_f * (f_m - f_d)) directly - not re-derived by us,
+      // so it carries whatever frame convention mc_rtc itself uses
+      // internally, avoiding the world-vs-surface-frame mismatch the
+      // previous version of this log had (compliancePose() is world-frame,
+      // measuredWrench() is surface-frame - comparing them axis-by-axis
+      // without rotating one into the other's frame was invalid).
+      Eigen::Vector3d deflection = task_->deltaCompliancePose().translation();
       Eigen::Vector3d meas_f     = task_->measuredWrench().force();
       Eigen::Vector3d meas_m     = task_->measuredWrench().couple();
       mc_rtc::log::info(
-        "[{}] SIGN CHECK -- deflection (m): ({:+.4f}, {:+.4f}, {:+.4f}) | measured force (N): ({:+.3f}, {:+.3f}, {:+.3f}) | measured moment (Nm): ({:+.3f}, {:+.3f}, {:+.3f})",
+        "[{}] SIGN CHECK -- delta_compliance (m): ({:+.4f}, {:+.4f}, {:+.4f}) | measured force (N): ({:+.3f}, {:+.3f}, {:+.3f}) | measured moment (Nm): ({:+.3f}, {:+.3f}, {:+.3f})",
         name(), deflection.x(), deflection.y(), deflection.z(), meas_f.x(), meas_f.y(), meas_f.z(), meas_m.x(), meas_m.y(), meas_m.z());
     }
 
