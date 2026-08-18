@@ -21,8 +21,14 @@ def generate_launch_description():
     )
 
     # ── 1. Kortex driver (real robot) ─────────────────────────────────────
+    # Launched under chrt -f 80 (SCHED_FIFO) so ros2_control_node inherits
+    # real-time priority on fork/exec - without this the 1kHz control loop
+    # intermittently overruns its budget under SCHED_OTHER (verified on
+    # real hardware: manually elevating a running ros2_control_node PID via
+    # `chrt -f -p 80 <pid>` eliminated "Overrun detected!" warnings).
     kortex = ExecuteProcess(
         cmd=[
+            'chrt', '-f', '80',
             'ros2', 'launch', 'kortex_bringup', 'gen3.launch.py',
             'robot_ip:=192.168.1.10',
             'dof:=6',
