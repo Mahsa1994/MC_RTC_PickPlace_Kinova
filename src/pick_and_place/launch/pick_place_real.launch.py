@@ -71,17 +71,16 @@ def generate_launch_description():
                 output='screen',
                 parameters=[{
                     'use_sim_time': False,
-                    # SAFETY DEFAULT - reverted after first live test found the
-                    # arm locked rigid: joint_trajectory_controller was
-                    # rejecting every goal (nonzero velocity at trajectory end,
-                    # see ros2_controllers.yaml fix). world_dev looked correct
-                    # throughout because it reflects mc_rtc's INTERNAL
-                    # commanded state, not confirmed hardware execution - do
-                    # not trust dry_run:false test results from before this
-                    # fix. Re-run the full staged test (untouched baseline,
-                    # then light touch, then firm push) from scratch once the
-                    # controller fix is confirmed, before trusting motion again.
-                    'dry_run': False,
+                    # SAFETY DEFAULT - reverted again (2026-08-19) after
+                    # restoring the full pick-and-place loop (Unfold ->
+                    # MoveHome -> MoveToPick -> CloseGripper -> MoveToPlace ->
+                    # OpenGripper -> ReturnHome). Only HoldCurrent has any live
+                    # validation; everything else in this chain (including
+                    # Unfold's known target-pose mismatch, gripper actuation,
+                    # and MoveToPlace's contact-gate behavior during actual
+                    # motion) is untested. Do not flip without dry-run
+                    # validation of the newly-restored states first.
+                    'dry_run': True,
                     'torque_sign': -1.0,
                     'deadband_force': 1.0,
                     'deadband_moment': 1.5,

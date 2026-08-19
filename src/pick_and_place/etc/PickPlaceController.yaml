@@ -19,12 +19,17 @@ StatesLibraries:
 
 StatesFiles: []
 IdleKeepState: true
-# SAFETY SCOPE (temporary): hold-in-place push/release test only. Does not
-# move toward Unfold/MoveHome/pick/place at all - captures wherever the arm
-# physically is at startup as the compliance target and holds there. See
-# HoldCurrent below. To restore the full sequence starting from Unfold, set
-# this back to `init: Unfold`.
-init: HoldCurrent
+# Full pick-and-place loop restored (2026-08-19) after HoldCurrent's
+# translational sign check + gain tuning passed live, and after the
+# joint_trajectory_controller nonzero-end-velocity fix. Safety scope for this
+# is "participants only ever contact the gripper/end-effector area" (chosen
+# deliberately over whole-arm contact safety, which this architecture does
+# not provide - see MoveToPick/MoveToPlace comments below).
+# KNOWN UNRESOLVED ISSUE: Unfold's hardcoded target previously did not match
+# the arm's actual starting pose (FIRST CMD MISMATCH, command rejected
+# outright) - confirm the arm actually starts near Unfold's target before
+# trusting this state, or update the target to match your real starting pose.
+init: Unfold
 
 states:
 
@@ -111,13 +116,11 @@ states:
   # the experimentally-relevant leg - `waypoints` sets the trajectory shape
   # and `duration` sets the average speed, both changeable here without
   # recompiling for different HRI trial conditions.
-  # SAFETY SCOPE (temporary): MoveToPick is the only compliance behavior
-  # under test right now - it stops at Idle instead of continuing into
-  # CloseGripper/MoveToPlace/OpenGripper/ReturnHome, so a real-hardware run
-  # only ever exercises one ComplianceCartesianMove and never actuates the
-  # gripper or drives toward `place`. To restore the full pick-and-place
-  # loop: set this back to `next: CloseGripper`, uncomment the states below,
-  # and restore the full transitions table (both preserved below).
+  # Contact-safety scope: participants only ever contact the gripper/
+  # end-effector area (chosen deliberately - this architecture's wrench
+  # estimate is computed as-if applied at the tool frame, so contact
+  # elsewhere on the arm's body yields inconsistently, see session notes
+  # 2026-08-19). Gains matched to HoldCurrent's live-tuned values below.
   MoveToPick:
     base: ComplianceCartesianMove
     target:
@@ -130,58 +133,75 @@ states:
     weight: 100.0
     contact_force_threshold: 8.0   # must stay above deadband_force on the bridge
     clear_hold_time: 0.3
-    next: Idle
+    next: CloseGripper
+    gains:
+      mass:
+        linear:  [3, 3, 3]
+        angular: [2, 2, 2]
+      stiffness:
+        linear:  [100, 100, 100]
+        angular: [10, 10, 10]
+      damping:
+        linear:  [60, 60, 60]
+        angular: [15, 15, 15]
 
-  # -- disabled for now, see SAFETY SCOPE note above --
-  # CloseGripper:
-  #   base: Gripper
-  #   action: close
-  #   timeout: 2.0
-  #   next: MoveToPlace
+  CloseGripper:
+    base: Gripper
+    action: close
+    timeout: 2.0
+    next: MoveToPlace
 
   # THE experiment-manipulation state: vary `waypoints` for trajectory shape
   # and `duration` for velocity between trials.
-  # MoveToPlace:
-  #   base: ComplianceCartesianMove
-  #   target:
-  #     ref: place
-  #   waypoints: []   # add via-points here to change the trajectory shape
-  #   duration: 5.0    # shorten/lengthen to change arm velocity
-  #   stiffness: 20.0
-  #   damping: 10.0
-  #   weight: 100.0
-  #   contact_force_threshold: 8.0
-  #   clear_hold_time: 0.3
-  #   next: OpenGripper
+  MoveToPlace:
+    base: ComplianceCartesianMove
+    target:
+      ref: place
+    waypoints: []   # add via-points here to change the trajectory shape
+    duration: 5.0    # shorten/lengthen to change arm velocity
+    stiffness: 20.0
+    damping: 10.0
+    weight: 100.0
+    contact_force_threshold: 8.0
+    clear_hold_time: 0.3
+    next: OpenGripper
+    gains:
+      mass:
+        linear:  [3, 3, 3]
+        angular: [2, 2, 2]
+      stiffness:
+        linear:  [100, 100, 100]
+        angular: [10, 10, 10]
+      damping:
+        linear:  [60, 60, 60]
+        angular: [15, 15, 15]
 
-  # OpenGripper:
-  #   base: Gripper
-  #   action: open
-  #   timeout: 3.0
-  #   next: ReturnHome
+  OpenGripper:
+    base: Gripper
+    action: open
+    timeout: 3.0
+    next: ReturnHome
 
-  # ReturnHome:
-  #   base: CartesianMove
-  #   target:
-  #     ref: home
-  #   duration: 4.0
-  #   stiffness: 4.0
-  #   weight: 1000.0
-  #   pos_threshold: 0.02
-  #   settle_timeout: 5.0
-  #   next: Idle
+  ReturnHome:
+    base: CartesianMove
+    target:
+      ref: home
+    duration: 4.0
+    stiffness: 4.0
+    weight: 1000.0
+    pos_threshold: 0.02
+    settle_timeout: 5.0
+    next: Idle
 
 transitions:
   - [HoldCurrent,  HoldCurrent,  HoldCurrent,  Auto]
   - [Unfold,       MoveHome,     MoveHome,     Auto]
   - [MoveHome,     MoveToPick,   MoveToPick,   Auto]
-  - [MoveToPick,   Idle,         Idle,         Auto]
-  # -- full pick-and-place loop, disabled for now, see SAFETY SCOPE note above --
-  # - [MoveToPick,   CloseGripper, CloseGripper, Auto]
-  # - [CloseGripper, MoveToPlace,  MoveToPlace,  Auto]
-  # - [MoveToPlace,  OpenGripper,  OpenGripper,  Auto]
-  # - [OpenGripper,  ReturnHome,   ReturnHome,   Auto]
-  # - [ReturnHome,   Idle,         Idle,         Auto]
+  - [MoveToPick,   CloseGripper, CloseGripper, Auto]
+  - [CloseGripper, MoveToPlace,  MoveToPlace,  Auto]
+  - [MoveToPlace,  OpenGripper,  OpenGripper,  Auto]
+  - [OpenGripper,  ReturnHome,   ReturnHome,   Auto]
+  - [ReturnHome,   Idle,         Idle,         Auto]
 constraints:
   - type: kinematics
   - type: dynamics
