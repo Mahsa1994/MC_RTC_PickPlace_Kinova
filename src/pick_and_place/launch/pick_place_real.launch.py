@@ -71,13 +71,17 @@ def generate_launch_description():
                 output='screen',
                 parameters=[{
                     'use_sim_time': False,
-                    # Sign check passed for HoldCurrent (translational, 2
-                    # directions, world-frame diagnostic - see git log
-                    # 2026-08-19) with E-stop operator present. Rotational
-                    # sign check, qd_gate/max_force/max_moment revalidation,
-                    # and MoveToPick/MoveToPlace (moving-target compliance)
-                    # remain untested - stay conservative on the first live run.
-                    'dry_run': False,
+                    # SAFETY DEFAULT - reverted after first live test found the
+                    # arm locked rigid: joint_trajectory_controller was
+                    # rejecting every goal (nonzero velocity at trajectory end,
+                    # see ros2_controllers.yaml fix). world_dev looked correct
+                    # throughout because it reflects mc_rtc's INTERNAL
+                    # commanded state, not confirmed hardware execution - do
+                    # not trust dry_run:false test results from before this
+                    # fix. Re-run the full staged test (untouched baseline,
+                    # then light touch, then firm push) from scratch once the
+                    # controller fix is confirmed, before trusting motion again.
+                    'dry_run': True,
                     'torque_sign': -1.0,
                     'deadband_force': 1.0,
                     'deadband_moment': 1.5,

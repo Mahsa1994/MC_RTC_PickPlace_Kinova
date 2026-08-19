@@ -38,6 +38,15 @@ joint_trajectory_controller:
     allow_partial_joints_goal: false
     open_loop_control: true
     allow_integration_in_goal_trajectories: false
+    # Bridge streams short/single-point trajectories every control cycle, so
+    # the last (only) point almost always has nonzero velocity for any
+    # actively-compliant joint. Without this, joint_trajectory_controller
+    # rejects every such goal outright (confirmed on real hardware
+    # 2026-08-19: arm stayed rigid under a firm push, dry_run:false, while
+    # mc_rtc's internal state showed a normal-looking compliant response -
+    # every goal was silently rejected at this layer, never reaching the
+    # motors).
+    allow_nonzero_velocity_at_trajectory_end: true
 
 kinova_joint_controller:
   ros__parameters:
@@ -58,6 +67,7 @@ kinova_joint_controller:
     allow_partial_joints_goal: false
     open_loop_control: true
     allow_integration_in_goal_trajectories: false
+    allow_nonzero_velocity_at_trajectory_end: true  # see joint_trajectory_controller above
 
 robotiq_gripper_controller:
   ros__parameters:
