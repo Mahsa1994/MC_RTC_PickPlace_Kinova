@@ -71,10 +71,13 @@ def generate_launch_description():
                 output='screen',
                 parameters=[{
                     'use_sim_time': False,
-                    # SAFETY DEFAULT - see impedance_control's
-                    # impedance_real.launch.py and README.md for the
-                    # push-test verification procedure before flipping this.
-                    'dry_run': True,
+                    # Sign check passed for HoldCurrent (translational, 2
+                    # directions, world-frame diagnostic - see git log
+                    # 2026-08-19) with E-stop operator present. Rotational
+                    # sign check, qd_gate/max_force/max_moment revalidation,
+                    # and MoveToPick/MoveToPlace (moving-target compliance)
+                    # remain untested - stay conservative on the first live run.
+                    'dry_run': False,
                     'torque_sign': -1.0,
                     'deadband_force': 1.0,
                     'deadband_moment': 1.5,
