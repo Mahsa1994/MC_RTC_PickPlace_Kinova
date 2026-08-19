@@ -450,19 +450,21 @@ struct ComplianceCartesianMove : mc_control::fsm::State
     // do not proceed to dry_run:false until it's fixed.
     if((tick_ % 20) == 0)
     {
-      // deltaCompliancePose() IS Delta p_cd from the ImpedanceTask equation
-      // (K * Delta p_cd = K_f * (f_m - f_d)) directly - not re-derived by us,
-      // so it carries whatever frame convention mc_rtc itself uses
-      // internally, avoiding the world-vs-surface-frame mismatch the
-      // previous version of this log had (compliancePose() is world-frame,
-      // measuredWrench() is surface-frame - comparing them axis-by-axis
-      // without rotating one into the other's frame was invalid).
-      Eigen::Vector3d deflection = task_->deltaCompliancePose().translation();
-      Eigen::Vector3d meas_f     = task_->measuredWrench().force();
-      Eigen::Vector3d meas_m     = task_->measuredWrench().couple();
+      // WORLD-FRAME sign check. ctl.robot().frame(...).position() is always
+      // world-frame by mc_rtc convention (plain forward kinematics) - no
+      // ambiguity, unlike measuredWrench()/deltaCompliancePose() whose exact
+      // frame conventions we couldn't fully pin down from the header alone,
+      // and which produced confusing results across several attempts. Judge
+      // this by comparing world_dev's sign against the PHYSICAL direction
+      // you push in world terms (e.g. "I pushed straight down toward the
+      // floor" -> world_dev.z should go negative) - not against measured
+      // force, which is in a different (surface) frame and not directly
+      // comparable axis-by-axis.
+      Eigen::Vector3d world_dev = ctl.robot().frame(ee_frame_).position().translation()
+                                 - waypts_.back().translation();
       mc_rtc::log::info(
-        "[{}] SIGN CHECK -- delta_compliance (m): ({:+.4f}, {:+.4f}, {:+.4f}) | measured force (N): ({:+.3f}, {:+.3f}, {:+.3f}) | measured moment (Nm): ({:+.3f}, {:+.3f}, {:+.3f})",
-        name(), deflection.x(), deflection.y(), deflection.z(), meas_f.x(), meas_f.y(), meas_f.z(), meas_m.x(), meas_m.y(), meas_m.z());
+        "[{}] SIGN CHECK -- world_dev (m): ({:+.4f}, {:+.4f}, {:+.4f})  [+x=world +X, +y=world +Y, +z=world UP]",
+        name(), world_dev.x(), world_dev.y(), world_dev.z());
     }
 
     if(t_elapsed_ < duration_) { tick_++; return false; }
