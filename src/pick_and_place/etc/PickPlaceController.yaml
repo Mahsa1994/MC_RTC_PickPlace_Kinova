@@ -81,16 +81,23 @@ states:
         linear:  [60, 60, 60]
         angular: [15, 15, 15]
 
-  # Arm is expected to start at the monitoring snapshot pose:
-  #   joints (deg): [119.6, 0.5, 87.9, 174.3, 263.6, 87.9]
-  # Target is the SAME pose converted to radians — so the arm should
-  # barely move. This confirms joint naming and direction are correct
-  # before commanding any real motion, before chaining into the full
-  # pick-and-place cycle below.
+  # Target updated 2026-08-19 to match the arm's actual resting pose,
+  # confirmed via encoder readings (FIRST CMD MISMATCH log) consistent
+  # across every real-hardware test this session:
+  #   joint_1=-2.936 joint_2=-0.034 joint_3=-1.827
+  #   joint_4=-0.006 joint_5=-1.049 joint_6=-1.774
+  # The previous target (below, commented) assumed a different "monitoring
+  # snapshot pose" that didn't match reality - joints 1/4/5 were off by
+  # ~130-140 deg, well past the bridge's FIRST CMD MISMATCH safety gate,
+  # so Unfold could never actually publish a command. If you park the arm
+  # somewhere else before running this, update these values to match -
+  # the intent is a small, safe move that confirms joint naming/direction,
+  # not a large jump.
+  #target: [-0.5649, -0.0336, -1.6628, -3.1074, 1.3932, -1.9451]  # old, mismatched
   Unfold:
     base: JointMove
     #target: [-0.6933, 0.0449, -1.4642, 3.0964, 1.5793, -1.3926]
-    target: [-0.5649, -0.0336, -1.6628, -3.1074, 1.3932, -1.9451]
+    target: [-2.936, -0.034, -1.827, -0.006, -1.049, -1.774]
     duration: 15.0      # very slow — 15 s to move essentially nowhere
     stiffness: 50.0      # minimal gain — arm will move gently
     threshold: 0.05     # 0.05 rad (~3°) convergence threshold
