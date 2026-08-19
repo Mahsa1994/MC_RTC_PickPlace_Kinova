@@ -81,7 +81,7 @@ def generate_launch_description():
                     # fix. Re-run the full staged test (untouched baseline,
                     # then light touch, then firm push) from scratch once the
                     # controller fix is confirmed, before trusting motion again.
-                    'dry_run': True,
+                    'dry_run': False,
                     'torque_sign': -1.0,
                     'deadband_force': 1.0,
                     'deadband_moment': 1.5,
