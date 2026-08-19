@@ -54,19 +54,26 @@ states:
     # of a push ("brake then go") - likely the virtual compliant target
     # responding faster than real joint static friction can break away,
     # getting ahead before the joint catches up. Splitting the difference
-    # between the original default (3) and the too-eager value (1) should
-    # reduce that gap without giving back the stiffness softening. Damping
-    # rescaled to keep roughly the same (non-oscillatory) damping ratio.
-    # UNTESTED live - retest before trusting it, same as any other gain change.
+    # between the original default (3) and the too-eager value (1) reduced
+    # that gap without giving back the stiffness softening.
+    #
+    # linear mass/stiffness/damping reverted to match impedance_control's
+    # KinovaImpedance.yaml (2026-08-19): that config was already validated to
+    # move well through the base/shoulder joints, not just the wrist - my
+    # earlier linear stiffness (200) was 2x stiffer than its proven value
+    # (100), which suppressed exactly the translational motion that would
+    # recruit those joints. Angular left as-is (already softer than the old
+    # config's 20, and rotation/wrist motion was already working fine - not
+    # implicated in this complaint). UNTESTED live - retest before trusting it.
     gains:
       mass:
-        linear:  [2, 2, 2]
+        linear:  [3, 3, 3]
         angular: [2, 2, 2]
       stiffness:
-        linear:  [200, 200, 200]
+        linear:  [100, 100, 100]
         angular: [10, 10, 10]
       damping:
-        linear:  [48, 48, 48]
+        linear:  [60, 60, 60]
         angular: [15, 15, 15]
 
   # Arm is expected to start at the monitoring snapshot pose:
