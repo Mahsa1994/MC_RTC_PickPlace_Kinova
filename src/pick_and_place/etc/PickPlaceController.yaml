@@ -48,21 +48,26 @@ states:
     next: HoldCurrent
     # Softened after live test felt too rigid (defaults: stiffness 800 N/m /
     # 40 Nm/rad meant deflection = force/800 - a 1N push only earned ~1.25mm).
-    # 4x softer here, mass lowered so it starts yielding immediately instead
-    # of needing force to build up first, damping rescaled to keep roughly
-    # the same (non-oscillatory) damping ratio as the defaults rather than
-    # introducing bounce. UNTESTED live - retest lightly before trusting it,
-    # same as any other gain change.
+    # 4x softer here (kept from the previous round).
+    #
+    # mass raised back from 1->2 (2026-08-19): mass=1 felt jerky at the start
+    # of a push ("brake then go") - likely the virtual compliant target
+    # responding faster than real joint static friction can break away,
+    # getting ahead before the joint catches up. Splitting the difference
+    # between the original default (3) and the too-eager value (1) should
+    # reduce that gap without giving back the stiffness softening. Damping
+    # rescaled to keep roughly the same (non-oscillatory) damping ratio.
+    # UNTESTED live - retest before trusting it, same as any other gain change.
     gains:
       mass:
-        linear:  [1, 1, 1]
-        angular: [1, 1, 1]
+        linear:  [2, 2, 2]
+        angular: [2, 2, 2]
       stiffness:
         linear:  [200, 200, 200]
         angular: [10, 10, 10]
       damping:
-        linear:  [35, 35, 35]
-        angular: [11, 11, 11]
+        linear:  [48, 48, 48]
+        angular: [15, 15, 15]
 
   # Arm is expected to start at the monitoring snapshot pose:
   #   joints (deg): [119.6, 0.5, 87.9, 174.3, 263.6, 87.9]
