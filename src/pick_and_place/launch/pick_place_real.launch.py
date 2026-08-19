@@ -71,16 +71,21 @@ def generate_launch_description():
                 output='screen',
                 parameters=[{
                     'use_sim_time': False,
-                    # SAFETY DEFAULT - reverted (2026-08-19) after the first
-                    # live MoveHome test moved unexpectedly fast, loud, and
-                    # was E-stopped by the operator. Root cause NOT yet
-                    # understood - do not flip back to False until this is
-                    # explained. See README for investigation notes.
+                    # SAFETY DEFAULT - still True (2026-08-19). Root cause of
+                    # the second E-stop found: delta_max (below) was clamped
+                    # every ~10ms publish cycle with a fixed 20ms
+                    # time_from_start, implying a SUSTAINED ~1 rad/s (~57
+                    # deg/s) per-joint velocity whenever the QP target lagged
+                    # real position by more than delta_max - true almost the
+                    # entire time during real motion, completely overriding
+                    # the intended slow/smooth state duration. Lowered 20x
+                    # below. Verify in dry-run (check logged q_cmd/enc_q
+                    # deltas look sane) before flipping this back to False.
                     'dry_run': True,
                     'torque_sign': -1.0,
                     'deadband_force': 1.0,
                     'deadband_moment': 1.5,
-                    'delta_max': 0.01,
+                    'delta_max': 0.0005,
                 }]
             )
         ]
