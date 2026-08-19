@@ -1,0 +1,32 @@
+MainRobot: Kinova6DOF
+Enabled: PickPlaceController
+# 0.005s (200Hz) - matches pick_and_place/config/ros2_controllers.yaml's
+# update_rate comment ("matches mc_rtc timestep (0.005s = 200Hz)"). Do not
+# copy impedance_control/etc/mc_rtc.yaml's Timestep: 0.001 (1kHz) here -
+# ComplianceCartesianMove's stiffness/damping/duration in
+# PickPlaceController.yaml were tuned assuming 200Hz.
+Timestep: 0.005
+LogPolicy: threaded
+
+Plugins:
+  - ROS
+
+ObserverPipelines:
+  - name: MainPipeline
+    observers:
+      - type: Encoder
+        update: true
+        log: true
+        position: encoderValues
+        velocity: encoderVelocities
+
+ControllerModulePaths:
+  - /usr/local/lib/mc_controller
+  - /home/vscode/workspace/install/pick_and_place/lib/mc_controller
+
+StatesLibraries:
+  - /usr/local/lib/mc_controller/fsm/states
+  - /home/vscode/workspace/install/pick_and_place/lib/mc_states
+
+StatesFiles:
+  - /usr/local/lib/mc_controller/fsm/states/data

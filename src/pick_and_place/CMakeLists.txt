@@ -44,6 +44,7 @@ target_include_directories(PickPlaceStates PUBLIC
 target_link_libraries(PickPlaceStates
   mc_rtc::mc_control_fsm
   mc_rtc::mc_rtc_ros
+  mc_rtc::mc_tasks
  # PickPlaceController
 )
 

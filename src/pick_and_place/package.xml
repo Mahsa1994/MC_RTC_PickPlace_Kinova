@@ -14,6 +14,12 @@
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
 
+  <!-- launch files run impedance_control's wrench-aware bridge
+       (kortex_mc_rtc_bridge_impedance) instead of this package's own
+       non-wrench-aware kortex_mc_rtc_bridge, so ComplianceCartesianMove has
+       a real measuredWrench() to react to -->
+  <exec_depend>impedance_control</exec_depend>
+
   <export>
     <build_type>ament_cmake</build_type>
   </export>

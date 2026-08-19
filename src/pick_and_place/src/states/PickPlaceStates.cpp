@@ -21,9 +21,11 @@
 #include <mc_control/fsm/Controller.h>
 #include <mc_control/fsm/State.h>
 #include <mc_tasks/BSplineTrajectoryTask.h>
+#include <mc_tasks/ImpedanceTask.h>
 #include <mc_rtc/logging.h>
 
 #include <SpaceVecAlg/Conversions.h>
+#include <algorithm>
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 static PickPlaceController & ppc(mc_control::fsm::Controller & ctl)
@@ -69,6 +71,7 @@ static sva::PTransformd resolveTarget(mc_control::fsm::Controller & ctl,
   if(ref == "home")       base = ppc(ctl).homePose();
   else if(ref == "pick")  base = ppc(ctl).pickPose();
   else if(ref == "place") base = ppc(ctl).placePose();
+  else if(ref == "current") base = ctl.robot().frame(ee_frame).position();
   else throw std::runtime_error("[resolveTarget] Unknown reference: " + ref);
 
   Eigen::Vector3d t = base.translation();
@@ -235,6 +238,269 @@ struct CartesianMove : mc_control::fsm::State
       pt->weight(prev_posture_weight_);
       pt->stiffness(prev_posture_stiffness_);
     }
+  }
+};
+
+// ════════════════════════════════════════════════════════════════════════════
+//  ComplianceCartesianMove — impedance-compliant, time-parameterized EE motion
+//  ------------------------------------------------------------
+//  Same config surface as CartesianMove (target/waypoints/duration), but
+//  tracks the trajectory with an ImpedanceTask instead of a stiff
+//  BSplineTrajectoryTask: if a human pushes the arm off the planned path,
+//  the trajectory clock pauses (the moving target stops advancing) until
+//  the measured wrench (already deadbanded/clamped upstream by
+//  kortex_mc_rtc_bridge_impedance) clears for `clear_hold_time` seconds,
+//  then resumes toward the same waypoints/target it was already headed to.
+//  This is the state that should carry the object across the workspace
+//  while a human is nearby - use plain CartesianMove for legs where no
+//  human interaction is expected (e.g. returning home at the very start).
+// ════════════════════════════════════════════════════════════════════════════
+struct ComplianceCartesianMove : mc_control::fsm::State
+{
+  // Trajectory config (mirrors CartesianMove)
+  double duration_       = 3.0;
+  double pos_threshold_  = 0.02;
+  double ori_threshold_  = 0.10;
+  double settle_timeout_ = 2.0;
+  std::string ee_frame_  = "tool_frame";
+  std::string next_state_;
+  mc_rtc::Configuration target_cfg_;
+  std::vector<Eigen::Vector3d> pos_waypoints_;
+
+  // Kinematic tracking gains (how fast the compliant pose chases its target)
+  double task_stiffness_ = 20.0;
+  double task_damping_   = 10.0;
+  double task_weight_    = 100.0;
+
+  // Impedance (virtual mass-spring-damper) gains - same shape as
+  // ImpedanceHoldState's `gains:` block in impedance_control.
+  mc_rtc::Configuration gains_config_;
+
+  // Contact-pause behavior. contact_force_threshold_ must stay ABOVE
+  // whatever `deadband_force` the bridge is launched with, since anything
+  // that survives the bridge's deadband is already a real, non-trivial
+  // wrench - see kortex_mc_rtc_bridge_impedance.cpp.
+  double contact_force_threshold_ = 8.0;  // N
+  double clear_hold_time_         = 0.3;  // s of sustained clear force before resuming
+
+  // Runtime
+  std::shared_ptr<mc_tasks::force::ImpedanceTask> task_;
+  std::vector<sva::PTransformd> waypts_; // full chain: start -> waypoints -> target
+  std::vector<double> seg_duration_;     // per-segment duration (sums to duration_)
+  double t_elapsed_   = 0.0;   // trajectory clock - only advances while clear of contact
+  double clear_timer_ = 0.0;
+  bool   paused_      = false;
+  double dt_          = 0.01;
+  int    tick_        = 0;
+
+  void configure(const mc_rtc::Configuration & config) override
+  {
+    if(config.has("duration"))       duration_       = config("duration");
+    if(config.has("pos_threshold"))  pos_threshold_  = config("pos_threshold");
+    if(config.has("ori_threshold"))  ori_threshold_  = config("ori_threshold");
+    if(config.has("settle_timeout")) settle_timeout_ = config("settle_timeout");
+    if(config.has("ee_frame"))       ee_frame_       = static_cast<std::string>(config("ee_frame"));
+    if(config.has("next"))           next_state_     = static_cast<std::string>(config("next"));
+    if(config.has("stiffness"))      task_stiffness_ = config("stiffness");
+    if(config.has("damping"))        task_damping_   = config("damping");
+    if(config.has("weight"))         task_weight_    = config("weight");
+    if(config.has("gains"))          gains_config_   = config("gains");
+    if(config.has("contact_force_threshold")) contact_force_threshold_ = config("contact_force_threshold");
+    if(config.has("clear_hold_time"))         clear_hold_time_         = config("clear_hold_time");
+
+    target_cfg_ = config("target");
+
+    if(config.has("waypoints"))
+    {
+      std::vector<std::vector<double>> wps = config("waypoints");
+      pos_waypoints_.clear();
+      for(const auto & p : wps)
+        if(p.size() >= 3) pos_waypoints_.emplace_back(p[0], p[1], p[2]);
+    }
+  }
+
+  static double quinticS(double u)
+  {
+    u = std::clamp(u, 0.0, 1.0);
+    return 10.0 * u * u * u - 15.0 * u * u * u * u + 6.0 * u * u * u * u * u;
+  }
+
+  void start(mc_control::fsm::Controller & ctl) override
+  {
+    dt_          = ctl.solver().dt();
+    t_elapsed_   = 0.0;
+    clear_timer_ = 0.0;
+    paused_      = false;
+    tick_        = 0;
+
+    sva::PTransformd final_target = resolveTarget(ctl, target_cfg_, ee_frame_);
+    sva::PTransformd start_pose   = ctl.robot().frame(ee_frame_).position();
+
+    // Build the waypoint chain: start -> intermediate waypoints -> final
+    // target. Intermediate waypoints inherit the final target's orientation
+    // (same convention as CartesianMove's waypoints).
+    waypts_.clear();
+    waypts_.push_back(start_pose);
+    for(const auto & wp : pos_waypoints_)
+      waypts_.push_back(sva::PTransformd(final_target.rotation(), wp));
+    waypts_.push_back(final_target);
+
+    // Split duration_ across segments proportionally to chord length, so a
+    // longer leg gets a proportionally longer slice of time.
+    std::vector<double> chord(waypts_.size() - 1, 0.0);
+    double total_chord = 0.0;
+    for(size_t i = 0; i + 1 < waypts_.size(); ++i)
+    {
+      chord[i] = (waypts_[i + 1].translation() - waypts_[i].translation()).norm();
+      total_chord += chord[i];
+    }
+    seg_duration_.assign(chord.size(), duration_ / std::max<size_t>(1, chord.size()));
+    if(total_chord > 1e-6)
+      for(size_t i = 0; i < chord.size(); ++i)
+        seg_duration_[i] = duration_ * (chord[i] / total_chord);
+
+    task_ = std::make_shared<mc_tasks::force::ImpedanceTask>(
+        ctl.robot().frame(ee_frame_), task_stiffness_, task_weight_);
+    task_->cutoffPeriod(0.05);
+    task_->stiffness(task_stiffness_);
+    task_->damping(task_damping_);
+    task_->targetPose(start_pose);
+
+    auto & gains = task_->gains();
+    auto readV3 = [&](const char * grp, const char * key, const Eigen::Vector3d & def) -> Eigen::Vector3d {
+      if(gains_config_.has(grp) && gains_config_(grp).has(key))
+      {
+        Eigen::Vector3d v = gains_config_(grp)(key);
+        return v;
+      }
+      return def;
+    };
+    gains.mass().linear(   readV3("mass",      "linear",  {3, 3, 3}));
+    gains.mass().angular(  readV3("mass",      "angular", {2, 2, 2}));
+    gains.spring().linear( readV3("stiffness", "linear",  {800, 800, 800}));
+    gains.spring().angular(readV3("stiffness", "angular", {40, 40, 40}));
+    gains.damper().linear( readV3("damping",   "linear",  {120, 120, 120}));
+    gains.damper().angular(readV3("damping",   "angular", {30, 30, 30}));
+    gains.wrench().linear( readV3("wrench",    "linear",  {1, 1, 1}));
+    gains.wrench().angular(readV3("wrench",    "angular", {1, 1, 1}));
+
+    ctl.solver().addTask(task_);
+
+    mc_rtc::log::info("[{}] Compliant move started (duration={:.2f}s, {} waypoint(s))",
+                      name(), duration_, pos_waypoints_.size());
+  }
+
+  // Evaluate the moving target pose at trajectory-clock time `t`.
+  sva::PTransformd targetAt(double t) const
+  {
+    double acc = 0.0;
+    for(size_t i = 0; i < seg_duration_.size(); ++i)
+    {
+      double segT = seg_duration_[i];
+      if(t <= acc + segT || i + 1 == seg_duration_.size())
+      {
+        double u = segT > 1e-6 ? (t - acc) / segT : 1.0;
+        double s = quinticS(u);
+        const auto & a = waypts_[i];
+        const auto & b = waypts_[i + 1];
+        Eigen::Vector3d trans = (1.0 - s) * a.translation() + s * b.translation();
+        Eigen::Quaterniond qa(a.rotation());
+        Eigen::Quaterniond qb(b.rotation());
+        Eigen::Quaterniond q = qa.slerp(s, qb);
+        return sva::PTransformd(q.toRotationMatrix(), trans);
+      }
+      acc += segT;
+    }
+    return waypts_.back();
+  }
+
+  bool run(mc_control::fsm::Controller & ctl) override
+  {
+    // Contact gate: pause the trajectory clock while the measured wrench
+    // says the arm is in contact, resume only after it's been clear for
+    // clear_hold_time_ (avoids chattering pause/resume at the threshold).
+    double f = task_->measuredWrench().force().norm();
+    if(f > contact_force_threshold_)
+    {
+      paused_      = true;
+      clear_timer_ = 0.0;
+    }
+    else if(paused_)
+    {
+      clear_timer_ += dt_;
+      if(clear_timer_ >= clear_hold_time_) paused_ = false;
+    }
+
+    if(!paused_) t_elapsed_ += dt_;
+
+    task_->targetPose(targetAt(std::min(t_elapsed_, duration_)));
+
+    // SIGN CHECK (safe under dry_run - no hardware command involved).
+    // task_->compliancePose() is the ImpedanceTask's own internal target:
+    // where the impedance model thinks the end-effector should be, given the
+    // measured wrench (same signal ImpedanceHoldState used for its
+    // "Deflection" log). It updates from the compliance law regardless of
+    // dry_run, since the task doesn't know the resulting command is being
+    // dropped. Comparing it to the fixed hold anchor tells you the direction
+    // the controller is actually trying to move in response to the measured
+    // wrench, without ever touching the real arm.
+    // Expected: deflection should point the SAME way as measured force while
+    // pushing (yielding), then relax back toward zero after release. If it
+    // points the OPPOSITE way from the push, that's a sign error - stop and
+    // do not proceed to dry_run:false until it's fixed.
+    if((tick_ % 20) == 0)
+    {
+      // WORLD-FRAME sign check. ctl.robot().frame(...).position() is always
+      // world-frame by mc_rtc convention (plain forward kinematics) - no
+      // ambiguity, unlike measuredWrench()/deltaCompliancePose() whose exact
+      // frame conventions we couldn't fully pin down from the header alone,
+      // and which produced confusing results across several attempts. Judge
+      // this by comparing world_dev's sign against the PHYSICAL direction
+      // you push in world terms (e.g. "I pushed straight down toward the
+      // floor" -> world_dev.z should go negative) - not against measured
+      // force, which is in a different (surface) frame and not directly
+      // comparable axis-by-axis.
+      Eigen::Vector3d world_dev = ctl.robot().frame(ee_frame_).position().translation()
+                                 - waypts_.back().translation();
+      mc_rtc::log::info(
+        "[{}] SIGN CHECK -- world_dev (m): ({:+.4f}, {:+.4f}, {:+.4f})  [+x=world +X, +y=world +Y, +z=world UP]",
+        name(), world_dev.x(), world_dev.y(), world_dev.z());
+    }
+
+    if(t_elapsed_ < duration_) { tick_++; return false; }
+
+    auto cur = ctl.robot().frame(ee_frame_).position();
+    double pos_err = (cur.translation() - waypts_.back().translation()).norm();
+    double ori_err = sva::rotationError(cur.rotation(), waypts_.back().rotation()).norm();
+
+    if(pos_err < pos_threshold_ && ori_err < ori_threshold_)
+    {
+      mc_rtc::log::success("[{}] Reached target (pos_err={:.4f} m, ori_err={:.4f} rad)",
+                           name(), pos_err, ori_err);
+      output(next_state_);
+      return true;
+    }
+
+    if((tick_++ % 200) == 0)
+    {
+      mc_rtc::log::warning("[{}] Settling: pos_err={:.4f} m, ori_err={:.4f} rad{}",
+                           name(), pos_err, ori_err, paused_ ? " (paused - contact)" : "");
+    }
+
+    if(t_elapsed_ > duration_ + settle_timeout_)
+    {
+      mc_rtc::log::error("[{}] Settle timeout after {:.2f}s extra (pos_err={:.4f}, ori_err={:.4f}). Advancing anyway.",
+                         name(), settle_timeout_, pos_err, ori_err);
+      output(next_state_);
+      return true;
+    }
+
+    return false;
+  }
+
+  void teardown(mc_control::fsm::Controller & ctl) override
+  {
+    if(task_) ctl.solver().removeTask(task_);
   }
 };
 
@@ -546,16 +812,17 @@ extern "C"
   __attribute__((visibility("default")))
   void MC_RTC_FSM_STATE(std::vector<std::string> & names)
   {
-    names = {"CartesianMove", "JointMove", "Gripper", "Idle"};
+    names = {"CartesianMove", "ComplianceCartesianMove", "JointMove", "Gripper", "Idle"};
   }
 
   __attribute__((visibility("default")))
   mc_control::fsm::State * create(const std::string & name)
   {
-    if(name == "CartesianMove") return new CartesianMove();
-    if(name == "JointMove")     return new JointMove();
-    if(name == "Gripper")       return new Gripper();
-    if(name == "Idle")          return new Idle();
+    if(name == "CartesianMove")           return new CartesianMove();
+    if(name == "ComplianceCartesianMove") return new ComplianceCartesianMove();
+    if(name == "JointMove")               return new JointMove();
+    if(name == "Gripper")                 return new Gripper();
+    if(name == "Idle")                    return new Idle();
     return nullptr;
   }
 

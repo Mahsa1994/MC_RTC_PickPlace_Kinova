@@ -1,8 +1,10 @@
 from launch import LaunchDescription
-from launch.actions import ExecuteProcess, SetEnvironmentVariable, TimerAction
+from launch.actions import ExecuteProcess, SetEnvironmentVariable, TimerAction, RegisterEventHandler
 from launch_ros.actions import Node
+from launch.event_handlers import OnShutdown
 import os
 from ament_index_python.packages import get_package_share_directory
+from launch.substitutions import Command
 
 set_gz_plugin_path = SetEnvironmentVariable(
     name='GZ_SIM_SYSTEM_PLUGIN_PATH',
@@ -16,13 +18,19 @@ set_gz_resource = SetEnvironmentVariable(
 )
 
 def generate_launch_description():
-    pkg        = get_package_share_directory('pick_and_place')
-#    urdf_file  = os.path.join(pkg, 'urdf', 'kinova_6dof_sim.urdf')
-    urdf_file = os.path.join( '/home/vscode/workspace/src/pick_and_place/urdf/kinova_6dof_sim.urdf')
-    world_file = os.path.join(pkg, 'worlds', 'pick_place.world')
+    urdf_file  = '/home/vscode/workspace/src/impedance_control/urdf/kinova_6dof_sim.urdf.xacro'
+    world_file = os.path.join(
+        get_package_share_directory('pick_and_place'), 'worlds', 'pick_place.world'
+    )
 
-    with open(urdf_file, 'r') as f:
-        robot_description = f.read()
+
+    robot_description = Command([
+        'xacro ',
+        urdf_file
+    ])
+
+#    with open(urdf_file, 'r') as f:
+#        robot_description = f.read()
 
     cleanup = ExecuteProcess(
         cmd=['bash', '-c',
@@ -56,6 +64,10 @@ def generate_launch_description():
         output='screen'
     )
 
+    # Impedance: wrench is estimated internally via Jacobian transpose
+    # no force/torque sensor topic needed. Only bridge joint states + clock
+    # + joint trajectory commands (needed because impedance outputs positions
+    # to joint_trajectory_controller, same as admittance).
     gz_bridge = TimerAction(
         period=4.0,
         actions=[
@@ -65,28 +77,27 @@ def generate_launch_description():
                 name='gz_bridge',
                 parameters=[{'use_sim_time': True}],
                 arguments=[
+                    # Joint states (carries position, velocity AND effort - all three
+                    # are used by the bridge for Jacobian-based wrench estimation)
                     '/world/pick_place_world/model/robot/joint_state'
                     '@sensor_msgs/msg/JointState'
                     '[gz.msgs.Model',
+                    # Clock
                     '/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock',
+                    # Joint trajectory commands (impedance outputs position commands)
                     '/joint_trajectory_controller/joint_trajectory'
                     '@trajectory_msgs/msg/JointTrajectory'
                     ']gz.msgs.JointTrajectory',
+                    # /EEForceSensor bridge removed â- wrench is now estimated from joint efforts via Jacobian transpose in the bridge node, not read from a Gazebo sensor topic.
                 ],
                 remappings=[
-                    ('/world/pick_place_world/model/robot/joint_state',
-                     '/joint_states'),
+                    ('/world/pick_place_world/model/robot/joint_state', '/joint_states'),
                 ],
                 output='screen'
             )
         ]
     )
 
-    # [FIX 1] Unpause defined as a function returning a fresh ExecuteProcess
-    # each time it is referenced, preventing the "executed more than once"
-    # crash. The previous version defined unpause as a module-level object
-    # which asyncio attempted to execute twice, causing InvalidStateError
-    # and bringing down the entire launch.
     def make_unpause():
         return ExecuteProcess(
             cmd=['gz', 'service',
@@ -98,29 +109,19 @@ def generate_launch_description():
             output='screen'
         )
 
-    # t=6s: unpause so the gz controller manager's clock starts ticking.
-    # Controller activation requires sim to be stepping â€” paused sim causes
-    # the exact 5s timeout seen in every previous log.
-    unpause = TimerAction(
-        period=6.0,
-        actions=[make_unpause()]
-    )
+    unpause = TimerAction(period=6.0, actions=[make_unpause()])
 
-    # [FIX 2] Spawners pushed to t=10s and t=11s.
-    # Previous attempts at t=5s, t=6s, t=8s, t=9s all timed out.
-    # The gz controller manager consistently takes 7-8s from world load
-    # to being ready for activation. t=10s gives 4s margin after unpause.
     spawn_jsb = TimerAction(
         period=10.0,
         actions=[Node(
             package='controller_manager',
             executable='spawner',
-            arguments=['joint_state_broadcaster',
-                       '--controller-manager-timeout', '30'],
+            arguments=['joint_state_broadcaster', '--controller-manager-timeout', '30'],
             output='screen'
         )]
     )
 
+    # Impedance outputs position commands - joint_trajectory_controller must be active
     spawn_jtc = TimerAction(
         period=11.0,
         actions=[Node(
@@ -132,10 +133,17 @@ def generate_launch_description():
         )]
     )
 
-    # t=20s: controllers active by t=11s, bridge gets 9s of margin.
-    # Uses impedance_control's wrench-aware bridge (not this package's own
-    # kortex_mc_rtc_bridge, see the note at the top of that file) so
-    # ComplianceCartesianMove has a real measuredWrench() to react to.
+    spawn_gripper_controller = TimerAction(
+        period=12.0,
+        actions=[Node(
+            package='controller_manager',
+            executable='spawner',
+            arguments=['robotiq_gripper_controller',
+                       '--controller-manager-timeout', '30'],
+            output='screen'
+        )]
+    )
+
     mc_rtc_bridge = TimerAction(
         period=20.0,
         actions=[
@@ -143,12 +151,29 @@ def generate_launch_description():
                 package='impedance_control',
                 executable='kortex_mc_rtc_bridge_impedance',
                 output='screen',
-                parameters=[{
-                    'use_sim_time': True,
-                    'dry_run': False,  # safe here - Gazebo only, not the real robot
-                }]
+                parameters=[{'use_sim_time': True}]
             )
         ]
+    )
+
+    shutdown_cleanup = RegisterEventHandler(
+        OnShutdown(
+            on_shutdown=[
+                ExecuteProcess(
+                    cmd=[
+                        'bash', '-c',
+                        '''
+                        pkill -f "gz sim" 2>/dev/null || true
+                        pkill -f ros_gz_bridge 2>/dev/null || true
+                        pkill -f robot_state_publisher 2>/dev/null || true
+                        pkill -f kortex_mc_rtc_bridge_impedance 2>/dev/null || true
+                        pkill -f controller_manager 2>/dev/null || true
+                        '''
+                    ],
+                    output='screen'
+                )
+            ]
+        )
     )
 
     return LaunchDescription([
@@ -162,5 +187,7 @@ def generate_launch_description():
         unpause,
         spawn_jsb,
         spawn_jtc,
+        spawn_gripper_controller,
         mc_rtc_bridge,
+        shutdown_cleanup,
     ])

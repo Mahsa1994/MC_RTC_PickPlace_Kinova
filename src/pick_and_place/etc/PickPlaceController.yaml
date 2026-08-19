@@ -19,16 +19,69 @@ StatesLibraries:
 
 StatesFiles: []
 IdleKeepState: true
-init: Unfold
+# SAFETY SCOPE (temporary): hold-in-place push/release test only. Does not
+# move toward Unfold/MoveHome/pick/place at all - captures wherever the arm
+# physically is at startup as the compliance target and holds there. See
+# HoldCurrent below. To restore the full sequence starting from Unfold, set
+# this back to `init: Unfold`.
+init: HoldCurrent
 
 states:
 
-  # ── STEP 1: Only testing Unfold ─────────────────────────────────────
-  # Arm is currently at the monitoring snapshot pose:
+  # Push/release sanity check: capture the arm's current pose as the
+  # ImpedanceTask target and hold it there (duration is a long fixed
+  # ceiling, not an actual move - target == start pose, so there is no
+  # motion to converge to). Push the arm -> it should yield; release ->
+  # it should settle back toward this same captured pose. Ctrl+C the
+  # bridge when done; there's no natural exit from this state.
+  HoldCurrent:
+    base: ComplianceCartesianMove
+    target:
+      ref: current
+    waypoints: []
+    duration: 3600.0
+    stiffness: 25.0
+    damping: 12.0
+    weight: 100.0
+    contact_force_threshold: 8.0   # must stay above deadband_force on the bridge
+    clear_hold_time: 0.3
+    next: HoldCurrent
+    # Softened after live test felt too rigid (defaults: stiffness 800 N/m /
+    # 40 Nm/rad meant deflection = force/800 - a 1N push only earned ~1.25mm).
+    # 4x softer here (kept from the previous round).
+    #
+    # mass raised back from 1->2 (2026-08-19): mass=1 felt jerky at the start
+    # of a push ("brake then go") - likely the virtual compliant target
+    # responding faster than real joint static friction can break away,
+    # getting ahead before the joint catches up. Splitting the difference
+    # between the original default (3) and the too-eager value (1) reduced
+    # that gap without giving back the stiffness softening.
+    #
+    # linear mass/stiffness/damping reverted to match impedance_control's
+    # KinovaImpedance.yaml (2026-08-19): that config was already validated to
+    # move well through the base/shoulder joints, not just the wrist - my
+    # earlier linear stiffness (200) was 2x stiffer than its proven value
+    # (100), which suppressed exactly the translational motion that would
+    # recruit those joints. Angular left as-is (already softer than the old
+    # config's 20, and rotation/wrist motion was already working fine - not
+    # implicated in this complaint). UNTESTED live - retest before trusting it.
+    gains:
+      mass:
+        linear:  [3, 3, 3]
+        angular: [2, 2, 2]
+      stiffness:
+        linear:  [100, 100, 100]
+        angular: [10, 10, 10]
+      damping:
+        linear:  [60, 60, 60]
+        angular: [15, 15, 15]
+
+  # Arm is expected to start at the monitoring snapshot pose:
   #   joints (deg): [119.6, 0.5, 87.9, 174.3, 263.6, 87.9]
   # Target is the SAME pose converted to radians — so the arm should
   # barely move. This confirms joint naming and direction are correct
-  # before you command any real motion.
+  # before commanding any real motion, before chaining into the full
+  # pick-and-place cycle below.
   Unfold:
     base: JointMove
     #target: [-0.6933, 0.0449, -1.4642, 3.0964, 1.5793, -1.3926]
@@ -36,9 +89,10 @@ states:
     duration: 15.0      # very slow — 15 s to move essentially nowhere
     stiffness: 50.0      # minimal gain — arm will move gently
     threshold: 0.05     # 0.05 rad (~3°) convergence threshold
-    next: MoveHome          # stop at Idle, do NOT chain to MoveHome yet
+    next: MoveHome
 
-  # ── Placeholder states (not used yet) ───────────────────────────────
+  # Rigid (non-compliant) - fine here since this runs before/after the task,
+  # not while a human is expected to be reaching into the workspace.
   MoveHome:
     base: CartesianMove
     target:
@@ -48,23 +102,86 @@ states:
     weight: 1000.0
     pos_threshold: 0.02
     settle_timeout: 5.0
+    next: MoveToPick
+
+  # ── Pick-and-place cycle ─────────────────────────────────────────────
+  # MoveToPick and MoveToPlace are ComplianceCartesianMove: they yield if
+  # the human pushes the arm off its path (trajectory clock pauses until
+  # the wrench clears), then resume toward the same target. MoveToPlace is
+  # the experimentally-relevant leg - `waypoints` sets the trajectory shape
+  # and `duration` sets the average speed, both changeable here without
+  # recompiling for different HRI trial conditions.
+  # SAFETY SCOPE (temporary): MoveToPick is the only compliance behavior
+  # under test right now - it stops at Idle instead of continuing into
+  # CloseGripper/MoveToPlace/OpenGripper/ReturnHome, so a real-hardware run
+  # only ever exercises one ComplianceCartesianMove and never actuates the
+  # gripper or drives toward `place`. To restore the full pick-and-place
+  # loop: set this back to `next: CloseGripper`, uncomment the states below,
+  # and restore the full transitions table (both preserved below).
+  MoveToPick:
+    base: ComplianceCartesianMove
+    target:
+      ref: pick
+    waypoints:
+      - [0.40, 0.10, 0.25]   # hover ~10cm above pick_pose before descending
+    duration: 4.0
+    stiffness: 25.0
+    damping: 12.0
+    weight: 100.0
+    contact_force_threshold: 8.0   # must stay above deadband_force on the bridge
+    clear_hold_time: 0.3
     next: Idle
 
-  CloseGripper:
-    base: Gripper
-    action: close
-    timeout: 2.0
-    next: Idle
+  # -- disabled for now, see SAFETY SCOPE note above --
+  # CloseGripper:
+  #   base: Gripper
+  #   action: close
+  #   timeout: 2.0
+  #   next: MoveToPlace
 
-  OpenGripper:
-    base: Gripper
-    action: open
-    timeout: 3.0
-    next: Idle
+  # THE experiment-manipulation state: vary `waypoints` for trajectory shape
+  # and `duration` for velocity between trials.
+  # MoveToPlace:
+  #   base: ComplianceCartesianMove
+  #   target:
+  #     ref: place
+  #   waypoints: []   # add via-points here to change the trajectory shape
+  #   duration: 5.0    # shorten/lengthen to change arm velocity
+  #   stiffness: 20.0
+  #   damping: 10.0
+  #   weight: 100.0
+  #   contact_force_threshold: 8.0
+  #   clear_hold_time: 0.3
+  #   next: OpenGripper
+
+  # OpenGripper:
+  #   base: Gripper
+  #   action: open
+  #   timeout: 3.0
+  #   next: ReturnHome
+
+  # ReturnHome:
+  #   base: CartesianMove
+  #   target:
+  #     ref: home
+  #   duration: 4.0
+  #   stiffness: 4.0
+  #   weight: 1000.0
+  #   pos_threshold: 0.02
+  #   settle_timeout: 5.0
+  #   next: Idle
 
 transitions:
-  - [Unfold,    MoveHome, MoveHome, Auto]
-  - [MoveHome,  Idle,     Idle,     Auto]
+  - [HoldCurrent,  HoldCurrent,  HoldCurrent,  Auto]
+  - [Unfold,       MoveHome,     MoveHome,     Auto]
+  - [MoveHome,     MoveToPick,   MoveToPick,   Auto]
+  - [MoveToPick,   Idle,         Idle,         Auto]
+  # -- full pick-and-place loop, disabled for now, see SAFETY SCOPE note above --
+  # - [MoveToPick,   CloseGripper, CloseGripper, Auto]
+  # - [CloseGripper, MoveToPlace,  MoveToPlace,  Auto]
+  # - [MoveToPlace,  OpenGripper,  OpenGripper,  Auto]
+  # - [OpenGripper,  ReturnHome,   ReturnHome,   Auto]
+  # - [ReturnHome,   Idle,         Idle,         Auto]
 constraints:
   - type: kinematics
   - type: dynamics

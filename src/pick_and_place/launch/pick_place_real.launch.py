@@ -21,8 +21,14 @@ def generate_launch_description():
     )
 
     # ── 1. Kortex driver (real robot) ─────────────────────────────────────
+    # Launched under chrt -f 80 (SCHED_FIFO) so ros2_control_node inherits
+    # real-time priority on fork/exec - without this the 1kHz control loop
+    # intermittently overruns its budget under SCHED_OTHER (verified on
+    # real hardware: manually elevating a running ros2_control_node PID via
+    # `chrt -f -p 80 <pid>` eliminated "Overrun detected!" warnings).
     kortex = ExecuteProcess(
         cmd=[
+            'chrt', '-f', '80',
             'ros2', 'launch', 'kortex_bringup', 'gen3.launch.py',
             'robot_ip:=192.168.1.10',
             'dof:=6',
@@ -52,15 +58,35 @@ def generate_launch_description():
 #        ]
 #    )
 
-    # ── 2. The new Custom C++ Closed-Loop Bridge ──────────────────────────
+    # ── 2. Closed-Loop Bridge ──────────────────────────────────────────────
+    # Uses impedance_control's wrench-aware bridge (not this package's own
+    # kortex_mc_rtc_bridge, see the note at the top of that file) so
+    # ComplianceCartesianMove has a real measuredWrench() to react to.
     mc_rtc_bridge = TimerAction(
         period=12.0, # Wait 8 seconds for kortex driver to load
         actions=[
             Node(
-                package='pick_and_place',
-                executable='kortex_mc_rtc_bridge',
+                package='impedance_control',
+                executable='kortex_mc_rtc_bridge_impedance',
                 output='screen',
-                parameters=[{'use_sim_time': False}]
+                parameters=[{
+                    'use_sim_time': False,
+                    # SAFETY DEFAULT - reverted after first live test found the
+                    # arm locked rigid: joint_trajectory_controller was
+                    # rejecting every goal (nonzero velocity at trajectory end,
+                    # see ros2_controllers.yaml fix). world_dev looked correct
+                    # throughout because it reflects mc_rtc's INTERNAL
+                    # commanded state, not confirmed hardware execution - do
+                    # not trust dry_run:false test results from before this
+                    # fix. Re-run the full staged test (untouched baseline,
+                    # then light touch, then firm push) from scratch once the
+                    # controller fix is confirmed, before trusting motion again.
+                    'dry_run': False,
+                    'torque_sign': -1.0,
+                    'deadband_force': 1.0,
+                    'deadband_moment': 1.5,
+                    'delta_max': 0.01,
+                }]
             )
         ]
     )
