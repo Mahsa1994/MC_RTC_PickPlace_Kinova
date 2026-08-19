@@ -433,6 +433,19 @@ private:
     Eigen::Vector3d moment_sensor = R_world_sensor * moment_world;
     Eigen::Vector3d force_sensor = R_world_sensor * force_world;
 
+    // Sign check (real hardware, pick_and_place HoldCurrent test, 2026-08-19):
+    // ImpedanceTask's deltaCompliancePose() was found to be precisely
+    // anti-correlated with measuredWrench() (magnitude matches
+    // force/spring_stiffness exactly, sign flipped) - confirmed with
+    // torque_sign at BOTH -1.0 and 1.0, which rules out torque_sign as the
+    // cause (it only rescales the estimate here, so it can't change a
+    // fixed-sign relationship elsewhere in the pipeline). This negation is
+    // the untested next hypothesis: flip here, at wrench registration, and
+    // re-run the same push/pull sign check to confirm deflection now tracks
+    // the push direction before trusting it.
+    moment_sensor = -moment_sensor;
+    force_sensor  = -force_sensor;
+
     // Raw wrench (Local frame), post-tare but before the 50ms low-pass
     // filter and the deadband - kept aside purely so the periodic log below
     // can show what the estimator actually computed vs. what survived
