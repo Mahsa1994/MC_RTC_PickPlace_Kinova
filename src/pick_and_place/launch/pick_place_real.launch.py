@@ -71,16 +71,13 @@ def generate_launch_description():
                 output='screen',
                 parameters=[{
                     'use_sim_time': False,
-                    # SAFETY DEFAULT - reverted again (2026-08-19) after
-                    # restoring the full pick-and-place loop (Unfold ->
-                    # MoveHome -> MoveToPick -> CloseGripper -> MoveToPlace ->
-                    # OpenGripper -> ReturnHome). Only HoldCurrent has any live
-                    # validation; everything else in this chain (including
-                    # Unfold's known target-pose mismatch, gripper actuation,
-                    # and MoveToPlace's contact-gate behavior during actual
-                    # motion) is untested. Do not flip without dry-run
-                    # validation of the newly-restored states first.
-                    'dry_run': True,
+                    # Live-testing MoveHome->ReturnHome in isolation (2026-08-19,
+                    # E-stop operator present) - see PickPlaceController.yaml's
+                    # "ISOLATED VALIDATION" note (MoveHome bypasses MoveToPick).
+                    # MoveToPick/CloseGripper/MoveToPlace/OpenGripper remain
+                    # unvalidated live - revert to True before testing anything
+                    # beyond this isolated pair.
+                    'dry_run': False,
                     'torque_sign': -1.0,
                     'deadband_force': 1.0,
                     'deadband_moment': 1.5,

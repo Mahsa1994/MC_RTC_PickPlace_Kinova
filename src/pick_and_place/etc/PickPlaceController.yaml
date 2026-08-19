@@ -108,6 +108,11 @@ states:
 
   # Rigid (non-compliant) - fine here since this runs before/after the task,
   # not while a human is expected to be reaching into the workspace.
+  # ISOLATED VALIDATION (2026-08-19): next temporarily set to ReturnHome
+  # instead of MoveToPick, to live-test the two rigid legs alone before
+  # MoveToPick/MoveToPlace (which still fail dry-run for the confirmed
+  # dry-run-only reason documented in the README - not live-validated yet).
+  # Restore `next: MoveToPick` (and the transition below) once this passes.
   MoveHome:
     base: CartesianMove
     target:
@@ -117,7 +122,7 @@ states:
     weight: 1000.0
     pos_threshold: 0.02
     settle_timeout: 5.0
-    next: MoveToPick
+    next: ReturnHome
 
   # ── Pick-and-place cycle ─────────────────────────────────────────────
   # MoveToPick and MoveToPlace are ComplianceCartesianMove: they yield if
@@ -206,7 +211,8 @@ states:
 transitions:
   - [HoldCurrent,  HoldCurrent,  HoldCurrent,  Auto]
   # - [Unfold,       MoveHome,     MoveHome,     Auto]  # Unfold removed, see note near `init:` above
-  - [MoveHome,     MoveToPick,   MoveToPick,   Auto]
+  # - [MoveHome,     MoveToPick,   MoveToPick,   Auto]  # bypassed for isolated MoveHome->ReturnHome validation, see note above
+  - [MoveHome,     ReturnHome,   ReturnHome,   Auto]
   - [MoveToPick,   CloseGripper, CloseGripper, Auto]
   - [CloseGripper, MoveToPlace,  MoveToPlace,  Auto]
   - [MoveToPlace,  OpenGripper,  OpenGripper,  Auto]
