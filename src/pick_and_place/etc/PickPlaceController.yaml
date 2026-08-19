@@ -25,11 +25,16 @@ IdleKeepState: true
 # is "participants only ever contact the gripper/end-effector area" (chosen
 # deliberately over whole-arm contact safety, which this architecture does
 # not provide - see MoveToPick/MoveToPlace comments below).
-# KNOWN UNRESOLVED ISSUE: Unfold's hardcoded target previously did not match
-# the arm's actual starting pose (FIRST CMD MISMATCH, command rejected
-# outright) - confirm the arm actually starts near Unfold's target before
-# trusting this state, or update the target to match your real starting pose.
-init: Unfold
+# Unfold removed (2026-08-19) - pipeline now starts directly at MoveHome.
+# Unfold's job was a small joint-space move to a known-consistent starting
+# configuration before the Cartesian legs began; skipping it means MoveHome's
+# BSpline path to home_pose now starts from wherever the arm actually is,
+# which is only as safe as that starting pose is reasonable (no known issue
+# observed, but this was Unfold's whole reason for existing - if MoveHome
+# ever takes a surprising path, this is the first thing to reconsider).
+# Definition preserved, commented out, below - re-enable by setting this back
+# to `init: Unfold` and uncommenting its state + transition.
+init: MoveHome
 
 states:
 
@@ -81,27 +86,25 @@ states:
         linear:  [60, 60, 60]
         angular: [15, 15, 15]
 
-  # Target updated 2026-08-19 to match the arm's actual resting pose,
+  # -- Unfold, removed from the pipeline 2026-08-19, see note near `init:`
+  # above. Target was last updated to match the arm's actual resting pose,
   # confirmed via encoder readings (FIRST CMD MISMATCH log) consistent
   # across every real-hardware test this session:
   #   joint_1=-2.936 joint_2=-0.034 joint_3=-1.827
   #   joint_4=-0.006 joint_5=-1.049 joint_6=-1.774
-  # The previous target (below, commented) assumed a different "monitoring
-  # snapshot pose" that didn't match reality - joints 1/4/5 were off by
-  # ~130-140 deg, well past the bridge's FIRST CMD MISMATCH safety gate,
-  # so Unfold could never actually publish a command. If you park the arm
-  # somewhere else before running this, update these values to match -
-  # the intent is a small, safe move that confirms joint naming/direction,
-  # not a large jump.
-  #target: [-0.5649, -0.0336, -1.6628, -3.1074, 1.3932, -1.9451]  # old, mismatched
-  Unfold:
-    base: JointMove
-    #target: [-0.6933, 0.0449, -1.4642, 3.0964, 1.5793, -1.3926]
-    target: [-2.936, -0.034, -1.827, -0.006, -1.049, -1.774]
-    duration: 15.0      # very slow — 15 s to move essentially nowhere
-    stiffness: 50.0      # minimal gain — arm will move gently
-    threshold: 0.05     # 0.05 rad (~3°) convergence threshold
-    next: MoveHome
+  # An earlier target assumed a different "monitoring snapshot pose" that
+  # didn't match reality - joints 1/4/5 were off by ~130-140 deg, well past
+  # the bridge's FIRST CMD MISMATCH safety gate, so Unfold could never
+  # actually publish a command. If you re-enable this and park the arm
+  # somewhere else first, update these values to match - the intent is a
+  # small, safe move that confirms joint naming/direction, not a large jump.
+  # Unfold:
+  #   base: JointMove
+  #   target: [-2.936, -0.034, -1.827, -0.006, -1.049, -1.774]
+  #   duration: 15.0      # very slow — 15 s to move essentially nowhere
+  #   stiffness: 50.0      # minimal gain — arm will move gently
+  #   threshold: 0.05     # 0.05 rad (~3°) convergence threshold
+  #   next: MoveHome
 
   # Rigid (non-compliant) - fine here since this runs before/after the task,
   # not while a human is expected to be reaching into the workspace.
@@ -202,7 +205,7 @@ states:
 
 transitions:
   - [HoldCurrent,  HoldCurrent,  HoldCurrent,  Auto]
-  - [Unfold,       MoveHome,     MoveHome,     Auto]
+  # - [Unfold,       MoveHome,     MoveHome,     Auto]  # Unfold removed, see note near `init:` above
   - [MoveHome,     MoveToPick,   MoveToPick,   Auto]
   - [MoveToPick,   CloseGripper, CloseGripper, Auto]
   - [CloseGripper, MoveToPlace,  MoveToPlace,  Auto]
