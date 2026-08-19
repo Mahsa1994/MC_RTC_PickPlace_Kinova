@@ -519,6 +519,31 @@ private:
           "moment: ({:.2f}, {:.2f}, {:.2f}) Nm",
           force_sensor.x(), force_sensor.y(), force_sensor.z(),
           moment_sensor.x(), moment_sensor.y(), moment_sensor.z());
+
+      // DIAGNOSTIC (2026-08-19): under dry_run, the QP-solved control robot
+      // (used above for gravity/inertial compensation, line ~295) keeps
+      // "moving" toward active-motion targets even though nothing is
+      // published, so it can drift arbitrarily far from the real,
+      // physically-stationary arm - which would make that compensation
+      // wrong and could explain the persistent phantom wrench seen during
+      // MoveToPick/MoveToPlace dry-run tests. This logs the actual
+      // max per-joint divergence between the two to confirm or rule that
+      // out directly.
+      {
+        std::lock_guard<std::mutex> lock(effort_mutex_);
+        auto ref_order = robot.refJointOrder();
+        double max_dev = 0.0;
+        std::string worst_joint;
+        for (size_t i = 0; i < ref_order.size() && i < last_enc_q_.size(); ++i)
+        {
+          auto idx = robot.jointIndexByName(ref_order[i]);
+          double dev = std::abs(robot.mbc().q[idx][0] - last_enc_q_[i]);
+          if (dev > max_dev) { max_dev = dev; worst_joint = ref_order[i]; }
+        }
+        mc_rtc::log::info(
+            "[KortexBridge] DIAGNOSTIC model-vs-real max joint deviation: {:.4f} rad on '{}'",
+            max_dev, worst_joint);
+      }
     }
 
     //// 9- Run controller and publish joint trajectory
