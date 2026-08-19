@@ -46,6 +46,19 @@ states:
     contact_force_threshold: 8.0   # must stay above deadband_force on the bridge
     clear_hold_time: 0.3
     next: HoldCurrent
+    # Sign check (2026-08-19): delta_compliance was found precisely
+    # anti-correlated with measuredWrench() (matches force/spring_stiffness
+    # in magnitude, opposite sign). Ruled out torque_sign and the bridge's
+    # wrench sign as the cause - both only rescale the wrench BEFORE it
+    # reaches measuredWrench(), so they flip delta_compliance right along
+    # with it and can never change their RELATIVE sign. wrench() gain (K_f
+    # in K*delta_p_cd = K_f*(f_m - f_d)) only appears on the delta_p_cd side
+    # of the equation, so it's the one lever that can actually break this
+    # coupling. Testing -1 here as the next hypothesis.
+    gains:
+      wrench:
+        linear:  [-1, -1, -1]
+        angular: [-1, -1, -1]
 
   # Arm is expected to start at the monitoring snapshot pose:
   #   joints (deg): [119.6, 0.5, 87.9, 174.3, 263.6, 87.9]
