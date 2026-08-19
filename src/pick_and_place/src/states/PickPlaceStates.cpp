@@ -186,6 +186,26 @@ struct CartesianMove : mc_control::fsm::State
                       name(), target_.translation().x(), target_.translation().y(), target_.translation().z());
     if(!pos_waypoints_.empty())
       mc_rtc::log::info("[{}]   via {} waypoint(s)", name(), pos_waypoints_.size());
+
+    // ROTATION VERIFICATION (2026-08-19, safe under dry_run - no motion
+    // involved, this only reads state). eulerAngles(2,1,0) decomposes as
+    // Rz(a)*Ry(b)*Rx(c), the SAME composition poseFromConfig() uses for
+    // YAML `rotation: [roll, pitch, yaw]` - so [c,b,a] here is directly
+    // comparable to that field, in degrees for comparison against Kinova's
+    // web-app thetaX/thetaY/thetaZ. Use this to confirm the config's
+    // rotation matches physical reality BEFORE ever trusting a Cartesian
+    // target live - see the home_pose incident in the README/YAML.
+    {
+      const double r2d = 180.0 / M_PI;
+      Eigen::Vector3d cur_ea = cur.rotation().eulerAngles(2, 1, 0);
+      Eigen::Vector3d tgt_ea = target_.rotation().eulerAngles(2, 1, 0);
+      mc_rtc::log::info(
+          "[{}]   from rotation [roll,pitch,yaw] (deg): [{:+.2f}, {:+.2f}, {:+.2f}]",
+          name(), cur_ea.z() * r2d, cur_ea.y() * r2d, cur_ea.x() * r2d);
+      mc_rtc::log::info(
+          "[{}]   to   rotation [roll,pitch,yaw] (deg): [{:+.2f}, {:+.2f}, {:+.2f}]",
+          name(), tgt_ea.z() * r2d, tgt_ea.y() * r2d, tgt_ea.x() * r2d);
+    }
   }
 
   bool run(mc_control::fsm::Controller & ctl) override

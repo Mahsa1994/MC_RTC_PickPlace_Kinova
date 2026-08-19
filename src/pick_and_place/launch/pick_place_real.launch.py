@@ -71,13 +71,12 @@ def generate_launch_description():
                 output='screen',
                 parameters=[{
                     'use_sim_time': False,
-                    # Live-testing MoveHome->ReturnHome in isolation (2026-08-19,
-                    # E-stop operator present) - see PickPlaceController.yaml's
-                    # "ISOLATED VALIDATION" note (MoveHome bypasses MoveToPick).
-                    # MoveToPick/CloseGripper/MoveToPlace/OpenGripper remain
-                    # unvalidated live - revert to True before testing anything
-                    # beyond this isolated pair.
-                    'dry_run': False,
+                    # SAFETY DEFAULT - reverted (2026-08-19) after the first
+                    # live MoveHome test moved unexpectedly fast, loud, and
+                    # was E-stopped by the operator. Root cause NOT yet
+                    # understood - do not flip back to False until this is
+                    # explained. See README for investigation notes.
+                    'dry_run': True,
                     'torque_sign': -1.0,
                     'deadband_force': 1.0,
                     'deadband_moment': 1.5,

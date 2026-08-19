@@ -3,8 +3,21 @@ ControllerName: PickPlaceController
 z_min_limit: 0.15
 
 home_pose:
-  translation: [0.287, 0.175, 0.392]
-  rotation: [3.0087, 0.0020, 1.7769]
+  # SAFETY INCIDENT 2026-08-19: this pose was wrong - off by ~33cm in
+  # translation and ~82 deg in orientation from the arm's actual physical
+  # Home position (confirmed via Kinova web app snapshot,
+  # Monitoring_2026-08-19_4-10-15.json). MoveHome correctly drove toward
+  # this value; the value itself was never physically verified. Arm moved
+  # fast, in an unexpected direction - operator E-stopped it.
+  # Translation corrected directly (units/frame correspond directly, high
+  # confidence). Rotation NOT yet corrected - poseFromConfig treats
+  # `rotation:` as [roll, pitch, yaw] composed Rz(yaw)*Ry(pitch)*Rx(roll);
+  # Kinova's web-app thetaX/thetaY/thetaZ may not use the same convention,
+  # and guessing wrong here risks another bad pose. DO NOT re-enable
+  # dry_run:false for any state that targets home_pose until rotation is
+  # verified - see README for the safe (dry-run-only) verification plan.
+  translation: [0.572, 0.016, 0.422]
+  rotation: [3.0087, 0.0020, 1.7769]  # UNVERIFIED - see note above
 
 pick_pose:
   translation: [0.40, 0.10, 0.15]
