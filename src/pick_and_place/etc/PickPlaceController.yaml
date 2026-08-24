@@ -136,16 +136,45 @@ states:
   # MoveToPick/MoveToPlace (which still fail dry-run for the confirmed
   # dry-run-only reason documented in the README - not live-validated yet).
   # Restore `next: MoveToPick` (and the transition below) once this passes.
+  #
+  # SWITCHED TO JOINT-SPACE 2026-08-24: dry-run from a realistic
+  # "somewhat away from home" pose (reached via a mix of the Kinova app's
+  # pose and angular jog controls - operator confirmed not an unusual
+  # configuration) showed the Cartesian BSpline version stalling partway:
+  # joint_4's model value decelerated smoothly to a dead stop while
+  # pos_err/ori_err stayed clearly non-zero (0.0975m / 0.2661 rad).
+  # joint_4 is `continuous` in the URDF (no position limit) and never
+  # approached its velocity limit either, so this isn't the joint_5-hits-
+  # its-limit issue from the previous test - more likely the QP-solved
+  # Cartesian IK path routed through a configuration near the self-
+  # collision constraint (iDist/sDist below) or a singularity. Direct
+  # joint-space interpolation takes a different route through
+  # configuration space to the exact same physical target, which may
+  # avoid whatever intermediate configuration caused that. Target is the
+  # real Home joint configuration, read directly from realRobot() in two
+  # separate tests with the arm confirmed at Kinova's actual Home
+  # (consistent between them to ~0.0002 rad). If this ALSO stalls the same
+  # way from a similar starting pose, that's strong evidence of a genuine
+  # self-collision/singularity the arm needs to route around, not just a
+  # Cartesian-path artifact - see README. Old Cartesian version preserved
+  # below, commented out, for comparison/revert.
   MoveHome:
-    base: CartesianMove
-    target:
-      ref: home
+    base: JointMove
+    target: [0.0000, 0.2622, -2.2691, 0.0000, 0.9598, 1.5708]
     duration: 15.0
-    stiffness: 4.0
-    weight: 1000.0
-    pos_threshold: 0.02
-    settle_timeout: 5.0
+    threshold: 0.05
     next: ReturnHome
+
+  # MoveHome:
+  #   base: CartesianMove
+  #   target:
+  #     ref: home
+  #   duration: 15.0
+  #   stiffness: 4.0
+  #   weight: 1000.0
+  #   pos_threshold: 0.02
+  #   settle_timeout: 5.0
+  #   next: ReturnHome
 
   # ── Pick-and-place cycle ─────────────────────────────────────────────
   # MoveToPick and MoveToPlace are ComplianceCartesianMove: they yield if
