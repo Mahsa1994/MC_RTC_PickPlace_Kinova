@@ -71,21 +71,38 @@ def generate_launch_description():
                 output='screen',
                 parameters=[{
                     'use_sim_time': False,
-                    # SAFETY DEFAULT - still True (2026-08-19). Root cause of
-                    # the second E-stop found: delta_max (below) was clamped
-                    # every ~10ms publish cycle with a fixed 20ms
-                    # time_from_start, implying a SUSTAINED ~1 rad/s (~57
-                    # deg/s) per-joint velocity whenever the QP target lagged
-                    # real position by more than delta_max - true almost the
-                    # entire time during real motion, completely overriding
-                    # the intended slow/smooth state duration. Lowered 20x
-                    # below. Verify in dry-run (check logged q_cmd/enc_q
-                    # deltas look sane) before flipping this back to False.
+                    # SAFETY DEFAULT - still True (2026-08-19). Three E-stops
+                    # happened testing MoveHome, each initially chased as a
+                    # symptom (pose error, then delta_max) before the real
+                    # root cause was found: the bridge's internal QP-solved
+                    # robot model (gc_->robot()) integrates open-loop and is
+                    # NEVER resynced to the real encoder-observed arm. It can
+                    # race arbitrarily far ahead of reality (confirmed:
+                    # near-identical multi-radian divergence seen in both a
+                    # dry-run test and a live test with delta_max already cut
+                    # 20x) - delta_max only ever bounded the PER-CYCLE step,
+                    # never the ACCUMULATED gap, so nothing stopped that
+                    # divergence from growing and corrupting both the wrench
+                    # compensation and the FSM's own convergence checks.
+                    # Fixed in kortex_mc_rtc_bridge_impedance.cpp: the
+                    # divergence is now computed every tick and used as a
+                    # hard publish gate (model_real_gate below) - if the
+                    # model has drifted past that threshold from the real
+                    # arm, the bridge refuses to publish and logs loudly
+                    # instead of continuing to command a fictional position.
+                    # delta_max restored closer to its original value now
+                    # that it's a smoothness/step-rate limiter, not the last
+                    # line of defense. Verify in dry-run first (limited
+                    # power - dry-run never publishes, so it can't exercise
+                    # the gate's effect on real tracking, only confirm the
+                    # bridge still runs and logs sanely), then re-confirm
+                    # E-stop operator present before flipping this to False.
                     'dry_run': True,
                     'torque_sign': -1.0,
                     'deadband_force': 1.0,
                     'deadband_moment': 1.5,
-                    'delta_max': 0.0005,
+                    'delta_max': 0.005,
+                    'model_real_gate': 0.05,
                 }]
             )
         ]

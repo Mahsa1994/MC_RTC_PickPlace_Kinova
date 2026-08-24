@@ -71,7 +71,7 @@ static sva::PTransformd resolveTarget(mc_control::fsm::Controller & ctl,
   if(ref == "home")       base = ppc(ctl).homePose();
   else if(ref == "pick")  base = ppc(ctl).pickPose();
   else if(ref == "place") base = ppc(ctl).placePose();
-  else if(ref == "current") base = ctl.robot().frame(ee_frame).position();
+  else if(ref == "current") base = ctl.realRobot().frame(ee_frame).position();
   else throw std::runtime_error("[resolveTarget] Unknown reference: " + ref);
 
   Eigen::Vector3d t = base.translation();
@@ -85,13 +85,31 @@ static sva::PTransformd resolveTarget(mc_control::fsm::Controller & ctl,
   if(cfg.has("inherit_orientation"))
   {
     bool inherit = cfg("inherit_orientation");
-    if(inherit) R = ctl.robot().frame(ee_frame).position().rotation();
+    if(inherit) R = ctl.realRobot().frame(ee_frame).position().rotation();
   }
 
   // Safety: clamp Z
   if(t.z() < ppc(ctl).zMinLimit()) t.z() = ppc(ctl).zMinLimit();
 
   return sva::PTransformd(R, t);
+}
+
+// Resync the QP-controlled robot's configuration to the real,
+// encoder-observed one before planning a new trajectory. Without this,
+// ctl.robot() can carry over drift accumulated during a previous state
+// (dry_run, or the bridge's model-vs-real safety gate blocking publishing
+// for a while) - so a freshly-built trajectory, and any `ref: current`
+// target, would be planned from wherever the internal model drifted to
+// rather than from the arm's actual physical pose. Suspected root cause of
+// the 2026-08-19 "unexpected direction" MoveHome incident: the arm was
+// physically at Home, but if ctl.robot() had already drifted elsewhere,
+// the trajectory built in start() would path from that fictional point.
+static void resyncControlToReal(mc_control::fsm::Controller & ctl)
+{
+  ctl.robot().mbc().q     = ctl.realRobot().mbc().q;
+  ctl.robot().mbc().alpha = ctl.realRobot().mbc().alpha;
+  ctl.robot().forwardKinematics();
+  ctl.robot().forwardVelocity();
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -156,6 +174,8 @@ struct CartesianMove : mc_control::fsm::State
     dt_        = ctl.solver().dt();
     t_elapsed_ = 0.0;
     tick_      = 0;
+
+    resyncControlToReal(ctl);
     target_    = resolveTarget(ctl, target_cfg_, ee_frame_);
 
     // Back off the posture task so the QP respects the Cartesian trajectory.
@@ -215,8 +235,13 @@ struct CartesianMove : mc_control::fsm::State
     // During the scheduled trajectory time, just let it run.
     if(t_elapsed_ < duration_) return false;
 
-    // After the trajectory has been "played out", check convergence.
-    auto cur = ctl.robot().frame(ee_frame_).position();
+    // After the trajectory has been "played out", check convergence -
+    // against the REAL arm (realRobot()), not the QP-internal model
+    // (ctl.robot()), which the task drives toward target_ regardless of
+    // whether the real arm actually gets there. See resyncControlToReal()
+    // above for why these two can diverge, and the 2026-08-19 incidents
+    // this caused.
+    auto cur = ctl.realRobot().frame(ee_frame_).position();
     double pos_err = (cur.translation() - target_.translation()).norm();
     double ori_err = sva::rotationError(cur.rotation(), target_.rotation()).norm();
 
@@ -228,24 +253,31 @@ struct CartesianMove : mc_control::fsm::State
       return true;
     }
 
-    // Periodic progress log while settling
-//    static int tick = 0;
+    // Periodic progress log while settling. Past settle_timeout_ this does
+    // NOT force a transition (see note below) - only the message escalates,
+    // so a stuck arm is loud, not silent.
+    bool past_deadline = t_elapsed_ > duration_ + settle_timeout_;
     if((tick_++ % 200) == 0)
     {
-      mc_rtc::log::warning("[{}] Settling: pos_err={:.4f} m, ori_err={:.4f} rad",
-                           name(), pos_err, ori_err);
+      if(past_deadline)
+        mc_rtc::log::error(
+            "[{}] NOT converged {:.2f}s past schedule (pos_err={:.4f} m, ori_err={:.4f} rad) - "
+            "holding here, will NOT advance until the real arm actually reaches the target.",
+            name(), t_elapsed_ - duration_ - settle_timeout_, pos_err, ori_err);
+      else
+        mc_rtc::log::warning("[{}] Settling: pos_err={:.4f} m, ori_err={:.4f} rad",
+                             name(), pos_err, ori_err);
     }
 
-    // Bail out gracefully if we've been settling too long
-    if(t_elapsed_ > duration_ + settle_timeout_)
-    {
-      mc_rtc::log::error(
-          "[{}] Settle timeout after {:.2f}s extra (pos_err={:.4f}, ori_err={:.4f}). Advancing anyway.",
-          name(), settle_timeout_, pos_err, ori_err);
-      output(next_state_);
-      return true;
-    }
-
+    // NOTE (2026-08-19): this used to force-advance to next_state_ after
+    // settle_timeout_ ("advancing anyway"). CartesianMove is what MoveHome
+    // uses, and the whole point of MoveHome is guaranteeing the arm is
+    // actually at a known pose before the rest of the pipeline runs from it
+    // (MoveToPick/etc., and any `ref: current` target, trust that). A
+    // silent forced-advance defeats that guarantee exactly when it matters
+    // most - unreachable target, real hardware fault. Hold instead; this
+    // requires operator attention (loud error above) rather than composing
+    // further motion on top of an unverified pose.
     return false;
   }
 
@@ -353,6 +385,7 @@ struct ComplianceCartesianMove : mc_control::fsm::State
     paused_      = false;
     tick_        = 0;
 
+    resyncControlToReal(ctl);
     sva::PTransformd final_target = resolveTarget(ctl, target_cfg_, ee_frame_);
     sva::PTransformd start_pose   = ctl.robot().frame(ee_frame_).position();
 
@@ -489,7 +522,13 @@ struct ComplianceCartesianMove : mc_control::fsm::State
 
     if(t_elapsed_ < duration_) { tick_++; return false; }
 
-    auto cur = ctl.robot().frame(ee_frame_).position();
+    // Convergence judged against the REAL arm, not the QP-internal model -
+    // see resyncControlToReal() and CartesianMove::run() above. NOTE: the
+    // settle-timeout below still force-advances on non-convergence
+    // (unchanged from before this review) - MoveHome's equivalent no
+    // longer does this, see the note there; flagged for a decision on
+    // whether MoveToPick/MoveToPlace should match.
+    auto cur = ctl.realRobot().frame(ee_frame_).position();
     double pos_err = (cur.translation() - waypts_.back().translation()).norm();
     double ori_err = sva::rotationError(cur.rotation(), waypts_.back().rotation()).norm();
 
@@ -604,6 +643,8 @@ void start(mc_control::fsm::Controller & ctl) override
     t_elapsed_ = 0.0;
     tick_      = 0;
 
+    resyncControlToReal(ctl);
+
     auto pt = ctl.getPostureTask(ctl.robot().name());
     if(!pt)
     {
@@ -620,7 +661,9 @@ void start(mc_control::fsm::Controller & ctl) override
     // ── FIX: wrap each target angle to within π of the current q ─────
     // Prevents commanding a 360° detour when the bridge seeds joints in
     // a different wrap than the YAML value (e.g. +263° → −97°).
-    const auto & q   = ctl.robot().mbc().q;
+    // Reads realRobot() directly (rather than relying on the resync above)
+    // so this stays correct even if the resync call is ever reordered.
+    const auto & q   = ctl.realRobot().mbc().q;
     const auto & mbs = ctl.robot().mb().joints();
     for(size_t ji = 0; ji < mbs.size(); ++ji)
     {
@@ -662,7 +705,23 @@ void start(mc_control::fsm::Controller & ctl) override
     auto pt = ctl.getPostureTask(ctl.robot().name());
     if(!pt) { output(next_state_); return true; }
 
-    double err = pt->eval().norm();
+    // Convergence judged against the REAL arm (realRobot()), not
+    // pt->eval() (the posture task's own ctl.robot()-internal error) -
+    // same reasoning as CartesianMove/ComplianceCartesianMove above.
+    double err = 0.0;
+    {
+      const auto & q   = ctl.realRobot().mbc().q;
+      const auto & mbs = ctl.robot().mb().joints();
+      for(size_t ji = 0; ji < mbs.size(); ++ji)
+      {
+        if(mbs[ji].dof() != 1) continue;
+        const std::string & jname = mbs[ji].name();
+        if(!target_joints_.count(jname)) continue;
+        double d = q[ji][0] - target_joints_.at(jname)[0];
+        err += d * d;
+      }
+      err = std::sqrt(err);
+    }
 
     if(t_elapsed_ >= duration_ && err < threshold_)
     {
