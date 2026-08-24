@@ -226,6 +226,27 @@ struct CartesianMove : mc_control::fsm::State
           "[{}]   to   rotation [roll,pitch,yaw] (deg): [{:+.2f}, {:+.2f}, {:+.2f}]",
           name(), tgt_ea.z() * r2d, tgt_ea.y() * r2d, tgt_ea.x() * r2d);
     }
+
+    // JOINT SNAPSHOT (2026-08-24, safe under dry_run - reads realRobot()
+    // only, no motion). Gives an unambiguous joint-space ground truth for
+    // "where is the arm right now", independent of the Cartesian
+    // rotation/IK-feasibility questions above. If this state is started
+    // with the arm physically at Kinova's web-app Home, this is exactly
+    // Home's true joint configuration - compare against the target this
+    // state resolved to (translation/rotation above), and against any
+    // joint's URDF limit, without going through IK at all.
+    {
+      const double r2d = 180.0 / M_PI;
+      const auto & q   = ctl.realRobot().mbc().q;
+      const auto & mbs = ctl.realRobot().mb().joints();
+      mc_rtc::log::info("[{}]   real joints now:", name());
+      for(size_t ji = 0; ji < mbs.size(); ++ji)
+      {
+        if(mbs[ji].dof() != 1) continue;
+        mc_rtc::log::info("[{}]     '{}' = {:+.4f} rad ({:+.1f} deg)",
+                          name(), mbs[ji].name(), q[ji][0], q[ji][0] * r2d);
+      }
+    }
   }
 
   bool run(mc_control::fsm::Controller & ctl) override
@@ -548,8 +569,19 @@ struct ComplianceCartesianMove : mc_control::fsm::State
 
     if(t_elapsed_ > duration_ + settle_timeout_)
     {
-      mc_rtc::log::error("[{}] Settle timeout after {:.2f}s extra (pos_err={:.4f}, ori_err={:.4f}). Advancing anyway.",
-                         name(), settle_timeout_, pos_err, ori_err);
+      // FORCED ADVANCE (2026-08-24): still transitions on non-convergence,
+      // unlike CartesianMove/MoveHome (which now holds instead - see the
+      // note there), so a stuck compliant move can't hang an experiment
+      // session mid-trial. But this means the arm may not actually be at
+      // the target (e.g. CloseGripper could close on empty air) - tagged
+      // distinctly and consistently ("FORCED ADVANCE") so it's greppable in
+      // saved session logs and never reads as an ordinary "Reached target"
+      // success.
+      mc_rtc::log::error(
+          "[{}] FORCED ADVANCE -> {}: NOT converged after {:.2f}s extra "
+          "(pos_err={:.4f} m, ori_err={:.4f} rad) - target may not have been "
+          "reached; treat this trial/cycle as suspect.",
+          name(), next_state_, settle_timeout_, pos_err, ori_err);
       output(next_state_);
       return true;
     }

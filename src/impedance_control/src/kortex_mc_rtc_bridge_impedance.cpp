@@ -539,19 +539,35 @@ private:
     // hard publish gate below (model_real_gate_).
     double model_real_dev = 0.0;
     std::string model_real_worst_joint;
+    double model_real_worst_model_q = 0.0;
+    double model_real_worst_enc_q   = 0.0;
     {
       std::lock_guard<std::mutex> lock(effort_mutex_);
       auto ref_order = robot.refJointOrder();
       for (size_t i = 0; i < ref_order.size() && i < last_enc_q_.size(); ++i)
       {
         auto idx = robot.jointIndexByName(ref_order[i]);
-        double dev = std::abs(robot.mbc().q[idx][0] - last_enc_q_[i]);
-        if (dev > model_real_dev) { model_real_dev = dev; model_real_worst_joint = ref_order[i]; }
+        double model_q = robot.mbc().q[idx][0];
+        double dev = std::abs(model_q - last_enc_q_[i]);
+        if (dev > model_real_dev)
+        {
+          model_real_dev = dev;
+          model_real_worst_joint = ref_order[i];
+          model_real_worst_model_q = model_q;
+          model_real_worst_enc_q   = last_enc_q_[i];
+        }
       }
+      // Absolute values alongside the gap (2026-08-24): a gap that grows
+      // then goes perfectly flat, rather than continuing to grow for the
+      // whole trajectory, is the signature of the model hitting a
+      // kinematics constraint (e.g. a joint limit) rather than the task
+      // naturally finishing - model_q sitting at/near a joint's URDF limit
+      // confirms that directly instead of leaving it circumstantial.
       if (log_count % 500 == 0)
         mc_rtc::log::info(
-            "[KortexBridge] model-vs-real max joint deviation: {:.4f} rad on '{}'",
-            model_real_dev, model_real_worst_joint);
+            "[KortexBridge] model-vs-real max joint deviation: {:.4f} rad on '{}' "
+            "(model={:.4f} rad, real={:.4f} rad)",
+            model_real_dev, model_real_worst_joint, model_real_worst_model_q, model_real_worst_enc_q);
     }
 
     //// 9- Run controller and publish joint trajectory

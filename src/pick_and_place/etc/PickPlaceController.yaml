@@ -5,19 +5,29 @@ z_min_limit: 0.15
 home_pose:
   # SAFETY INCIDENT 2026-08-19: this pose was wrong - off by ~33cm in
   # translation and ~82 deg in orientation from the arm's actual physical
-  # Home position (confirmed via Kinova web app snapshot,
-  # Monitoring_2026-08-19_4-10-15.json). MoveHome correctly drove toward
-  # this value; the value itself was never physically verified. Arm moved
-  # fast, in an unexpected direction - operator E-stopped it.
-  # Translation corrected directly (units/frame correspond directly, high
-  # confidence). Rotation NOT yet corrected - poseFromConfig treats
-  # `rotation:` as [roll, pitch, yaw] composed Rz(yaw)*Ry(pitch)*Rx(roll);
-  # Kinova's web-app thetaX/thetaY/thetaZ may not use the same convention,
-  # and guessing wrong here risks another bad pose. DO NOT re-enable
-  # dry_run:false for any state that targets home_pose until rotation is
-  # verified - see README for the safe (dry-run-only) verification plan.
-  translation: [0.572, 0.016, 0.422]
-  rotation: [3.0087, 0.0020, 1.7769]  # UNVERIFIED - see note above
+  # Home position. First fix attempt (2026-08-19) used the Kinova web app's
+  # own reported EE translation (Monitoring_2026-08-19_4-10-15.json),
+  # assumed to correspond 1:1 to mc_rtc's tool_frame - WRONG (see below).
+  #
+  # CORRECTED 2026-08-24, superseding that attempt: with the arm physically
+  # at Kinova's real Home (confirmed by the operator), CartesianMove::start()
+  # logged mc_rtc's OWN tool_frame forward kinematics directly:
+  #   from: [+0.454, +0.001, +0.423]
+  #   from rotation [roll,pitch,yaw] (deg): [+173.42, -89.98, +96.58]
+  # This is the same eulerAngles(2,1,0) decomposition poseFromConfig()
+  # recomposes from `rotation: [roll,pitch,yaw]`, so it drops straight in
+  # with no convention translation. It does NOT match the web-app-derived
+  # values above (translation off by ~11.8cm in X; rotation's pitch is
+  # -89.98 deg here vs +0.11 deg from the web-app-derived value - a
+  # different orientation regime entirely, not a small error) - the web
+  # app's reported EE pose evidently uses a different reference point
+  # along the tool than mc_rtc's `tool_frame` (TCP vs flange or similar),
+  # so copying its numbers directly was never valid. This is now a direct
+  # mc_rtc-native measurement, not a cross-convention guess - retest MoveHome
+  # in dry-run first to confirm pos_err/ori_err shrink close to zero from
+  # this pose before trusting it live.
+  translation: [0.454, 0.001, 0.423]
+  rotation: [3.0267, -1.5704, 1.6856]
 
 pick_pose:
   translation: [0.40, 0.10, 0.15]
