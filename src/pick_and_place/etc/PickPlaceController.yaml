@@ -160,6 +160,24 @@ states:
   # below, commented out, for comparison/revert.
   MoveHome:
     base: JointMove
+    # stiffness explicitly lowered from JointMove's default (2.0), 2026-08-
+    # 24: dry-run (see README problem 13 update) showed ctl.robot() (the
+    # QP-internal model) converging to target exactly - joint_6:
+    # model=1.5708, dead on - within ~2s, implying a peak commanded rate
+    # around 0.88 rad/s on the largest-delta joint. That's far faster than
+    # the bridge's delta_max (currently 0.005 rad/cycle @100Hz =~0.5 rad/s
+    # max) lets the REAL robot actually track. Live, this would almost
+    # certainly trip the bridge's model_real_gate almost immediately -
+    # safely, no repeat-E-stop risk, but the arm would stall right at the
+    # start rather than making progress. Unlike CartesianMove's
+    # BSplineTrajectoryTask, JointMove has no time-parameterized pacing at
+    # all - `duration` below is only a minimum wait before the convergence
+    # check starts, NOT a speed control. Lowered 40x as a conservative
+    # first guess (~0.14 rad/s estimated peak, comfortably under
+    # delta_max's real-tracking ceiling) - dry-run cannot validate this
+    # estimate (it can't exercise real tracking at all, only a live test
+    # can) - if gate-tripping still happens live, lower this further.
+    stiffness: 0.05
     target: [0.0000, 0.2622, -2.2691, 0.0000, 0.9598, 1.5708]
     duration: 15.0
     threshold: 0.05

@@ -71,37 +71,46 @@ def generate_launch_description():
                 output='screen',
                 parameters=[{
                     'use_sim_time': False,
-                    # SAFETY DEFAULT - still True (2026-08-19). Three E-stops
-                    # happened testing MoveHome, each initially chased as a
-                    # symptom (pose error, then delta_max) before the real
-                    # root cause was found: the bridge's internal QP-solved
-                    # robot model (gc_->robot()) integrates open-loop and is
-                    # NEVER resynced to the real encoder-observed arm. It can
-                    # race arbitrarily far ahead of reality (confirmed:
-                    # near-identical multi-radian divergence seen in both a
-                    # dry-run test and a live test with delta_max already cut
-                    # 20x) - delta_max only ever bounded the PER-CYCLE step,
-                    # never the ACCUMULATED gap, so nothing stopped that
-                    # divergence from growing and corrupting both the wrench
-                    # compensation and the FSM's own convergence checks.
-                    # Fixed in kortex_mc_rtc_bridge_impedance.cpp: the
-                    # divergence is now computed every tick and used as a
-                    # hard publish gate (model_real_gate below) - if the
-                    # model has drifted past that threshold from the real
-                    # arm, the bridge refuses to publish and logs loudly
-                    # instead of continuing to command a fictional position.
-                    # delta_max restored closer to its original value now
-                    # that it's a smoothness/step-rate limiter, not the last
-                    # line of defense. Verify in dry-run first (limited
-                    # power - dry-run never publishes, so it can't exercise
-                    # the gate's effect on real tracking, only confirm the
-                    # bridge still runs and logs sanely), then re-confirm
-                    # E-stop operator present before flipping this to False.
+                    # SAFETY DEFAULT - still True (2026-08-19, updated
+                    # 2026-08-24). Three E-stops happened testing MoveHome,
+                    # each initially chased as a symptom (pose error, then
+                    # delta_max) before the real root cause was found: the
+                    # bridge's internal QP-solved robot model (gc_->robot())
+                    # integrates open-loop and is NEVER resynced to the real
+                    # encoder-observed arm - it can race arbitrarily far
+                    # ahead of reality. Fixed in
+                    # kortex_mc_rtc_bridge_impedance.cpp: divergence is now
+                    # computed every tick and used as a hard publish gate
+                    # (model_real_gate below) - if the model has drifted
+                    # past that threshold, the bridge refuses to publish and
+                    # logs loudly instead of continuing to command a
+                    # fictional position. MoveHome also switched to
+                    # joint-space (2026-08-24) with a lowered stiffness, to
+                    # route around a stall found in the Cartesian version -
+                    # see README problems 12-13.
+                    #
+                    # delta_max cut further (0.005 -> 0.002) for the FIRST
+                    # live test of the new joint-space MoveHome specifically
+                    # (2026-08-24): this is a HARD cap on real robot speed
+                    # (~0.5 rad/s -> ~0.2 rad/s, i.e. ~28.6 deg/s ->
+                    # ~11.5 deg/s sustained max) independent of whatever
+                    # MoveHome's new stiffness:0.05 does internally - that
+                    # value is an untested estimate (dry-run can't validate
+                    # real tracking pace at all), so this gives a second,
+                    # unconditional layer of caution: even if the estimate
+                    # is wrong and ctl.robot() moves faster than expected,
+                    # the real arm still cannot exceed this rate, and the
+                    # model_real_gate above will halt publishing well before
+                    # any dangerous divergence accumulates either way. Loosen
+                    # back toward 0.005 once this specific test is confirmed
+                    # safe. Re-confirm E-stop operator physically present
+                    # immediately before flipping this to False - every
+                    # time, no exceptions.
                     'dry_run': True,
                     'torque_sign': -1.0,
                     'deadband_force': 1.0,
                     'deadband_moment': 1.5,
-                    'delta_max': 0.005,
+                    'delta_max': 0.002,
                     'model_real_gate': 0.05,
                 }]
             )
