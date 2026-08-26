@@ -601,16 +601,25 @@ struct ComplianceCartesianMove : mc_control::fsm::State
 struct JointMove : mc_control::fsm::State
 {
   std::map<std::string, std::vector<double>> target_joints_;
-  double duration_   = 3.0;
-  double stiffness_  = 2.0;
+  double duration_   = 3.0;   // MINIMUM duration - see effective_duration_/v_max_ below
+  double stiffness_  = 2.0;   // now a pure TRACKING gain (how tightly the posture task follows
+                               // the moving reference below), not a speed control - see note in start()
   double weight_     = 100.0;
   double threshold_  = 0.15;
+  // Hard cap (rad/s) on any joint's PEAK commanded velocity, enforced by
+  // construction via the quintic time-scaling below - see start(). Default
+  // chosen with a 4x margin under the bridge's default delta_max-implied
+  // real-tracking ceiling (~0.2 rad/s @ delta_max=0.002, 100Hz publish);
+  // override in YAML per-launch-config if delta_max changes.
+  double v_max_      = 0.05;
   std::string next_state_;
 
   double t_elapsed_           = 0.0;
   double dt_                  = 0.01; //0.005;
   double prev_weight_         = 1.0;
   double prev_stiffness_      = 1.0;
+  double effective_duration_  = 3.0;  // = max(duration_, time needed so peak velocity <= v_max_)
+  std::map<std::string, double> q_start_;
 
   int tick_ = 0;
 
@@ -620,6 +629,7 @@ struct JointMove : mc_control::fsm::State
     if(config.has("stiffness")) stiffness_ = config("stiffness");
     if(config.has("weight"))    weight_    = config("weight");
     if(config.has("threshold")) threshold_ = config("threshold");
+    if(config.has("v_max"))     v_max_     = config("v_max");
     if(config.has("next"))      next_state_ = static_cast<std::string>(config("next"));
 
     // target: [v1, v2, ... v6]  (array form only — simplest and most common)
@@ -631,6 +641,14 @@ struct JointMove : mc_control::fsm::State
         target_joints_["joint_" + std::to_string(i + 1)] = {vals[i]};
       }
     }
+  }
+
+  // Same quintic (minimum-jerk) time-scaling as ComplianceCartesianMove
+  // above - 10u^3-15u^4+6u^5, zero velocity/acceleration at both ends.
+  static double quinticS(double u)
+  {
+    u = std::clamp(u, 0.0, 1.0);
+    return 10.0 * u * u * u - 15.0 * u * u * u * u + 6.0 * u * u * u * u * u;
   }
 
 /*  void start(mc_control::fsm::Controller & ctl) override
@@ -710,7 +728,26 @@ void start(mc_control::fsm::Controller & ctl) override
       while(target - current < -M_PI) target += 2.0 * M_PI;
     }
 
-    // ── DEBUG: print current q vs wrapped target ──────────────────────
+    // ── DEBUG: print current q vs wrapped target, capture q_start_ ────
+    // and compute effective_duration_ so peak velocity is bounded by
+    // construction (2026-08-26): a live test showed the previous
+    // "set target once, let the posture task's spring converge" approach
+    // move far faster than intended even after cutting stiffness_ 40x
+    // (observed ~0.4-0.9 rad/s vs. an estimated ~0.14 rad/s) - either the
+    // stiffness->velocity relationship assumed for that estimate was wrong,
+    // or the changed value didn't take effect (same class of stale-build
+    // mismatch hit earlier with dry_run; left unresolved since this fix
+    // sidesteps the question entirely). Below, q(t) is an explicit quintic
+    // interpolation from q_start_ to target_joints_ over effective_duration_
+    // - a pure function of time and the captured start/target values, not
+    // dependent on any task gain - so its peak velocity
+    // (1.875 * max|delta| / effective_duration_, the standard quintic
+    // peak-velocity factor) is a guaranteed property, not an estimate, and
+    // is directly verifiable in a dry-run log this time (unlike the
+    // stiffness-based approach, this profile doesn't depend on real
+    // feedback at all past q_start_).
+    q_start_.clear();
+    double max_abs_delta = 0.0;
     mc_rtc::log::info("[{}] Joint current_q vs target (after wrap):", name());
     for(size_t ji = 0; ji < mbs.size(); ++ji)
     {
@@ -720,15 +757,25 @@ void start(mc_control::fsm::Controller & ctl) override
       double target  = target_joints_.count(jname) ? target_joints_.at(jname)[0] : current;
       mc_rtc::log::info("[{}]   '{}' current={:.4f}  target={:.4f}  delta={:.4f}",
                         name(), jname, current, target, target - current);
+      if(target_joints_.count(jname))
+      {
+        q_start_[jname] = current;
+        max_abs_delta = std::max(max_abs_delta, std::abs(target - current));
+      }
     }
+    effective_duration_ = std::max(duration_, 1.875 * max_abs_delta / std::max(v_max_, 1e-6));
 
     prev_weight_    = pt->weight();
     prev_stiffness_ = pt->stiffness();
     pt->stiffness(stiffness_);
     pt->weight(weight_);
-    pt->target(target_joints_);
+    pt->target(target_joints_);   // overwritten every tick in run(); harmless initial value
 
-    mc_rtc::log::info("[{}] Joint-space move started (duration={:.2f}s)", name(), duration_);
+    mc_rtc::log::info(
+        "[{}] Joint-space move started - effective duration {:.2f}s (configured min {:.2f}s), "
+        "v_max={:.4f} rad/s, max |delta|={:.4f} rad -> peak velocity {:.4f} rad/s",
+        name(), effective_duration_, duration_, v_max_, max_abs_delta,
+        1.875 * max_abs_delta / effective_duration_);
   }
 
   bool run(mc_control::fsm::Controller & ctl) override
@@ -736,6 +783,19 @@ void start(mc_control::fsm::Controller & ctl) override
     t_elapsed_ += dt_;
     auto pt = ctl.getPostureTask(ctl.robot().name());
     if(!pt) { output(next_state_); return true; }
+
+    // Feed the interpolated (slow, bounded) reference every tick - the
+    // posture task's stiffness_/weight_ now only controls how tightly it
+    // tracks THIS moving reference, not how fast the motion itself is.
+    double u = effective_duration_ > 1e-6 ? t_elapsed_ / effective_duration_ : 1.0;
+    double s = quinticS(u);
+    std::map<std::string, std::vector<double>> interp;
+    for(const auto & kv : target_joints_)
+    {
+      double start = q_start_.count(kv.first) ? q_start_.at(kv.first) : kv.second[0];
+      interp[kv.first] = {(1.0 - s) * start + s * kv.second[0]};
+    }
+    pt->target(interp);
 
     // Convergence judged against the REAL arm (realRobot()), not
     // pt->eval() (the posture task's own ctl.robot()-internal error) -
@@ -755,7 +815,7 @@ void start(mc_control::fsm::Controller & ctl) override
       err = std::sqrt(err);
     }
 
-    if(t_elapsed_ >= duration_ && err < threshold_)
+    if(t_elapsed_ >= effective_duration_ && err < threshold_)
     {
       mc_rtc::log::success("[{}] Joint target reached (err={:.4f}).", name(), err);
       output(next_state_);

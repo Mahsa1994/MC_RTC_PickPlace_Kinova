@@ -160,26 +160,28 @@ states:
   # below, commented out, for comparison/revert.
   MoveHome:
     base: JointMove
-    # stiffness explicitly lowered from JointMove's default (2.0), 2026-08-
-    # 24: dry-run (see README problem 13 update) showed ctl.robot() (the
-    # QP-internal model) converging to target exactly - joint_6:
-    # model=1.5708, dead on - within ~2s, implying a peak commanded rate
-    # around 0.88 rad/s on the largest-delta joint. That's far faster than
-    # the bridge's delta_max (currently 0.005 rad/cycle @100Hz =~0.5 rad/s
-    # max) lets the REAL robot actually track. Live, this would almost
-    # certainly trip the bridge's model_real_gate almost immediately -
-    # safely, no repeat-E-stop risk, but the arm would stall right at the
-    # start rather than making progress. Unlike CartesianMove's
-    # BSplineTrajectoryTask, JointMove has no time-parameterized pacing at
-    # all - `duration` below is only a minimum wait before the convergence
-    # check starts, NOT a speed control. Lowered 40x as a conservative
-    # first guess (~0.14 rad/s estimated peak, comfortably under
-    # delta_max's real-tracking ceiling) - dry-run cannot validate this
-    # estimate (it can't exercise real tracking at all, only a live test
-    # can) - if gate-tripping still happens live, lower this further.
-    stiffness: 0.05
+    # PACING REWORKED 2026-08-26: the `stiffness: 0.05` approach tried
+    # 2026-08-24 (lowering the posture task's spring gain 40x, estimating
+    # ~0.14 rad/s peak) FAILED live - a real, non-trivial-distance test
+    # showed the model still moving at ~0.4-0.9 rad/s (same order of
+    # magnitude as the un-reduced default), tripping the bridge's
+    # model_real_gate almost immediately and holding it blocked for the
+    # entire test (safe - arm never moved at all - but zero progress).
+    # Root cause left deliberately unresolved (either the stiffness-to-
+    # velocity relationship assumed for that estimate was wrong, or the
+    # value didn't take effect - same class of stale-build mismatch as an
+    # earlier dry_run mixup this session) - JointMove was changed instead
+    # to make peak velocity an explicit, guaranteed, directly-computed
+    # property (quintic time-interpolation from the real start pose to
+    # `target` over an auto-extending duration - see PickPlaceStates.cpp),
+    # governed by `v_max` below rather than `stiffness`. `stiffness` is
+    # restored to a normal TRACKING gain (how tightly the real posture
+    # follows the now-slow, already-bounded reference) - it no longer
+    # controls speed at all.
+    stiffness: 2.0
+    v_max: 0.05   # rad/s hard cap on any joint's peak velocity - keep well under delta_max's implied real-tracking ceiling (~0.2 rad/s @ delta_max=0.002, 100Hz)
     target: [0.0000, 0.2622, -2.2691, 0.0000, 0.9598, 1.5708]
-    duration: 15.0
+    duration: 15.0   # now a MINIMUM - actual duration auto-extends per v_max for large moves, see start() log
     threshold: 0.05
     next: ReturnHome
 
