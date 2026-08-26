@@ -118,7 +118,7 @@ static void resyncControlToReal(mc_control::fsm::Controller & ctl)
 struct CartesianMove : mc_control::fsm::State
 {
   // Config (all overridable from YAML)
-  double duration_      = 3.0;
+  double duration_      = 3.0;   // MINIMUM duration - see effective_duration_/v_max_* below
   double stiffness_     = 10.0;
   double weight_        = 1000.0;
   double pos_threshold_ = 0.02;   // 2 cm
@@ -127,14 +127,22 @@ struct CartesianMove : mc_control::fsm::State
   std::string ee_frame_  = "tool_frame";
   std::string next_state_;
 
+  // Hard caps on peak Cartesian velocity, enforced by construction via
+  // effective_duration_ below - same reasoning/derivation as JointMove's
+  // v_max_ (2026-08-26). Defaults chosen with the same ~4x margin under the
+  // bridge's delta_max-implied real-tracking ceiling.
+  double v_max_lin_ = 0.05;   // m/s
+  double v_max_ang_ = 0.05;   // rad/s
+
   mc_rtc::Configuration target_cfg_;
   std::vector<Eigen::Vector3d> pos_waypoints_;
 
   // Runtime
   std::shared_ptr<mc_tasks::BSplineTrajectoryTask> traj_;
   sva::PTransformd target_;
-  double t_elapsed_ = 0.0;
-  double dt_        = 0.01; //0.005;
+  double t_elapsed_          = 0.0;
+  double dt_                 = 0.01; //0.005;
+  double effective_duration_ = 3.0;  // = max(duration_, time needed so peak vel <= v_max_*)
 
   // Posture task backup (we temporarily lower its priority so it
   // doesn't fight the Cartesian trajectory).
@@ -153,6 +161,8 @@ struct CartesianMove : mc_control::fsm::State
     if(config.has("settle_timeout")) settle_timeout_ = config("settle_timeout");
     if(config.has("ee_frame"))       ee_frame_       = static_cast<std::string>(config("ee_frame"));
     if(config.has("next"))           next_state_     = static_cast<std::string>(config("next"));
+    if(config.has("v_max_lin"))      v_max_lin_      = config("v_max_lin");
+    if(config.has("v_max_ang"))      v_max_ang_      = config("v_max_ang");
 
     target_cfg_ = config("target");
 
@@ -178,6 +188,28 @@ struct CartesianMove : mc_control::fsm::State
     resyncControlToReal(ctl);
     target_    = resolveTarget(ctl, target_cfg_, ee_frame_);
 
+    auto cur = ctl.robot().frame(ee_frame_).position();
+
+    // BUG FOUND 2026-08-26: CartesianMove had the same missing-speed-bound
+    // gap that caused MoveHome's 2026-08-24 stall (see JointMove's
+    // v_max_/effective_duration_ note) - MoveHome was fixed by moving to
+    // JointMove, but ReturnHome (also CartesianMove, never migrated) hit the
+    // identical failure mode live: after MoveToPick's incomplete
+    // convergence left the arm farther from home than usual, ReturnHome's
+    // fixed-duration BSplineTrajectoryTask requested a peak velocity past
+    // what the bridge's delta_max lets the real arm track, tripped
+    // model_real_gate almost immediately, and then stalled forever - since
+    // nothing resyncs ctl.robot() mid-run, the internal model just finished
+    // its pre-planned spline in simulation while the real arm sat frozen.
+    // Fixed the same way as JointMove: duration_ is now a MINIMUM, stretched
+    // (effective_duration_) so peak velocity stays under v_max_lin_/
+    // v_max_ang_ by construction (1.875 = quintic peak/avg factor).
+    double pos_delta = (target_.translation() - cur.translation()).norm();
+    double ori_delta = sva::rotationError(cur.rotation(), target_.rotation()).norm();
+    effective_duration_ = std::max({duration_,
+                                     1.875 * pos_delta / std::max(v_max_lin_, 1e-6),
+                                     1.875 * ori_delta / std::max(v_max_ang_, 1e-6)});
+
     // Back off the posture task so the QP respects the Cartesian trajectory.
     if(auto pt = ctl.getPostureTask(ctl.robot().name()))
     {
@@ -189,7 +221,7 @@ struct CartesianMove : mc_control::fsm::State
 
     traj_ = std::make_shared<mc_tasks::BSplineTrajectoryTask>(
         ctl.robot().frame(ee_frame_),
-        duration_,
+        effective_duration_,
         stiffness_,
         weight_,
         target_,
@@ -197,9 +229,11 @@ struct CartesianMove : mc_control::fsm::State
 
     ctl.solver().addTask(traj_);
 
-    auto cur = ctl.robot().frame(ee_frame_).position();
-    mc_rtc::log::info("[{}] Cartesian move started (duration={:.2f}s, stiffness={:.1f})",
-                      name(), duration_, stiffness_);
+    mc_rtc::log::info(
+        "[{}] Cartesian move started - effective duration {:.2f}s (configured min {:.2f}s), "
+        "v_max_lin={:.3f} m/s, v_max_ang={:.3f} rad/s, pos_delta={:.4f} m, ori_delta={:.4f} rad, "
+        "stiffness={:.1f}",
+        name(), effective_duration_, duration_, v_max_lin_, v_max_ang_, pos_delta, ori_delta, stiffness_);
     mc_rtc::log::info("[{}]   from: [{:+.3f}, {:+.3f}, {:+.3f}]",
                       name(), cur.translation().x(), cur.translation().y(), cur.translation().z());
     mc_rtc::log::info("[{}]   to:   [{:+.3f}, {:+.3f}, {:+.3f}]",
@@ -254,7 +288,7 @@ struct CartesianMove : mc_control::fsm::State
     t_elapsed_ += dt_;
 
     // During the scheduled trajectory time, just let it run.
-    if(t_elapsed_ < duration_) return false;
+    if(t_elapsed_ < effective_duration_) return false;
 
     // After the trajectory has been "played out", check convergence -
     // against the REAL arm (realRobot()), not the QP-internal model
@@ -277,14 +311,14 @@ struct CartesianMove : mc_control::fsm::State
     // Periodic progress log while settling. Past settle_timeout_ this does
     // NOT force a transition (see note below) - only the message escalates,
     // so a stuck arm is loud, not silent.
-    bool past_deadline = t_elapsed_ > duration_ + settle_timeout_;
+    bool past_deadline = t_elapsed_ > effective_duration_ + settle_timeout_;
     if((tick_++ % 200) == 0)
     {
       if(past_deadline)
         mc_rtc::log::error(
             "[{}] NOT converged {:.2f}s past schedule (pos_err={:.4f} m, ori_err={:.4f} rad) - "
             "holding here, will NOT advance until the real arm actually reaches the target.",
-            name(), t_elapsed_ - duration_ - settle_timeout_, pos_err, ori_err);
+            name(), t_elapsed_ - effective_duration_ - settle_timeout_, pos_err, ori_err);
       else
         mc_rtc::log::warning("[{}] Settling: pos_err={:.4f} m, ori_err={:.4f} rad",
                              name(), pos_err, ori_err);
@@ -331,7 +365,7 @@ struct CartesianMove : mc_control::fsm::State
 struct ComplianceCartesianMove : mc_control::fsm::State
 {
   // Trajectory config (mirrors CartesianMove)
-  double duration_       = 3.0;
+  double duration_       = 3.0;   // MINIMUM duration - see effective_duration_/v_max_* below
   double pos_threshold_  = 0.02;
   double ori_threshold_  = 0.10;
   double settle_timeout_ = 2.0;
@@ -339,6 +373,17 @@ struct ComplianceCartesianMove : mc_control::fsm::State
   std::string next_state_;
   mc_rtc::Configuration target_cfg_;
   std::vector<Eigen::Vector3d> pos_waypoints_;
+
+  // Hard caps on peak Cartesian velocity - same fix/reasoning applied to
+  // CartesianMove above (2026-08-26): the live MoveToPick test showed real
+  // joint_5 chronically lagging the model (up to 0.04 rad, never closing)
+  // because the moving target here had no speed bound either, so it could
+  // ask for more velocity than the bridge's delta_max lets the real arm
+  // track. effective_duration_ stretches duration_ (a MINIMUM) so the
+  // planned path's peak velocity stays under v_max_lin_/v_max_ang_.
+  double v_max_lin_       = 0.05;   // m/s
+  double v_max_ang_       = 0.05;   // rad/s
+  double effective_duration_ = 3.0;
 
   // Kinematic tracking gains (how fast the compliant pose chases its target)
   double task_stiffness_ = 20.0;
@@ -380,6 +425,8 @@ struct ComplianceCartesianMove : mc_control::fsm::State
     if(config.has("gains"))          gains_config_   = config("gains");
     if(config.has("contact_force_threshold")) contact_force_threshold_ = config("contact_force_threshold");
     if(config.has("clear_hold_time"))         clear_hold_time_         = config("clear_hold_time");
+    if(config.has("v_max_lin"))               v_max_lin_               = config("v_max_lin");
+    if(config.has("v_max_ang"))               v_max_ang_               = config("v_max_ang");
 
     target_cfg_ = config("target");
 
@@ -428,10 +475,16 @@ struct ComplianceCartesianMove : mc_control::fsm::State
       chord[i] = (waypts_[i + 1].translation() - waypts_[i].translation()).norm();
       total_chord += chord[i];
     }
-    seg_duration_.assign(chord.size(), duration_ / std::max<size_t>(1, chord.size()));
+
+    double ori_delta = sva::rotationError(start_pose.rotation(), final_target.rotation()).norm();
+    effective_duration_ = std::max({duration_,
+                                     1.875 * total_chord / std::max(v_max_lin_, 1e-6),
+                                     1.875 * ori_delta / std::max(v_max_ang_, 1e-6)});
+
+    seg_duration_.assign(chord.size(), effective_duration_ / std::max<size_t>(1, chord.size()));
     if(total_chord > 1e-6)
       for(size_t i = 0; i < chord.size(); ++i)
-        seg_duration_[i] = duration_ * (chord[i] / total_chord);
+        seg_duration_[i] = effective_duration_ * (chord[i] / total_chord);
 
     task_ = std::make_shared<mc_tasks::force::ImpedanceTask>(
         ctl.robot().frame(ee_frame_), task_stiffness_, task_weight_);
@@ -460,8 +513,12 @@ struct ComplianceCartesianMove : mc_control::fsm::State
 
     ctl.solver().addTask(task_);
 
-    mc_rtc::log::info("[{}] Compliant move started (duration={:.2f}s, {} waypoint(s))",
-                      name(), duration_, pos_waypoints_.size());
+    mc_rtc::log::info(
+        "[{}] Compliant move started - effective duration {:.2f}s (configured min {:.2f}s), "
+        "v_max_lin={:.3f} m/s, v_max_ang={:.3f} rad/s, path_len={:.4f} m, ori_delta={:.4f} rad, "
+        "{} waypoint(s)",
+        name(), effective_duration_, duration_, v_max_lin_, v_max_ang_, total_chord, ori_delta,
+        pos_waypoints_.size());
   }
 
   // Evaluate the moving target pose at trajectory-clock time `t`.
@@ -507,7 +564,7 @@ struct ComplianceCartesianMove : mc_control::fsm::State
 
     if(!paused_) t_elapsed_ += dt_;
 
-    task_->targetPose(targetAt(std::min(t_elapsed_, duration_)));
+    task_->targetPose(targetAt(std::min(t_elapsed_, effective_duration_)));
 
     // SIGN CHECK (safe under dry_run - no hardware command involved).
     // task_->compliancePose() is the ImpedanceTask's own internal target:
@@ -541,7 +598,7 @@ struct ComplianceCartesianMove : mc_control::fsm::State
         name(), world_dev.x(), world_dev.y(), world_dev.z());
     }
 
-    if(t_elapsed_ < duration_) { tick_++; return false; }
+    if(t_elapsed_ < effective_duration_) { tick_++; return false; }
 
     // Convergence judged against the REAL arm, not the QP-internal model -
     // see resyncControlToReal() and CartesianMove::run() above. NOTE: the
@@ -567,7 +624,7 @@ struct ComplianceCartesianMove : mc_control::fsm::State
                            name(), pos_err, ori_err, paused_ ? " (paused - contact)" : "");
     }
 
-    if(t_elapsed_ > duration_ + settle_timeout_)
+    if(t_elapsed_ > effective_duration_ + settle_timeout_)
     {
       // FORCED ADVANCE (2026-08-24): still transitions on non-convergence,
       // unlike CartesianMove/MoveHome (which now holds instead - see the

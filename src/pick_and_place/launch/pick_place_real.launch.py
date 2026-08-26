@@ -105,31 +105,38 @@ def generate_launch_description():
                     # back toward 0.005 once this specific test is confirmed
                     # safe.
                     #
-                    # LIVE 2026-08-26 (updated): MoveHome -> MoveToPick ->
-                    # ReturnHome now live-confirmed successful from both a
-                    # near-Home and a real, meaningful-distance start (see
-                    # README). Now testing MoveToPick live for the first
-                    # time - E-stop operator reconfirmed physically present
-                    # immediately before this specific test, per protocol.
-                    # Note: delta_max/model_real_gate are bridge-level and
-                    # apply to every published command regardless of which
-                    # FSM state is active, so the same protections proven
-                    # for MoveHome apply here too - but MoveToPick
-                    # (ComplianceCartesianMove/ImpedanceTask) has no
-                    # explicit v_max-style speed bound like MoveHome's
-                    # JointMove does; its dry-run test showed its internal
-                    # model converging fairly quickly (~2 rad of joint_5
-                    # travel within the 4s duration + settle window), faster
-                    # than delta_max's ~0.2 rad/s ceiling - so it's plausible
-                    # the safety gate trips and holds publishing rather than
-                    # letting the arm make progress. That would be a SAFE,
-                    # expected outcome (same as the first JointMove
-                    # gate-trip), not a failure requiring E-stop - just means
-                    # MoveToPick would need the same kind of explicit-bound
-                    # fix JointMove got if it happens. Revert to True
-                    # immediately on anything genuinely unexpected (fast/
-                    # jerky/wrong-direction motion).
-                    'dry_run': False,
+                    # LIVE TEST 2026-08-26 RESULT: MoveHome converged
+                    # correctly, but MoveToPick did not (ComplianceCartesian-
+                    # Move's target had no v_max-style speed bound, so real
+                    # joint_5 chronically lagged the model - up to 0.04 rad,
+                    # never closing - ending 0.245 m / 0.95 rad short of
+                    # pick_pose after settle_timeout, correctly FORCED
+                    # ADVANCE-tagged). ReturnHome then had to cover more
+                    # distance than usual in its fixed 4.0s duration,
+                    # requested a peak velocity past what delta_max lets the
+                    # real arm track, tripped model_real_gate almost
+                    # immediately, and stalled: the real arm froze safely
+                    # (gate correctly refused to publish - confirmed no
+                    # dangerous motion, E-stop was not needed), but nothing
+                    # resyncs ctl.robot() mid-run, so it could never recover
+                    # on its own. This is the SAME missing-speed-bound bug
+                    # already found and fixed for MoveHome/JointMove on
+                    # 2026-08-24 (see above) - just never migrated onto
+                    # CartesianMove/ComplianceCartesianMove, which ReturnHome
+                    # and MoveToPick use. FIXED 2026-08-26 in
+                    # PickPlaceStates.cpp: both states now compute an
+                    # effective_duration_ the same way JointMove does
+                    # (duration becomes a MINIMUM, stretched so peak
+                    # linear/angular velocity stays under new v_max_lin_/
+                    # v_max_ang_ config, default 0.05 m/s / 0.05 rad/s).
+                    # THIS FIX IS UNVALIDATED - dry_run forced back to True
+                    # here so MoveToPick/ReturnHome get a fresh dry-run pass
+                    # (check effective-duration/v_max log lines, SIGN CHECK,
+                    # convergence) before returning to live testing, per this
+                    # session's standing pattern for any new/changed motion
+                    # logic. Do not flip back to False without a clean
+                    # dry-run AND a fresh E-stop reconfirmation.
+                    'dry_run': True,
                     'torque_sign': -1.0,
                     'deadband_force': 1.0,
                     'deadband_moment': 1.5,
