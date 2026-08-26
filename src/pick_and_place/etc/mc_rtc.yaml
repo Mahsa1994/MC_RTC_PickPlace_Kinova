@@ -1,11 +1,27 @@
+# TIMESTEP BUG FOUND AND FIXED 2026-08-26 (see README problem 16): this was
+# 0.005 (200Hz), on the theory that pick_and_place's solver runs at 200Hz
+# (matching ros2_controllers.yaml's update_rate comment). It never actually
+# did - kortex_mc_rtc_bridge_impedance.cpp's own wall timer fires on
+# `loop_dt_`, which defaults to 0.001 (1kHz) and was never overridden in
+# pick_place_real.launch.py, so gc_->run() (and therefore every state's
+# `dt_ = ctl.solver().dt()`-based t_elapsed_ pacing) was actually being
+# called every 1ms of real time while believing each call was 5ms - a 5x
+# mismatch, confirmed quantitatively via a dry-run log where a 23.27s-
+# configured JointMove converged in ~5.0 real seconds. This affected EVERY
+# timed state (CartesianMove, ComplianceCartesianMove, JointMove) the whole
+# session, not just the state being tested when it was found - likely
+# invisible until now because prior live tests either had tiny deltas
+# (imperceptible either way) or were human-paced/reactive (a person
+# wouldn't necessarily notice compliance dynamics running 5x faster than
+# configured). Fixed by matching Timestep to the bridge's REAL rate (0.001)
+# instead of changing the bridge to match the old, wrong assumption -
+# affects every timed state's pacing at once. Re-check HoldCurrent's feel
+# live before trusting it unchanged - its gains were live-tuned under the
+# old (5x-faster-than-configured) dynamics, so now-correct pacing may feel
+# different even though nothing about the gains themselves changed.
 MainRobot: Kinova6DOF
 Enabled: PickPlaceController
-# 0.005s (200Hz) - matches pick_and_place/config/ros2_controllers.yaml's
-# update_rate comment ("matches mc_rtc timestep (0.005s = 200Hz)"). Do not
-# copy impedance_control/etc/mc_rtc.yaml's Timestep: 0.001 (1kHz) here -
-# ComplianceCartesianMove's stiffness/damping/duration in
-# PickPlaceController.yaml were tuned assuming 200Hz.
-Timestep: 0.005
+Timestep: 0.001
 LogPolicy: threaded
 
 Plugins:
