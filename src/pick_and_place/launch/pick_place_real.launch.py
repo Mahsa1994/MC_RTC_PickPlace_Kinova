@@ -103,10 +103,19 @@ def generate_launch_description():
                     # model_real_gate above will halt publishing well before
                     # any dangerous divergence accumulates either way. Loosen
                     # back toward 0.005 once this specific test is confirmed
-                    # safe. Re-confirm E-stop operator physically present
-                    # immediately before flipping this to False - every
-                    # time, no exceptions.
-                    'dry_run': True,
+                    # safe.
+                    #
+                    # LIVE 2026-08-26: E-stop operator confirmed physically
+                    # present immediately before this flip, per protocol.
+                    # First-ever live test of: corrected home_pose,
+                    # joint-space MoveHome w/ stiffness:0.05, the tightened
+                    # delta_max above, and the model_real_gate mechanism.
+                    # Arm should be started at/very near real Home for this
+                    # specific test (small joint deltas -> minimal distance
+                    # for anything to go wrong before it's caught) - test
+                    # farther-from-home only after this passes cleanly.
+                    # Revert to True immediately on anything unexpected.
+                    'dry_run': False,
                     'torque_sign': -1.0,
                     'deadband_force': 1.0,
                     'deadband_moment': 1.5,

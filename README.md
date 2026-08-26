@@ -358,15 +358,114 @@ mistaken for each other before the actual cause was isolated.
     `rotation: [3.0267, -1.5704, 1.6856]`) - since `CartesianMove`'s
     rotation log already uses the same Euler decomposition
     `poseFromConfig()` recomposes from, these values needed no convention
-    translation, unlike the web-app numbers. **Not yet re-tested even in
-    dry-run** - the two new diagnostics above also haven't been exercised
-    yet, since the log that revealed all this predated rebuilding them (the
-    rebuild only picked up problem 11's fixes, not these newer additions).
+    translation, unlike the web-app numbers.
+    **Dry-run retested 2026-08-24, passed cleanly**: with the arm still
+    near real Home, `model-vs-real max joint deviation` stayed tiny the
+    whole run (0.0002 -> 0.0017 rad, on `joint_4`, nowhere near
+    `model_real_gate`/any joint limit), and both `MoveHome` and
+    `ReturnHome` correctly reported real convergence and advanced:
+    `[success] [MoveHome] Reached target (pos_err=0.0004 m,
+    ori_err=0.0003 rad)` -> `ReturnHome` -> same -> `Idle`. First time the
+    full `MoveHome -> ReturnHome -> Idle` sequence has completed cleanly.
+    Caveat: the arm started already close to `home_pose`, so this didn't
+    exercise a real, meaningful-distance move - doesn't yet rule out
+    hitting the same kind of issue over a larger travel distance. **Next**:
+    one more dry-run with the arm deliberately moved somewhat away from
+    Home first, before any live retest.
     `pick_pose`/`place_pose` were not derived via the web app in the same
     way (chosen as plausible workspace coordinates, not cross-referenced
     against a snapshot) so this specific failure mode is less likely to
     apply to them, but they remain untested regardless (unchanged open
     item, see Next steps).
+13. **`MoveHome` stalls partway from a realistic non-Home starting pose -
+    switched to joint-space, 2026-08-24.** Dry-run from a pose reached via
+    a mix of the Kinova app's pose/angular jog controls (operator confirmed
+    not an unusual configuration) showed the same divergence-then-flat
+    pattern as problem 12, but this time on `joint_4` and definitively
+    *not* a joint-limit repeat: `joint_4` is `continuous` in the URDF (no
+    position limit at all) and its velocity never approached its `1.2218
+    rad/s` limit either. The absolute-value diagnostics from problem 12
+    showed the model's `joint_4` decelerating smoothly (0.199 -> 0.087 ->
+    0.0026 rad/s over the last three samples) to a dead stop at
+    `model=-0.0238 rad`, while `pos_err`/`ori_err` stayed clearly non-zero
+    (0.0975m / 0.2661 rad) - the overall Cartesian task was still far from
+    converged, yet this one joint stopped contributing. That smooth-
+    decelerate-to-stop shape (not an abrupt clamp) is more consistent with
+    the YAML's self-collision constraint (`iDist: 0.15, sDist: 0.05`)
+    engaging, or a kinematic singularity in the QP's IK, than a hard bound.
+    Also confirmed while investigating: cross-referencing the web app's raw
+    actuator degrees (`latest_nonhome.json`) against the bridge's logged
+    `joint_i` radians for this same pose matches exactly once wrapped to
+    the same range - the joint encoder mapping itself is solid, not a
+    factor here. **Not fixed at the root** (would need to directly inspect
+    collision distances or QP conditioning, which isn't currently logged
+    anywhere, and guessing at that API without the ability to compile here
+    risked a wasted round-trip) - instead tried a different-by-construction
+    workaround: `MoveHome` switched from `CartesianMove` (Cartesian IK, QP
+    picks the joint path) to `JointMove` (direct joint-space interpolation
+    to the real Home joint configuration captured in problem 12,
+    `[0.0, 0.2622, -2.2691, 0.0, 0.9598, 1.5708]`) - a fundamentally
+    different route through configuration space to the same physical
+    target. Old Cartesian version preserved commented-out in the YAML.
+    **Dry-run retested, 2026-08-24 - result was good, but the test design
+    itself was flawed and needed correcting.** Under dry_run the real arm
+    structurally cannot move at all (nothing ever publishes), so a
+    realRobot()-based convergence check can never show a far-away target
+    being reached - `err` (JointMove) and `model-vs-real max joint
+    deviation` both stayed exactly pinned at their initial values for the
+    entire ~25s log, which is NOT a stall, just this same limitation
+    documented elsewhere in this file re: CartesianMove - a mistake to
+    re-litigate here since it was already known and momentarily forgotten
+    when this specific test was suggested. The USEFUL signal was in the
+    absolute values instead: `ctl.robot()`'s worst joint (`joint_6`)
+    converged to its target exactly (`model=1.5708`, dead on) within ~2s,
+    with no plateau-short-of-target - unlike the Cartesian version, nothing
+    here looks stuck on a collision/singularity. That said, reaching target
+    in ~2s from a ~0.5 rad error implies a peak commanded rate around 0.88
+    rad/s, far exceeding what the bridge's `delta_max` (0.005 rad/cycle
+    @100Hz =~0.5 rad/s max) lets the real robot track - `JointMove` has no
+    time-parameterized pacing at all (`duration` is only a minimum wait
+    before checking convergence, unlike `CartesianMove`'s
+    `BSplineTrajectoryTask`), so live this would likely trip the bridge's
+    `model_real_gate` almost immediately (safely, but stalling progress).
+    **Fixed**: `MoveHome`'s `stiffness` lowered 40x (2.0 -> 0.05) to slow
+    its natural convergence rate to an estimated ~0.14 rad/s peak,
+    comfortably under `delta_max`'s tracking ceiling - an estimate only,
+    since dry-run cannot exercise real tracking to confirm it. **The
+    pacing question can only be resolved live from here** - no further
+    dry-run test would add information.
+14. **First successful live test of `MoveHome -> ReturnHome -> Idle`,
+    2026-08-26** - with an additional, unconditional safety margin for this
+    specific first attempt: `delta_max` cut further (0.005 -> 0.002,
+    ~28.6 -> ~11.5 deg/s hard cap) on top of problem 13's `stiffness: 0.05`,
+    so the real robot's speed is capped independent of whether that
+    stiffness estimate was right. Arm started at/very near real Home
+    (deltas ~0.0001-0.0006 rad on all 6 joints) - by design, to
+    minimize risk on the very first live run of this new code path.
+    Result: clean end-to-end success - `model-vs-real max joint deviation`
+    stayed pinned at 0.0000-0.0002 rad throughout (nowhere near
+    `model_real_gate`'s 0.05, which never fired), `MoveHome` converged
+    (`err=0.0001`) and handed off to `ReturnHome`, which also converged
+    (`pos_err=0.0001m, ori_err=0.0004 rad`) and reached `Idle` cleanly, with
+    only noise-level residual wrench afterward. First live confirmation
+    that the corrected `home_pose`, the joint-space `MoveHome`, and the
+    `model_real_gate` mechanism all work correctly together on real
+    hardware - this is the user's original target sequence ("from the
+    current pose, go to the home position, then stay there"), now
+    live-validated for the first time.
+    **Important caveat - not yet a complete validation**: because the arm
+    started already at Home, this exercised the pipeline/wiring but NOT the
+    actual thing problem 13's retuning was for - real tracking pace and the
+    safety gate's behavior under a MEANINGFUL, non-trivial displacement.
+    That remains untested live. Also worth noting: a real-hardware
+    debugging session hit a false alarm mid-troubleshooting this problem -
+    a "did it actually run live" log was misread as still-dry-run when it
+    was actually a stale/unrebuilt launch file being used; resolved by
+    verifying the installed launch file directly rather than trusting the
+    source edit alone. Worth remembering for future debugging: always
+    verify what's actually installed and running, not just what's in the
+    source tree, when a live/dry-run test's behavior doesn't match
+    expectation.
 
 ### Current state
 
@@ -379,27 +478,43 @@ mistaken for each other before the actual cause was isolated.
   `MoveToPick`) to isolate-validate the two rigid legs alone before
   `MoveToPick`/`MoveToPlace` - restore `next: MoveToPick` (transition is
   preserved commented-out in the YAML) once that passes.
-- `dry_run: True` in `pick_place_real.launch.py` - **three live E-stops
-  happened testing `MoveHome`** (problems 8-9 above) before this state was
-  reached; none of problems 8-12's fixes (corrected home_pose, the bridge's
-  model-vs-real publish gate, or the FSM's realRobot()-based
-  convergence/resync) have been live-validated yet, and the home_pose
-  correction (problem 12) hasn't even been dry-run tested yet. Do not flip
-  to `False` without re-confirming an E-stop operator is present, same as
-  every prior test this project.
-- **Live-validated** (`dry_run:false`, E-stop operator present): a temporary
-  standalone `HoldCurrent` state (compliant hold at whatever pose the arm
-  starts at) - confirmed correct translational yield + return-to-position
-  for 2 directions (down, right). Predates, and is independent of, problems
-  8-11.
+- `dry_run: False` in `pick_place_real.launch.py` (as of the 2026-08-26 live
+  test, problem 14) - **three live E-stops happened testing `MoveHome`**
+  (problems 8-9) before the fixes in problems 10-13 were developed and
+  dry-run-validated. First live retest (problem 14, arm started at/very
+  near Home) passed completely cleanly: full `MoveHome -> ReturnHome ->
+  Idle` sequence, `model_real_gate` never needed to fire, no operator
+  intervention needed. **Not yet validated live from a meaningful
+  distance** - the actual pacing fix (delta_max/stiffness retuning) and the
+  safety gate's real behavior under real divergence remain unexercised.
+  Treat the *next* live test (any non-trivial displacement) as needing the
+  same fresh E-stop reconfirmation as every `dry_run:false` transition this
+  project, even though the flag is already `False` - the risk profile of a
+  real, larger live move is materially different from what's been
+  confirmed so far.
+- **Live-validated** (`dry_run:false`, E-stop operator present):
+  - A temporary standalone `HoldCurrent` state (compliant hold at whatever
+    pose the arm starts at) - confirmed correct translational yield +
+    return-to-position for 2 directions (down, right). Predates, and is
+    independent of, problems 8-14.
+  - `MoveHome -> ReturnHome -> Idle` (problem 14, 2026-08-26), for an
+    arm-starts-at-Home case specifically - clean, full success, no operator
+    intervention needed. **Not yet validated for a meaningful displacement**
+    - see below.
 - **Home-first guarantee**: architecturally, `init: MoveHome` in the YAML
   means every fresh controller start begins by driving to the fixed,
   configured `home_pose` - now (problem 12) derived directly from mc_rtc's
   own forward kinematics with the arm at real Home, not cross-referenced
-  against the web app - and, as of problem 11, `CartesianMove` will hold
-  there rather than silently advancing until `realRobot()` actually
-  confirms arrival. Not yet exercised live, and not yet even dry-run tested
-  with the corrected `home_pose` in place.
+  against the web app - and, as of problem 11, the state will hold rather
+  than silently advancing until `realRobot()` actually confirms arrival.
+  Live-confirmed (problem 14) for an arm-starts-at-Home case. **Still not
+  confirmed for the actual "come home from wherever you are" case** - the
+  scenario the joint-space switch and delta_max/stiffness retuning
+  (problems 13-14) specifically targeted remains live-untested: dry-run
+  showed clean convergence in the model from a realistic farther-away start
+  (problem 13), but dry-run cannot exercise real tracking pace or the
+  safety gate under real divergence. This is the current blocker on the
+  home-first guarantee actually holding in general, not just near-home.
 - **Contact-safety scope deliberately narrowed**: the wrench estimator
   computes a single equivalent wrench as-if applied at the tool frame, so
   contact elsewhere on the arm's body (confirmed live: pushing near the
@@ -426,31 +541,36 @@ mistaken for each other before the actual cause was isolated.
    **Done** - confirmed as the `ctl.robot()`-vs-real gap (problems 10-11),
    not a controller bug; both a bridge-side publish gate and an FSM-side
    resync/realRobot()-based convergence check are now in place.
-2. Rebuild both `impedance_control` and `pick_and_place` - problems 10-12
-   touched files in both packages, and as of 2026-08-24 the most recent
-   diagnostic additions (bridge's absolute model/real joint log,
-   `CartesianMove`'s real-joint-angle snapshot) and the corrected
-   `home_pose` have NOT yet been exercised in any test, dry-run included -
-   the last dry-run log predated that rebuild. Then re-run the same staged
-   live validation that led to the three E-stops, in order: (a) a dry-run
-   pass first with the corrected `home_pose` - expect `pos_err`/`ori_err`
-   to shrink close to zero if the arm is anywhere near real Home, and the
-   `joint_5` divergence to no longer plateau at ~2 rad; acknowledge dry-run's
-   limited power for the bridge gate specifically (dry-run never publishes,
-   so it can't exercise that against real tracking) but it CAN now validate
-   the corrected pose's convergence via the realRobot()-based check; (b)
-   live retest of `MoveHome -> ReturnHome` alone, E-stop operator present,
-   re-confirmed beforehand as always. Watch for
-   `[KortexBridge] SAFETY GATE ... NOT publishing` and
-   `[MoveHome] NOT converged ... holding` specifically - either firing
-   repeatedly would mean the arm stops and holds instead of completing,
-   which is the intended fail-safe behavior, not a new bug.
-3. Once (b) passes: decide whether to restore `MoveHome`'s `next:` to
+2. ~~Live retest `MoveHome -> ReturnHome` (arm starting at Home)~~ **Done,
+   passed cleanly** (problem 14, 2026-08-26) - full sequence completed live
+   with no operator intervention, `model_real_gate` never needed to fire.
+3. **Live-test `MoveHome` from a meaningful, non-trivial distance** - the
+   actual target of problems 13-14's fixes, still completely unexercised.
+   E-stop operator present, freshly re-confirmed immediately before this
+   specific test even though `dry_run` is already `False` (this is a
+   materially different, higher-risk test than problem 14's near-home
+   case - same standing protocol as every prior `dry_run:false`
+   transition). Move the arm to a real, meaningful distance from `home_pose`
+   first (via the web app, similar to or larger than problem 13's dry-run
+   test pose), then run. Watch for:
+   - `[KortexBridge] SAFETY GATE ... NOT publishing` firing and holding -
+     not a failure, the intended fail-safe if divergence grows too fast;
+   - `[MoveHome] NOT converged ... holding` similarly - both mean the arm
+     stops and holds rather than completing, which is safe but means
+     `stiffness: 0.05` and/or `delta_max: 0.002` still need tuning
+     (probably `stiffness` lower still, since `delta_max` is the harder
+     unconditional cap and shouldn't need to move first);
+   - actual smooth, slow progress toward Home within the expected ~11.5
+     deg/s ceiling - the success case.
+   If this passes, loosen `delta_max` back toward `0.005` (problem 14's
+   note) and consider re-testing once more before treating `MoveHome` as
+   solved in general.
+4. Once step 3 passes: decide whether to restore `MoveHome`'s `next:` to
    `MoveToPick` (revert the temporary bypass) and live-validate
    `MoveToPick`/`MoveToPlace` in isolation next (moving-target compliance,
    never validated live), same staged philosophy as `HoldCurrent`, before
    the full chain.
-4. ~~Open question from problem 11~~ **Decided (2026-08-24)**:
+5. ~~Open question from problem 11~~ **Decided (2026-08-24)**:
    `ComplianceCartesianMove` (`MoveToPick`/`MoveToPlace`) keeps force-
    advancing to the next state on a settle timeout even if `realRobot()`
    never actually converged (unlike `CartesianMove`/`MoveHome`, which now
@@ -460,21 +580,21 @@ mistaken for each other before the actual cause was isolated.
    place may not have actually happened is visible in saved session logs
    instead of reading as an ordinary success - filter session logs for this
    string when reviewing trial data.
-5. Complete the sign check: remaining translation directions (up, left) and
+6. Complete the sign check: remaining translation directions (up, left) and
    rotational/moment axes - ideally against `MoveToPick`/`MoveToPlace`
    directly, not just the (now superseded) `HoldCurrent` state.
-6. Re-validate `wrench_dls_lambda2`/`max_force_estimate`/
+7. Re-validate `wrench_dls_lambda2`/`max_force_estimate`/
    `max_moment_estimate`/`qd_gate_low`/`qd_gate_high` against real, moving
    trajectories - still outstanding since 2026-07-27.
-7. Decide whether the arm needs to be manually positioned near `home_pose`
+8. Decide whether the arm needs to be manually positioned near `home_pose`
    before launch, or whether `MoveHome` is expected to safely reach it from
    anywhere - relevant again now that `CartesianMove` will hold rather than
    advance if it can't.
-8. Confirm gripper actuation is real, not a stub/timeout fallback - every
+9. Confirm gripper actuation is real, not a stub/timeout fallback - every
    dry-run log so far shows `[Gripper] timeout (Ns), proceeding` for both
    close and open rather than a confirmed action-server success; worth
    checking directly once live.
-9. Commit the accumulated changes - still uncommitted, see "Branches" above.
+10. Commit the accumulated changes - still uncommitted, see "Branches" above.
 
 ## Novelty direction (from the 2026-07-27 discussion)
 
