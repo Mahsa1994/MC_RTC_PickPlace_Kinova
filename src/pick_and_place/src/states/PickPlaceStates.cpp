@@ -776,6 +776,29 @@ void start(mc_control::fsm::Controller & ctl) override
         "v_max={:.4f} rad/s, max |delta|={:.4f} rad -> peak velocity {:.4f} rad/s",
         name(), effective_duration_, duration_, v_max_, max_abs_delta,
         1.875 * max_abs_delta / effective_duration_);
+
+    // CARTESIAN POSE SNAPSHOT (2026-08-26, safe under dry_run - reads
+    // realRobot() only, no motion). JointMove has no Cartesian awareness of
+    // its own (pure joint-space), unlike CartesianMove's "from:"/rotation
+    // log - added here specifically to capture pick_pose/place_pose the
+    // same proven way home_pose was fixed: physically position the arm,
+    // read THIS log, not the Kinova web app's reported pose (confirmed
+    // twice now to not correspond to mc_rtc's tool_frame directly). Same
+    // eulerAngles(2,1,0) decomposition poseFromConfig() uses, so these
+    // numbers drop straight into a YAML `translation:`/`rotation:` block
+    // with no conversion needed.
+    {
+      const double r2d = 180.0 / M_PI;
+      auto cur = ctl.realRobot().frame("tool_frame").position();
+      Eigen::Vector3d cur_ea = cur.rotation().eulerAngles(2, 1, 0);
+      mc_rtc::log::info("[{}]   real tool_frame translation: [{:+.4f}, {:+.4f}, {:+.4f}]",
+                        name(), cur.translation().x(), cur.translation().y(), cur.translation().z());
+      mc_rtc::log::info(
+          "[{}]   real tool_frame rotation [roll,pitch,yaw] (deg): [{:+.2f}, {:+.2f}, {:+.2f}] "
+          "-> YAML rotation: [{:.4f}, {:.4f}, {:.4f}]",
+          name(), cur_ea.z() * r2d, cur_ea.y() * r2d, cur_ea.x() * r2d,
+          cur_ea.z(), cur_ea.y(), cur_ea.x());
+    }
   }
 
   bool run(mc_control::fsm::Controller & ctl) override
