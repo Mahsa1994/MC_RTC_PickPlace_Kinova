@@ -129,14 +129,21 @@ def generate_launch_description():
                     # (duration becomes a MINIMUM, stretched so peak
                     # linear/angular velocity stays under new v_max_lin_/
                     # v_max_ang_ config, default 0.05 m/s / 0.05 rad/s).
-                    # THIS FIX IS UNVALIDATED - dry_run forced back to True
-                    # here so MoveToPick/ReturnHome get a fresh dry-run pass
-                    # (check effective-duration/v_max log lines, SIGN CHECK,
-                    # convergence) before returning to live testing, per this
-                    # session's standing pattern for any new/changed motion
-                    # logic. Do not flip back to False without a clean
-                    # dry-run AND a fresh E-stop reconfirmation.
-                    'dry_run': True,
+                    #
+                    # DRY-RUN VALIDATED 2026-08-26 (bypass: init=MoveToPick):
+                    # ReturnHome's duration correctly auto-stretched
+                    # 4.00s -> 9.03s (matches 1.875*ori_delta/v_max_ang
+                    # exactly), no QP failure, model-vs-real deviation
+                    # plateaued instead of climbing unbounded, MoveToPick
+                    # FORCED ADVANCE-tagged and ReturnHome held instead of
+                    # advancing - both per design. init reverted to MoveHome.
+                    # E-stop operator reconfirmed physically present
+                    # immediately before this live test, per protocol. Same
+                    # watch-items as before: delta_max/model_real_gate still
+                    # apply regardless of state; revert to True immediately
+                    # on anything genuinely unexpected (fast/jerky/wrong-
+                    # direction motion, or a gate-trip that doesn't clear).
+                    'dry_run': False,
                     'torque_sign': -1.0,
                     'deadband_force': 1.0,
                     'deadband_moment': 1.5,

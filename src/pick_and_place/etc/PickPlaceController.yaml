@@ -68,15 +68,16 @@ IdleKeepState: true
 # Definition preserved, commented out, below - re-enable by setting this back
 # to `init: Unfold` and uncommenting its state + transition.
 #
-# DIAGNOSTIC BYPASS REINSTATED (2026-08-26, again): MoveHome dry-run cannot
-# ever converge (needs real joint motion realRobot() will never show under
-# dry_run), so it never hands off to MoveToPick - same structural limitation
-# as before. Temporarily MoveToPick again, this time specifically to
-# exercise the NEW effective_duration_/v_max_lin_/v_max_ang_ code added to
-# CartesianMove/ComplianceCartesianMove today (see PickPlaceStates.cpp) -
-# check for sane "effective duration" log values and no QP failure, then
-# revert to MoveHome once confirmed clean.
-init: MoveToPick
+# DIAGNOSTIC BYPASS REVERTED (2026-08-26, again): dry-run from MoveToPick
+# confirmed the new effective_duration_/v_max_lin_/v_max_ang_ code in
+# CartesianMove/ComplianceCartesianMove works as designed - ReturnHome's
+# duration correctly auto-stretched 4.00s -> 9.03s (1.875*ori_delta/v_max_ang
+# exactly), no QP failure, model-vs-real deviation plateaued instead of
+# climbing unbounded, MoveToPick FORCED ADVANCE-tagged and ReturnHome held
+# instead of advancing - both per design, both structurally unable to fully
+# converge under dry_run (real arm never moves) same as MoveHome always was.
+# Back to MoveHome for the next live test.
+init: MoveHome
 
 states:
 
