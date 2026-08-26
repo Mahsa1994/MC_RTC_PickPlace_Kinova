@@ -769,7 +769,24 @@ void start(mc_control::fsm::Controller & ctl) override
     prev_stiffness_ = pt->stiffness();
     pt->stiffness(stiffness_);
     pt->weight(weight_);
-    pt->target(target_joints_);   // overwritten every tick in run(); harmless initial value
+    // BUG FOUND 2026-08-26: this used to be pt->target(target_joints_) (the
+    // RAW, un-interpolated final target), on the assumption that run()'s
+    // first tick would immediately overwrite it with the s=0 interpolated
+    // value, making it "harmless". Two live/dry-run tests with a large
+    // single-joint delta (2.38 rad, then 3.08 rad) both hit
+    // "[error] QP failed to run()" immediately after this line, before any
+    // run()-tick output ever printed - proving the QP's first solve sees
+    // THIS raw target, several radians away, not the interpolated one.
+    // Smaller deltas (<=0.62 rad, tested earlier) apparently stayed within
+    // whatever numerical tolerance the solver has; large ones don't. Fixed
+    // by setting the initial target to q_start_ (equivalent to s=0, "stay
+    // where you are") - exactly what run()'s first tick computes anyway,
+    // removing the momentary large-jump exposure entirely.
+    {
+      std::map<std::string, std::vector<double>> initial;
+      for(const auto & kv : q_start_) initial[kv.first] = {kv.second};
+      pt->target(initial);
+    }
 
     mc_rtc::log::info(
         "[{}] Joint-space move started - effective duration {:.2f}s (configured min {:.2f}s), "
