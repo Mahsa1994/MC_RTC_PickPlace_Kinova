@@ -68,18 +68,11 @@ IdleKeepState: true
 # Definition preserved, commented out, below - re-enable by setting this back
 # to `init: Unfold` and uncommenting its state + transition.
 #
-# TEMPORARY DIAGNOSTIC BYPASS (2026-08-26): init set to MoveToPick directly,
-# skipping MoveHome, specifically to dry-run-test MoveToPick's own startup
-# (no "QP failed to run()", sane SIGN CHECK output) without needing the arm
-# positioned within MoveHome's realRobot()-based convergence threshold
-# (0.05 rad on all six joints) first - dry-run can never show that
-# convergence unless the arm starts almost exactly there (nothing ever
-# publishes), which isn't worth chasing via manual jogging just to reach
-# this one diagnostic. ComplianceCartesianMove resyncs to the real arm at
-# start() regardless of where it begins, so this is safe/valid regardless
-# of current pose. MoveHome -> MoveToPick itself is already live-confirmed
-# separately - revert to `init: MoveHome` once this diagnostic pass is done.
-init: MoveToPick
+# DIAGNOSTIC BYPASS REVERTED (2026-08-26): was temporarily MoveToPick, to
+# dry-run-test its startup in isolation (passed cleanly - no
+# "QP failed to run()", SIGN CHECK converged smoothly toward pick_pose,
+# FORCED ADVANCE and ReturnHome's resync both fired correctly - see README).
+init: MoveHome
 
 states:
 

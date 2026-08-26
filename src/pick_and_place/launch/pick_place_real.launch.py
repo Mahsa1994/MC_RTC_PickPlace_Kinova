@@ -105,16 +105,30 @@ def generate_launch_description():
                     # back toward 0.005 once this specific test is confirmed
                     # safe.
                     #
-                    # LIVE 2026-08-26: E-stop operator confirmed physically
-                    # present immediately before this flip, per protocol.
-                    # First-ever live test of: corrected home_pose,
-                    # joint-space MoveHome w/ stiffness:0.05, the tightened
-                    # delta_max above, and the model_real_gate mechanism.
-                    # Arm should be started at/very near real Home for this
-                    # specific test (small joint deltas -> minimal distance
-                    # for anything to go wrong before it's caught) - test
-                    # farther-from-home only after this passes cleanly.
-                    # Revert to True immediately on anything unexpected.
+                    # LIVE 2026-08-26 (updated): MoveHome -> MoveToPick ->
+                    # ReturnHome now live-confirmed successful from both a
+                    # near-Home and a real, meaningful-distance start (see
+                    # README). Now testing MoveToPick live for the first
+                    # time - E-stop operator reconfirmed physically present
+                    # immediately before this specific test, per protocol.
+                    # Note: delta_max/model_real_gate are bridge-level and
+                    # apply to every published command regardless of which
+                    # FSM state is active, so the same protections proven
+                    # for MoveHome apply here too - but MoveToPick
+                    # (ComplianceCartesianMove/ImpedanceTask) has no
+                    # explicit v_max-style speed bound like MoveHome's
+                    # JointMove does; its dry-run test showed its internal
+                    # model converging fairly quickly (~2 rad of joint_5
+                    # travel within the 4s duration + settle window), faster
+                    # than delta_max's ~0.2 rad/s ceiling - so it's plausible
+                    # the safety gate trips and holds publishing rather than
+                    # letting the arm make progress. That would be a SAFE,
+                    # expected outcome (same as the first JointMove
+                    # gate-trip), not a failure requiring E-stop - just means
+                    # MoveToPick would need the same kind of explicit-bound
+                    # fix JointMove got if it happens. Revert to True
+                    # immediately on anything genuinely unexpected (fast/
+                    # jerky/wrong-direction motion).
                     'dry_run': False,
                     'torque_sign': -1.0,
                     'deadband_force': 1.0,
