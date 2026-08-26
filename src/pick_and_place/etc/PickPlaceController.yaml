@@ -30,8 +30,18 @@ home_pose:
   rotation: [3.0267, -1.5704, 1.6856]
 
 pick_pose:
-  translation: [0.40, 0.10, 0.15]
-  rotation:    [3.1416, 0.0, 0.0]
+  # SET 2026-08-26: was a never-tested placeholder guess. Replaced with a
+  # direct mc_rtc-native reading (same method as home_pose above) -
+  # physically jogged the arm to this pose, then read MoveHome's
+  # `real tool_frame translation:`/`rotation:` startup log with the arm
+  # sitting there. Confirmed via dry-run: no "QP failed to run()" computing
+  # a MoveHome trajectory away from this pose (earlier candidate poses hit
+  # that error - see README problem 15/17 - most likely self-collision on
+  # a specific joint combination, not simply "how far is home"). NOT yet
+  # live-tested - MoveToPick (ComplianceCartesianMove) has never been
+  # validated live, only MoveHome's dry-run reachability from here.
+  translation: [0.2354, -0.2139, 0.3628]
+  rotation:    [-3.0885, -0.0668, 0.8662]
 
 place_pose:
   translation: [0.35, -0.10, 0.15]
@@ -220,15 +230,26 @@ states:
     base: ComplianceCartesianMove
     target:
       ref: pick
+    # waypoint updated 2026-08-26 to match pick_pose's new value (was
+    # [0.40, 0.10, 0.25], hovering over the OLD placeholder pick_pose -
+    # stale and unrelated to the current pick_pose translation
+    # [0.2354, -0.2139, 0.3628] below; left unfixed it would have sent the
+    # arm to an arbitrary, unrelated point in the workspace first). Same
+    # X/Y as pick_pose, +0.10 in Z to hover above it before descending.
     waypoints:
-      - [0.40, 0.10, 0.25]   # hover ~10cm above pick_pose before descending
+      - [0.2354, -0.2139, 0.4628]
     duration: 4.0
     stiffness: 25.0
     damping: 12.0
     weight: 100.0
     contact_force_threshold: 8.0   # must stay above deadband_force on the bridge
     clear_hold_time: 0.3
-    next: CloseGripper
+    # ISOLATED VALIDATION (2026-08-26): next temporarily set to ReturnHome
+    # instead of CloseGripper, to live-test MoveHome -> MoveToPick ->
+    # ReturnHome alone before CloseGripper/MoveToPlace/OpenGripper (none
+    # tested yet). Same staged pattern used for MoveHome earlier. Restore
+    # `next: CloseGripper` (and the transition below) once this passes.
+    next: ReturnHome
     gains:
       mass:
         linear:  [3, 3, 3]
@@ -293,7 +314,8 @@ transitions:
   # - [Unfold,       MoveHome,     MoveHome,     Auto]  # Unfold removed, see note near `init:` above
   - [MoveHome,     MoveToPick,   MoveToPick,   Auto]
   # - [MoveHome,     ReturnHome,   ReturnHome,   Auto]  # isolated MoveHome->ReturnHome validation bypass, reverted 2026-08-26 - see note near MoveHome above
-  - [MoveToPick,   CloseGripper, CloseGripper, Auto]
+  - [MoveToPick,   ReturnHome,   ReturnHome,   Auto]
+  # - [MoveToPick,   CloseGripper, CloseGripper, Auto]  # isolated MoveHome->MoveToPick->ReturnHome validation bypass, 2026-08-26 - see note near MoveToPick above
   - [CloseGripper, MoveToPlace,  MoveToPlace,  Auto]
   - [MoveToPlace,  OpenGripper,  OpenGripper,  Auto]
   - [OpenGripper,  ReturnHome,   ReturnHome,   Auto]
