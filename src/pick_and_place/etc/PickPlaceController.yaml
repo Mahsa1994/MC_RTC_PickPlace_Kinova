@@ -68,11 +68,15 @@ IdleKeepState: true
 # Definition preserved, commented out, below - re-enable by setting this back
 # to `init: Unfold` and uncommenting its state + transition.
 #
-# DIAGNOSTIC BYPASS REVERTED (2026-08-26): was temporarily MoveToPick, to
-# dry-run-test its startup in isolation (passed cleanly - no
-# "QP failed to run()", SIGN CHECK converged smoothly toward pick_pose,
-# FORCED ADVANCE and ReturnHome's resync both fired correctly - see README).
-init: MoveHome
+# DIAGNOSTIC BYPASS REINSTATED (2026-08-26, again): MoveHome dry-run cannot
+# ever converge (needs real joint motion realRobot() will never show under
+# dry_run), so it never hands off to MoveToPick - same structural limitation
+# as before. Temporarily MoveToPick again, this time specifically to
+# exercise the NEW effective_duration_/v_max_lin_/v_max_ang_ code added to
+# CartesianMove/ComplianceCartesianMove today (see PickPlaceStates.cpp) -
+# check for sane "effective duration" log values and no QP failure, then
+# revert to MoveHome once confirmed clean.
+init: MoveToPick
 
 states:
 
