@@ -183,7 +183,15 @@ states:
     target: [0.0000, 0.2622, -2.2691, 0.0000, 0.9598, 1.5708]
     duration: 15.0   # now a MINIMUM - actual duration auto-extends per v_max for large moves, see start() log
     threshold: 0.05
-    next: ReturnHome
+    # ISOLATED VALIDATION BYPASS REVERTED (2026-08-26): live-confirmed from
+    # a real, meaningful distance (max joint delta 0.62 rad) - clean
+    # convergence in ~23s, model-vs-real deviation never exceeded ~0.002
+    # rad, safety gate never fired, ReturnHome/Idle completed cleanly
+    # afterward. Restoring the original MoveToPick target - MoveToPick
+    # itself (ComplianceCartesianMove, moving-target compliance tracking)
+    # has NOT been live-tested yet and should be validated in isolation
+    # next, same staged philosophy as HoldCurrent/MoveHome before it.
+    next: MoveToPick
 
   # MoveHome:
   #   base: CartesianMove
@@ -283,8 +291,8 @@ states:
 transitions:
   - [HoldCurrent,  HoldCurrent,  HoldCurrent,  Auto]
   # - [Unfold,       MoveHome,     MoveHome,     Auto]  # Unfold removed, see note near `init:` above
-  # - [MoveHome,     MoveToPick,   MoveToPick,   Auto]  # bypassed for isolated MoveHome->ReturnHome validation, see note above
-  - [MoveHome,     ReturnHome,   ReturnHome,   Auto]
+  - [MoveHome,     MoveToPick,   MoveToPick,   Auto]
+  # - [MoveHome,     ReturnHome,   ReturnHome,   Auto]  # isolated MoveHome->ReturnHome validation bypass, reverted 2026-08-26 - see note near MoveHome above
   - [MoveToPick,   CloseGripper, CloseGripper, Auto]
   - [CloseGripper, MoveToPlace,  MoveToPlace,  Auto]
   - [MoveToPlace,  OpenGripper,  OpenGripper,  Auto]
