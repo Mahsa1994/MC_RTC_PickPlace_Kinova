@@ -68,20 +68,19 @@ IdleKeepState: true
 # Definition preserved, commented out, below - re-enable by setting this back
 # to `init: Unfold` and uncommenting its state + transition.
 #
-# DIAGNOSTIC BYPASS RE-ENABLED (2026-08-26, 3rd time): live re-test after the
-# effective_duration_ fix showed ReturnHome now works perfectly, but
-# MoveToPick still stalls short of pick_pose (pos_err=0.2448 m,
-# ori_err=0.9427 rad - basically unchanged from before the fix), with zero
-# measured wrench and a perfectly static SIGN CHECK/world_dev throughout the
-# settling window - ruling out contact-pause and "still converging, ran out
-# of time". Leading hypothesis: a kinematic limit (joint_3 measured
-# post-mortem at -2.4840 rad, only 0.086 rad from its +-2.57 rad limit) is
-# capping the QP regardless of time given. Added a periodic real-joint value
-# log to ComplianceCartesianMove::run() to check this directly. Bypassing to
-# MoveToPick again (same as before) purely so dry-run can reach it and print
-# that log without waiting on MoveHome's dry-run-unreachable convergence.
-# Revert to MoveHome once this diagnostic pass is done.
-init: MoveToPick
+# DIAGNOSTIC BYPASS REVERTED (2026-08-26, 3rd time): dry-run from MoveToPick
+# only confirmed the new per-joint logging in ComplianceCartesianMove::run()
+# fires correctly and formats correctly - it could NOT test the joint-limit
+# hypothesis itself, because under dry_run nothing is ever published, so the
+# real encoders (and therefore the logged real joint values) are completely
+# frozen at whatever pose the arm physically sat in when the test started.
+# Confirmed: joint_3 printed a constant -2.2692 rad for the entire run (the
+# arm's starting pose, unrelated to the hypothesis). Needs a LIVE run to
+# actually watch joint_3 move and see whether it climbs toward its
+# +-2.57 rad limit and plateaus there. Back to MoveHome so the live re-test
+# runs the real pipeline (MoveHome -> MoveToPick -> ReturnHome) instead of
+# starting the arm cold at MoveToPick.
+init: MoveHome
 
 states:
 
