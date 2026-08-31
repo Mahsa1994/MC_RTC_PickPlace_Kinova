@@ -52,11 +52,20 @@ pick_pose:
   # sitting there. Confirmed via dry-run: no "QP failed to run()" computing
   # a MoveHome trajectory away from this pose (earlier candidate poses hit
   # that error - see README problem 15/17 - most likely self-collision on
-  # a specific joint combination, not simply "how far is home"). NOT yet
-  # live-tested - MoveToPick (ComplianceCartesianMove) has never been
-  # validated live, only MoveHome's dry-run reachability from here.
-  translation: [0.2354, -0.2139, 0.3628]
-  rotation:    [-3.0885, -0.0668, 0.8662]
+  # a specific joint combination, not simply "how far is home"). SUPERSEDED
+  # below - live-tested, failed to converge (joint_3-near-limit problem, see
+  # MoveToSafePos comment), never restored to old values.
+  #
+  # REPLACED 2026-08-26 (2nd time): new candidate, reached by continuing the
+  # jog from the new MoveToSafePos midpoint (joint_3 barely moved, 1.1678 ->
+  # 1.1679 rad, by design - keeping the elbow stable while adjusting
+  # shoulder/wrist to descend into the pick location), captured the same way
+  # via MoveToZero's dry-run startup log:
+  #   real tool_frame rotation [roll,pitch,yaw] (deg): [+179.23, -31.93, +1.27]
+  # joint_3 margin here: ~1.40 rad from +2.57, ~3.74 rad from -2.57 - nowhere
+  # near either limit. NOT yet dry-run/live validated as a MoveToPick target.
+  translation: [-0.5114, -0.0083, 0.2319]
+  rotation:    [3.1282, -0.5573, 0.0221]
 
 place_pose:
   translation: [0.35, -0.10, 0.15]
@@ -281,18 +290,23 @@ states:
   # search - going there directly in joint space (this state) sidesteps
   # that entirely.
   #
-  # TARGET BELOW = that computed solution. CAVEAT: it comes from a
-  # simplified rigid-chain IK model (URDF-based FK + damped-least-squares,
-  # no self-collision constraint - this repo's `type: collision` iDist/
-  # sDist check is NOT modeled here) - not yet physically validated. Dry-run
-  # first (watch specifically for "QP failed to run()", the known signature
-  # of the self-collision constraint from README problem 15/17) before any
-  # live test, same discipline as every other pose in this file.
+  # TARGET BELOW - REPLACED 2026-08-26: the computed IK candidate above
+  # (joint_3 = -2.032 rad) was superseded before being live-tested - physical
+  # capture preferred instead (verifiable directly, not dependent on a
+  # simplified IK model with no self-collision term). Arm jogged to a new
+  # candidate midpoint and captured via MoveToZero's dry-run startup log
+  # (same method as home_pose/pick_pose):
+  #   real tool_frame translation: [-0.5190, +0.0013, +0.8194]
+  #   real tool_frame rotation [roll,pitch,yaw] (deg): [-0.02, +74.56, +179.98]
+  #   YAML rotation: [-0.0003, 1.3013, 3.1412]
+  # joint_3 = +1.1678 rad here - 1.40 rad of margin from +2.57 and 3.74 rad
+  # from -2.57, comfortably clear of the limit either direction. Still needs
+  # the same dry-run pass (watch for "QP failed to run()") before live.
   MoveToSafePos:
     base: JointMove
     stiffness: 2.0
     v_max: 0.05
-    target: [0.74518, 0.08649, -2.03178, -0.00787, -0.93827, 1.61753]   # computed candidate - see comment above, dry-run validate before trusting
+    target: [-0.0001, -0.1335, 1.1678, -0.0000, 0.0001, -0.0000]
     duration: 15.0
     threshold: 0.05
     next: MoveToPick
@@ -313,26 +327,26 @@ states:
     base: ComplianceCartesianMove
     target:
       ref: pick
-    # waypoint updated 2026-08-26 to match pick_pose's new value (was
-    # [0.40, 0.10, 0.25], hovering over the OLD placeholder pick_pose -
-    # stale and unrelated to the current pick_pose translation
-    # [0.2354, -0.2139, 0.3628] below; left unfixed it would have sent the
-    # arm to an arbitrary, unrelated point in the workspace first). Same
-    # X/Y as pick_pose, +0.10 in Z to hover above it before descending.
+    # waypoint updated 2026-08-26 (2nd time) to match pick_pose's newest
+    # value [-0.5114, -0.0083, 0.2319] (previous waypoint hovered over the
+    # now-superseded pick_pose [0.2354, -0.2139, 0.3628] - stale and
+    # unrelated to the current target). Same X/Y as pick_pose, +0.10 in Z
+    # to hover above it before descending.
     waypoints:
-      - [0.2354, -0.2139, 0.4628]
+      - [-0.5114, -0.0083, 0.3319]
     duration: 4.0
     stiffness: 25.0
     damping: 12.0
     weight: 100.0
     contact_force_threshold: 8.0   # must stay above deadband_force on the bridge
     clear_hold_time: 0.3
-    # ISOLATED VALIDATION (2026-08-26): next temporarily set to ReturnHome
-    # instead of CloseGripper, to live-test MoveHome -> MoveToPick ->
-    # ReturnHome alone before CloseGripper/MoveToPlace/OpenGripper (none
-    # tested yet). Same staged pattern used for MoveHome earlier. Restore
-    # `next: CloseGripper` (and the transition below) once this passes.
-    next: ReturnHome
+    # ISOLATED VALIDATION (2026-08-26): next temporarily set to ReturnToZero
+    # (formerly ReturnHome) instead of CloseGripper, to live-test
+    # MoveToZero -> MoveToSafePos -> MoveToPick -> ReturnToZero alone before
+    # CloseGripper/MoveToPlace/OpenGripper (none tested yet). Same staged
+    # pattern used for MoveToZero earlier. Restore `next: CloseGripper` (and
+    # the transition below) once this passes.
+    next: ReturnToZero
     gains:
       mass:
         linear:  [3, 3, 3]
@@ -379,18 +393,38 @@ states:
     base: Gripper
     action: open
     timeout: 3.0
-    next: ReturnHome
+    next: ReturnToZero
 
-  ReturnHome:
-    base: CartesianMove
-    target:
-      ref: home
-    duration: 4.0
-    stiffness: 4.0
-    weight: 1000.0
-    pos_threshold: 0.02
-    settle_timeout: 5.0
+  # REPLACED 2026-08-26: ReturnHome (CartesianMove back to home_pose) dropped
+  # now that home_pose IS Zero (see home_pose comment above) - a Cartesian
+  # move back to a pose that's literally all-zero joints adds nothing over a
+  # direct joint-space move, and joint-space has already proven more robust
+  # for large reconfigurations in this project (MoveHome itself switched
+  # CartesianMove -> JointMove on 2026-08-24 for the same reason - see that
+  # state's history above). Can't just point back at the existing MoveToZero
+  # state for this - its `next:` is hardcoded to MoveToSafePos, which would
+  # loop straight back into another pick attempt instead of ending at Idle -
+  # so this is a second JointMove instance, same Zero target, ending at Idle
+  # instead. Old CartesianMove version preserved below for reference/revert.
+  ReturnToZero:
+    base: JointMove
+    stiffness: 2.0
+    v_max: 0.05
+    target: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    duration: 15.0
+    threshold: 0.05
     next: Idle
+
+  # ReturnHome:
+  #   base: CartesianMove
+  #   target:
+  #     ref: home
+  #   duration: 4.0
+  #   stiffness: 4.0
+  #   weight: 1000.0
+  #   pos_threshold: 0.02
+  #   settle_timeout: 5.0
+  #   next: Idle
 
 transitions:
   - [HoldCurrent,  HoldCurrent,  HoldCurrent,  Auto]
@@ -398,12 +432,12 @@ transitions:
   - [MoveToZero,    MoveToSafePos, MoveToSafePos, Auto]
   - [MoveToSafePos, MoveToPick,   MoveToPick,   Auto]
   # - [MoveHome,     ReturnHome,   ReturnHome,   Auto]  # isolated MoveHome->ReturnHome validation bypass, reverted 2026-08-26 - see note near MoveHome above
-  - [MoveToPick,   ReturnHome,   ReturnHome,   Auto]
+  - [MoveToPick,   ReturnToZero, ReturnToZero, Auto]
   # - [MoveToPick,   CloseGripper, CloseGripper, Auto]  # isolated MoveHome->MoveToPick->ReturnHome validation bypass, 2026-08-26 - see note near MoveToPick above
   - [CloseGripper, MoveToPlace,  MoveToPlace,  Auto]
   - [MoveToPlace,  OpenGripper,  OpenGripper,  Auto]
-  - [OpenGripper,  ReturnHome,   ReturnHome,   Auto]
-  - [ReturnHome,   Idle,         Idle,         Auto]
+  - [OpenGripper,  ReturnToZero, ReturnToZero, Auto]
+  - [ReturnToZero, Idle,         Idle,         Auto]
 constraints:
   - type: kinematics
   - type: dynamics
