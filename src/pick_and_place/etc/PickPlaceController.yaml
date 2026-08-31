@@ -63,9 +63,20 @@ pick_pose:
   # via MoveToZero's dry-run startup log:
   #   real tool_frame rotation [roll,pitch,yaw] (deg): [+179.23, -31.93, +1.27]
   # joint_3 margin here: ~1.40 rad from +2.57, ~3.74 rad from -2.57 - nowhere
-  # near either limit. NOT yet dry-run/live validated as a MoveToPick target.
-  translation: [-0.5114, -0.0083, 0.2319]
-  rotation:    [3.1282, -0.5573, 0.0221]
+  # near either limit. LIVE-VALIDATED 2026-08-26: full MoveToZero ->
+  # MoveToSafePos -> MoveToPick -> ReturnToZero -> Idle sequence completed
+  # successfully live with this value (no QP failure, no gate trip).
+  #
+  # REPLACED 2026-08-26 (3rd time): re-jogged joint_5 at the pick location
+  # until the gripper looked perpendicular to the table (previous value
+  # didn't give that), then re-captured the same way:
+  #   real joints: joint_1=-0.0000 joint_2=-0.5254 joint_3=1.7814
+  #                joint_4=0.0013 joint_5=0.8087 joint_6=0.0000
+  #   real tool_frame rotation [roll,pitch,yaw] (deg): [+179.95, +1.49, +0.05]
+  # joint_3 margin here: ~0.79 rad from +2.57 - still comfortably clear.
+  # NOT yet dry-run/live validated as a MoveToPick target.
+  translation: [-0.4430, 0.0015, 0.2611]
+  rotation:    [3.1407, 0.0261, 0.0009]
 
 place_pose:
   translation: [0.35, -0.10, 0.15]
@@ -327,13 +338,13 @@ states:
     base: ComplianceCartesianMove
     target:
       ref: pick
-    # waypoint updated 2026-08-26 (2nd time) to match pick_pose's newest
-    # value [-0.5114, -0.0083, 0.2319] (previous waypoint hovered over the
-    # now-superseded pick_pose [0.2354, -0.2139, 0.3628] - stale and
-    # unrelated to the current target). Same X/Y as pick_pose, +0.10 in Z
-    # to hover above it before descending.
+    # waypoint updated 2026-08-26 (3rd time) to match pick_pose's newest
+    # value [-0.4430, 0.0015, 0.2611] (gripper-perpendicular-to-table
+    # revision - previous waypoint hovered over the now-superseded pick_pose
+    # [-0.5114, -0.0083, 0.2319]). Same X/Y as pick_pose, +0.10 in Z to
+    # hover above it before descending.
     waypoints:
-      - [-0.5114, -0.0083, 0.3319]
+      - [-0.4430, 0.0015, 0.3611]
     duration: 4.0
     stiffness: 25.0
     damping: 12.0
