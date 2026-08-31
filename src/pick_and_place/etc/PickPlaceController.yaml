@@ -68,16 +68,20 @@ IdleKeepState: true
 # Definition preserved, commented out, below - re-enable by setting this back
 # to `init: Unfold` and uncommenting its state + transition.
 #
-# DIAGNOSTIC BYPASS REVERTED (2026-08-26, again): dry-run from MoveToPick
-# confirmed the new effective_duration_/v_max_lin_/v_max_ang_ code in
-# CartesianMove/ComplianceCartesianMove works as designed - ReturnHome's
-# duration correctly auto-stretched 4.00s -> 9.03s (1.875*ori_delta/v_max_ang
-# exactly), no QP failure, model-vs-real deviation plateaued instead of
-# climbing unbounded, MoveToPick FORCED ADVANCE-tagged and ReturnHome held
-# instead of advancing - both per design, both structurally unable to fully
-# converge under dry_run (real arm never moves) same as MoveHome always was.
-# Back to MoveHome for the next live test.
-init: MoveHome
+# DIAGNOSTIC BYPASS RE-ENABLED (2026-08-26, 3rd time): live re-test after the
+# effective_duration_ fix showed ReturnHome now works perfectly, but
+# MoveToPick still stalls short of pick_pose (pos_err=0.2448 m,
+# ori_err=0.9427 rad - basically unchanged from before the fix), with zero
+# measured wrench and a perfectly static SIGN CHECK/world_dev throughout the
+# settling window - ruling out contact-pause and "still converging, ran out
+# of time". Leading hypothesis: a kinematic limit (joint_3 measured
+# post-mortem at -2.4840 rad, only 0.086 rad from its +-2.57 rad limit) is
+# capping the QP regardless of time given. Added a periodic real-joint value
+# log to ComplianceCartesianMove::run() to check this directly. Bypassing to
+# MoveToPick again (same as before) purely so dry-run can reach it and print
+# that log without waiting on MoveHome's dry-run-unreachable convergence.
+# Revert to MoveHome once this diagnostic pass is done.
+init: MoveToPick
 
 states:
 
