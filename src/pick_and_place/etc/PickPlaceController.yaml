@@ -8,9 +8,12 @@ home_pose:
   rotation: [-0.0000, 0.0001, 3.1413]
 
 pick_pose:
-  
-  translation: [-0.4430, 0.0015, 0.2611]
-  rotation:    [3.1407, 0.0261, 0.0009]
+  # REPLACED 2026-08-26: fresh physical capture as part of the MoveToZero ->
+  # MoveToSafe -> MoveToPick -> PickUpPos sequence (see snapshots/
+  # MoveToPick.txt). NOT yet dry-run/live validated as this pipeline's
+  # target.
+  translation: [-0.5570, 0.0008, 0.2944]
+  rotation:    [0.0041, 2.4140, 3.1119]
 
 place_pose:
   translation: [0.35, -0.10, 0.15]
@@ -90,7 +93,7 @@ states:
     # itself (ComplianceCartesianMove, moving-target compliance tracking)
     # has NOT been live-tested yet and should be validated in isolation
     # next, same staged philosophy as HoldCurrent/MoveHome before it.
-    next: MoveToSafePos
+    next: MoveToSafe
 
   # MoveHome:
   #   base: CartesianMove
@@ -146,44 +149,20 @@ states:
   # joint_3 = +1.1678 rad here - 1.40 rad of margin from +2.57 and 3.74 rad
   # from -2.57, comfortably clear of the limit either direction. Still needs
   # the same dry-run pass (watch for "QP failed to run()") before live.
-  MoveToSafePos:
+  # RENAMED 2026-08-26: MoveToSafePos -> MoveToSafe, target replaced with a
+  # fresh physical capture (arm jogged to a new safe midpoint, captured via
+  # MoveToZero's dry-run startup log the usual way - see snapshots/
+  # MoveToSafe.txt for the raw capture):
+  #   real tool_frame translation: [-0.6097, +0.0014, +0.7650]
+  #   real tool_frame rotation [roll,pitch,yaw] (deg): [-180.00, +97.75, +0.02]
+  #   YAML rotation: [-3.1415, 1.7061, 0.0003]
+  # joint_3 = +0.9991 rad here - comfortably clear of the +-2.57 rad limit.
+  # NOT yet dry-run/live validated as this pipeline's target.
+  MoveToSafe:
     base: JointMove
     stiffness: 2.0
     v_max: 0.05
-    target: [-0.0001, -0.1335, 1.1678, -0.0000, 0.0001, -0.0000]
-    duration: 15.0
-    threshold: 0.05
-    next: MoveToPickApproach
-
-  # ADDED 2026-08-26: precise, rigid joint-space hover leg inserted before
-  # MoveToPick, splitting what used to be a single ComplianceCartesianMove
-  # covering the whole approach into "get exactly above the object" (rigid,
-  # no compliance needed - nothing to contact yet) + "compliant final
-  # descent" (MoveToPick below, unchanged in kind, just shorter now).
-  # Reasoning: ComplianceCartesianMove's Cartesian-space IK doesn't
-  # guarantee which joint configuration it lands on (already seen it drift
-  # through unexpected configurations, e.g. joint_3 ballooning to 1.52 rad
-  # mid-trajectory in an earlier dry run) - JointMove guarantees the exact
-  # joint_5 = perpendicular-gripper configuration deterministically. Contact-
-  # safety scope is unaffected: this leg stays in open space above the pick
-  # location, contact is only ever expected during the short compliant
-  # descent that follows.
-  #
-  # TARGET BELOW = computed via the same URDF-based IK model used for
-  # MoveToSafePos's first (superseded) candidate: pick_pose's own
-  # translation/rotation with +0.10 m in Z (matching the old hover
-  # waypoint), seeded from pick_pose's own captured joint values (self-check
-  # against that capture reproduced it to ~1e-7 - model is trustworthy here)
-  # and converged cleanly to a nearby same-branch solution (max joint delta
-  # from pick's joints: 0.29 rad on joint_5). Margins: joint_2 1.85 rad,
-  # joint_3 0.94 rad, joint_5 0.99 rad - all comfortable. NOT yet physically
-  # validated - dry-run first (watch for "QP failed to run()") same as every
-  # new pose in this file.
-  MoveToPickApproach:
-    base: JointMove
-    stiffness: 2.0
-    v_max: 0.05
-    target: [-0.00000, -0.38803, 1.62957, 0.00100, 1.09789, 0.00046]
+    target: [-0.0000, -0.3424, 0.9991, 0.0002, 0.0939, 0.0000]
     duration: 15.0
     threshold: 0.05
     next: MoveToPick
@@ -201,29 +180,24 @@ states:
   # elsewhere on the arm's body yields inconsistently, see session notes
   # 2026-08-19). Gains matched to HoldCurrent's live-tuned values below.
   #
-  # SHORTENED 2026-08-26: now that MoveToPickApproach (above) handles the
-  # rigid hover-in, this leg only covers the final ~0.10 m vertical descent
-  # from hover to pick_pose - no waypoints needed (the hover via-point moved
-  # to MoveToPickApproach's target) and duration cut accordingly (still just
-  # a MINIMUM - v_max_lin/ang still auto-extend it if needed).
+  # REVISED 2026-08-26: MoveToPickApproach (the computed-IK rigid hover leg)
+  # dropped - superseded by fresh physical captures for the whole sequence.
+  # This leg is back to covering the full compliant approach from MoveToSafe
+  # down to pick_pose (duration restored to 4.0, no hover waypoint - none
+  # requested this time), with final gripper-orientation precision now
+  # handled by PickUpPos (JointMove, below) after this leg lands.
   MoveToPick:
     base: ComplianceCartesianMove
     target:
       ref: pick
     waypoints: []
-    duration: 2.0
+    duration: 4.0
     stiffness: 25.0
     damping: 12.0
     weight: 100.0
     contact_force_threshold: 8.0   # must stay above deadband_force on the bridge
     clear_hold_time: 0.3
-    # ISOLATED VALIDATION (2026-08-26): next temporarily set to ReturnToZero
-    # (formerly ReturnHome) instead of CloseGripper, to live-test
-    # MoveToZero -> MoveToSafePos -> MoveToPick -> ReturnToZero alone before
-    # CloseGripper/MoveToPlace/OpenGripper (none tested yet). Same staged
-    # pattern used for MoveToZero earlier. Restore `next: CloseGripper` (and
-    # the transition below) once this passes.
-    next: ReturnToZero
+    next: PickUpPos
     gains:
       mass:
         linear:  [3, 3, 3]
@@ -234,6 +208,32 @@ states:
       damping:
         linear:  [60, 60, 60]
         angular: [15, 15, 15]
+
+  # ADDED 2026-08-26: final joint-space gripper-orientation adjustment after
+  # MoveToPick lands - rigid (no compliance) by design, since by this point
+  # the arm is already at the pick location and this is a small, precise
+  # wrist nudge (see delta from MoveToPick's own captured joints below),
+  # not a travel move through open space. Target captured physically the
+  # usual way (see snapshots/PickUpPos.txt):
+  #   real tool_frame translation: [-0.4236, -0.0027, +0.2419]
+  #   real tool_frame rotation [roll,pitch,yaw] (deg): [+1.40, -175.91, +178.67]
+  #   YAML rotation: [0.0245, -3.0701, 3.1183]
+  # Delta from MoveToPick's captured joints: joint_3 +0.0463 rad, joint_5
+  # +0.7526 rad (the actual gripper-orientation adjustment), everything else
+  # ~unchanged - confirms this is a wrist-only nudge, not a big move.
+  # joint_3 = +1.8129 rad here - 0.76 rad of margin from +2.57, still clear.
+  # ISOLATED VALIDATION: next set to ReturnToZero instead of CloseGripper,
+  # to live-test MoveToZero -> MoveToSafe -> MoveToPick -> PickUpPos ->
+  # ReturnToZero alone first. Restore `next: CloseGripper` (and the
+  # transition below) once this passes.
+  PickUpPos:
+    base: JointMove
+    stiffness: 2.0
+    v_max: 0.05
+    target: [-0.0000, -0.5538, 1.8129, -0.0326, 0.8466, 0.0000]
+    duration: 15.0
+    threshold: 0.05
+    next: ReturnToZero
 
   CloseGripper:
     base: Gripper
@@ -306,12 +306,12 @@ states:
 transitions:
   - [HoldCurrent,  HoldCurrent,  HoldCurrent,  Auto]
   # - [Unfold,       MoveHome,     MoveHome,     Auto]  # Unfold removed, see note near `init:` above
-  - [MoveToZero,    MoveToSafePos, MoveToSafePos, Auto]
-  - [MoveToSafePos, MoveToPickApproach, MoveToPickApproach, Auto]
-  - [MoveToPickApproach, MoveToPick, MoveToPick, Auto]
+  - [MoveToZero,    MoveToSafe,   MoveToSafe,   Auto]
+  - [MoveToSafe,    MoveToPick,   MoveToPick,   Auto]
   # - [MoveHome,     ReturnHome,   ReturnHome,   Auto]  # isolated MoveHome->ReturnHome validation bypass, reverted 2026-08-26 - see note near MoveHome above
-  - [MoveToPick,   ReturnToZero, ReturnToZero, Auto]
-  # - [MoveToPick,   CloseGripper, CloseGripper, Auto]  # isolated MoveHome->MoveToPick->ReturnHome validation bypass, 2026-08-26 - see note near MoveToPick above
+  - [MoveToPick,   PickUpPos,    PickUpPos,    Auto]
+  - [PickUpPos,    ReturnToZero, ReturnToZero, Auto]
+  # - [PickUpPos,    CloseGripper, CloseGripper, Auto]  # isolated MoveToZero->MoveToSafe->MoveToPick->PickUpPos->ReturnToZero validation bypass, 2026-08-26 - see note near PickUpPos above
   - [CloseGripper, MoveToPlace,  MoveToPlace,  Auto]
   - [MoveToPlace,  OpenGripper,  OpenGripper,  Auto]
   - [OpenGripper,  ReturnToZero, ReturnToZero, Auto]
