@@ -3,78 +3,12 @@ ControllerName: PickPlaceController
 z_min_limit: 0.15
 
 home_pose:
-  # SAFETY INCIDENT 2026-08-19: this pose was wrong - off by ~33cm in
-  # translation and ~82 deg in orientation from the arm's actual physical
-  # Home position. First fix attempt (2026-08-19) used the Kinova web app's
-  # own reported EE translation (Monitoring_2026-08-19_4-10-15.json),
-  # assumed to correspond 1:1 to mc_rtc's tool_frame - WRONG (see below).
-  #
-  # CORRECTED 2026-08-24, superseding that attempt: with the arm physically
-  # at Kinova's real Home (confirmed by the operator), CartesianMove::start()
-  # logged mc_rtc's OWN tool_frame forward kinematics directly:
-  #   from: [+0.454, +0.001, +0.423]
-  #   from rotation [roll,pitch,yaw] (deg): [+173.42, -89.98, +96.58]
-  # This is the same eulerAngles(2,1,0) decomposition poseFromConfig()
-  # recomposes from `rotation: [roll,pitch,yaw]`, so it drops straight in
-  # with no convention translation. It does NOT match the web-app-derived
-  # values above (translation off by ~11.8cm in X; rotation's pitch is
-  # -89.98 deg here vs +0.11 deg from the web-app-derived value - a
-  # different orientation regime entirely, not a small error) - the web
-  # app's reported EE pose evidently uses a different reference point
-  # along the tool than mc_rtc's `tool_frame` (TCP vs flange or similar),
-  # so copying its numbers directly was never valid. This is now a direct
-  # mc_rtc-native measurement, not a cross-convention guess - retest MoveHome
-  # in dry-run first to confirm pos_err/ori_err shrink close to zero from
-  # this pose before trusting it live.
-  #
-  # REPLACED 2026-08-26: home_pose is now Kinova's built-in Zero/retract
-  # position (all joints 0) instead of the bent-elbow pose above - simpler
-  # to physically reproduce between trials (one-button retract), and safe
-  # as a JointMove target (MoveToZero, formerly MoveHome, below) since pure
-  # joint-space interpolation doesn't hit the IK-search-gets-stuck-on-a-
-  # limit problem that ruled out Zero as a *Cartesian* seed for MoveToPick
-  # (see MoveToSafePos comment - from Zero, Cartesian IK to pick_pose stalls
-  # on joint_5's limit instead of joint_3's). Measured directly via
-  # MoveHome's dry-run startup log with the arm physically at Zero:
-  #   real tool_frame translation: [-0.0000, +0.0014, +1.1766]
-  #   YAML rotation: [-0.0000, 0.0001, 3.1413]
-  # NOTE: ReturnHome (`ref: home`) now also returns to Zero at the end of
-  # the cycle, not the old bent-elbow pose - intentional, flagging it since
-  # it's a behavior change beyond just the entry point.
+  
   translation: [-0.0000, 0.0014, 1.1766]
   rotation: [-0.0000, 0.0001, 3.1413]
 
 pick_pose:
-  # SET 2026-08-26: was a never-tested placeholder guess. Replaced with a
-  # direct mc_rtc-native reading (same method as home_pose above) -
-  # physically jogged the arm to this pose, then read MoveHome's
-  # `real tool_frame translation:`/`rotation:` startup log with the arm
-  # sitting there. Confirmed via dry-run: no "QP failed to run()" computing
-  # a MoveHome trajectory away from this pose (earlier candidate poses hit
-  # that error - see README problem 15/17 - most likely self-collision on
-  # a specific joint combination, not simply "how far is home"). SUPERSEDED
-  # below - live-tested, failed to converge (joint_3-near-limit problem, see
-  # MoveToSafePos comment), never restored to old values.
-  #
-  # REPLACED 2026-08-26 (2nd time): new candidate, reached by continuing the
-  # jog from the new MoveToSafePos midpoint (joint_3 barely moved, 1.1678 ->
-  # 1.1679 rad, by design - keeping the elbow stable while adjusting
-  # shoulder/wrist to descend into the pick location), captured the same way
-  # via MoveToZero's dry-run startup log:
-  #   real tool_frame rotation [roll,pitch,yaw] (deg): [+179.23, -31.93, +1.27]
-  # joint_3 margin here: ~1.40 rad from +2.57, ~3.74 rad from -2.57 - nowhere
-  # near either limit. LIVE-VALIDATED 2026-08-26: full MoveToZero ->
-  # MoveToSafePos -> MoveToPick -> ReturnToZero -> Idle sequence completed
-  # successfully live with this value (no QP failure, no gate trip).
-  #
-  # REPLACED 2026-08-26 (3rd time): re-jogged joint_5 at the pick location
-  # until the gripper looked perpendicular to the table (previous value
-  # didn't give that), then re-captured the same way:
-  #   real joints: joint_1=-0.0000 joint_2=-0.5254 joint_3=1.7814
-  #                joint_4=0.0013 joint_5=0.8087 joint_6=0.0000
-  #   real tool_frame rotation [roll,pitch,yaw] (deg): [+179.95, +1.49, +0.05]
-  # joint_3 margin here: ~0.79 rad from +2.57 - still comfortably clear.
-  # NOT yet dry-run/live validated as a MoveToPick target.
+  
   translation: [-0.4430, 0.0015, 0.2611]
   rotation:    [3.1407, 0.0261, 0.0009]
 
@@ -87,37 +21,7 @@ StatesLibraries:
 
 StatesFiles: []
 IdleKeepState: true
-# Full pick-and-place loop restored (2026-08-19) after HoldCurrent's
-# translational sign check + gain tuning passed live, and after the
-# joint_trajectory_controller nonzero-end-velocity fix. Safety scope for this
-# is "participants only ever contact the gripper/end-effector area" (chosen
-# deliberately over whole-arm contact safety, which this architecture does
-# not provide - see MoveToPick/MoveToPlace comments below).
-# Unfold removed (2026-08-19) - pipeline now starts directly at MoveHome.
-# Unfold's job was a small joint-space move to a known-consistent starting
-# configuration before the Cartesian legs began; skipping it means MoveHome's
-# BSpline path to home_pose now starts from wherever the arm actually is,
-# which is only as safe as that starting pose is reasonable (no known issue
-# observed, but this was Unfold's whole reason for existing - if MoveHome
-# ever takes a surprising path, this is the first thing to reconsider).
-# Definition preserved, commented out, below - re-enable by setting this back
-# to `init: Unfold` and uncommenting its state + transition.
-#
-# DIAGNOSTIC BYPASS REVERTED (2026-08-26, 3rd time): dry-run from MoveToPick
-# only confirmed the new per-joint logging in ComplianceCartesianMove::run()
-# fires correctly and formats correctly - it could NOT test the joint-limit
-# hypothesis itself, because under dry_run nothing is ever published, so the
-# real encoders (and therefore the logged real joint values) are completely
-# frozen at whatever pose the arm physically sat in when the test started.
-# Confirmed: joint_3 printed a constant -2.2692 rad for the entire run (the
-# arm's starting pose, unrelated to the hypothesis). Needs a LIVE run to
-# actually watch joint_3 move and see whether it climbs toward its
-# +-2.57 rad limit and plateaus there. Back to MoveHome so the live re-test
-# runs the real pipeline (MoveHome -> MoveToPick -> ReturnHome) instead of
-# starting the arm cold at MoveToPick.
-#
-# RENAMED 2026-08-26: MoveHome -> MoveToZero (target now Zero, see home_pose
-# comment above) - pipeline is now MoveToZero -> MoveToSafePos -> MoveToPick.
+
 init: MoveToZero
 
 states:
@@ -140,25 +44,7 @@ states:
     contact_force_threshold: 8.0   # must stay above deadband_force on the bridge
     clear_hold_time: 0.3
     next: HoldCurrent
-    # Softened after live test felt too rigid (defaults: stiffness 800 N/m /
-    # 40 Nm/rad meant deflection = force/800 - a 1N push only earned ~1.25mm).
-    # 4x softer here (kept from the previous round).
-    #
-    # mass raised back from 1->2 (2026-08-19): mass=1 felt jerky at the start
-    # of a push ("brake then go") - likely the virtual compliant target
-    # responding faster than real joint static friction can break away,
-    # getting ahead before the joint catches up. Splitting the difference
-    # between the original default (3) and the too-eager value (1) reduced
-    # that gap without giving back the stiffness softening.
-    #
-    # linear mass/stiffness/damping reverted to match impedance_control's
-    # KinovaImpedance.yaml (2026-08-19): that config was already validated to
-    # move well through the base/shoulder joints, not just the wrist - my
-    # earlier linear stiffness (200) was 2x stiffer than its proven value
-    # (100), which suppressed exactly the translational motion that would
-    # recruit those joints. Angular left as-is (already softer than the old
-    # config's 20, and rotation/wrist motion was already working fine - not
-    # implicated in this complaint). UNTESTED live - retest before trusting it.
+    
     gains:
       mass:
         linear:  [3, 3, 3]
@@ -170,60 +56,7 @@ states:
         linear:  [60, 60, 60]
         angular: [15, 15, 15]
 
-  # -- Unfold, removed from the pipeline 2026-08-19, see note near `init:`
-  # above. Target was last updated to match the arm's actual resting pose,
-  # confirmed via encoder readings (FIRST CMD MISMATCH log) consistent
-  # across every real-hardware test this session:
-  #   joint_1=-2.936 joint_2=-0.034 joint_3=-1.827
-  #   joint_4=-0.006 joint_5=-1.049 joint_6=-1.774
-  # An earlier target assumed a different "monitoring snapshot pose" that
-  # didn't match reality - joints 1/4/5 were off by ~130-140 deg, well past
-  # the bridge's FIRST CMD MISMATCH safety gate, so Unfold could never
-  # actually publish a command. If you re-enable this and park the arm
-  # somewhere else first, update these values to match - the intent is a
-  # small, safe move that confirms joint naming/direction, not a large jump.
-  # Unfold:
-  #   base: JointMove
-  #   target: [-2.936, -0.034, -1.827, -0.006, -1.049, -1.774]
-  #   duration: 15.0      # very slow — 15 s to move essentially nowhere
-  #   stiffness: 50.0      # minimal gain — arm will move gently
-  #   threshold: 0.05     # 0.05 rad (~3°) convergence threshold
-  #   next: MoveHome
-
-  # Rigid (non-compliant) - fine here since this runs before/after the task,
-  # not while a human is expected to be reaching into the workspace.
-  # ISOLATED VALIDATION (2026-08-19): next temporarily set to ReturnHome
-  # instead of MoveToPick, to live-test the two rigid legs alone before
-  # MoveToPick/MoveToPlace (which still fail dry-run for the confirmed
-  # dry-run-only reason documented in the README - not live-validated yet).
-  # Restore `next: MoveToPick` (and the transition below) once this passes.
-  #
-  # SWITCHED TO JOINT-SPACE 2026-08-24: dry-run from a realistic
-  # "somewhat away from home" pose (reached via a mix of the Kinova app's
-  # pose and angular jog controls - operator confirmed not an unusual
-  # configuration) showed the Cartesian BSpline version stalling partway:
-  # joint_4's model value decelerated smoothly to a dead stop while
-  # pos_err/ori_err stayed clearly non-zero (0.0975m / 0.2661 rad).
-  # joint_4 is `continuous` in the URDF (no position limit) and never
-  # approached its velocity limit either, so this isn't the joint_5-hits-
-  # its-limit issue from the previous test - more likely the QP-solved
-  # Cartesian IK path routed through a configuration near the self-
-  # collision constraint (iDist/sDist below) or a singularity. Direct
-  # joint-space interpolation takes a different route through
-  # configuration space to the exact same physical target, which may
-  # avoid whatever intermediate configuration caused that. Target is the
-  # real Home joint configuration, read directly from realRobot() in two
-  # separate tests with the arm confirmed at Kinova's actual Home
-  # (consistent between them to ~0.0002 rad). If this ALSO stalls the same
-  # way from a similar starting pose, that's strong evidence of a genuine
-  # self-collision/singularity the arm needs to route around, not just a
-  # Cartesian-path artifact - see README. Old Cartesian version preserved
-  # below, commented out, for comparison/revert.
-  # RENAMED 2026-08-26: MoveHome -> MoveToZero, target changed from the old
-  # bent-elbow home config to Kinova's built-in Zero (all joints 0) - see
-  # home_pose/init comments above for why. Still the same JointMove class,
-  # same v_max-bounded quintic pacing already live-validated below - only
-  # the target values changed.
+ 
   MoveToZero:
     base: JointMove
     # PACING REWORKED 2026-08-26: the `stiffness: 0.05` approach tried
@@ -320,6 +153,39 @@ states:
     target: [-0.0001, -0.1335, 1.1678, -0.0000, 0.0001, -0.0000]
     duration: 15.0
     threshold: 0.05
+    next: MoveToPickApproach
+
+  # ADDED 2026-08-26: precise, rigid joint-space hover leg inserted before
+  # MoveToPick, splitting what used to be a single ComplianceCartesianMove
+  # covering the whole approach into "get exactly above the object" (rigid,
+  # no compliance needed - nothing to contact yet) + "compliant final
+  # descent" (MoveToPick below, unchanged in kind, just shorter now).
+  # Reasoning: ComplianceCartesianMove's Cartesian-space IK doesn't
+  # guarantee which joint configuration it lands on (already seen it drift
+  # through unexpected configurations, e.g. joint_3 ballooning to 1.52 rad
+  # mid-trajectory in an earlier dry run) - JointMove guarantees the exact
+  # joint_5 = perpendicular-gripper configuration deterministically. Contact-
+  # safety scope is unaffected: this leg stays in open space above the pick
+  # location, contact is only ever expected during the short compliant
+  # descent that follows.
+  #
+  # TARGET BELOW = computed via the same URDF-based IK model used for
+  # MoveToSafePos's first (superseded) candidate: pick_pose's own
+  # translation/rotation with +0.10 m in Z (matching the old hover
+  # waypoint), seeded from pick_pose's own captured joint values (self-check
+  # against that capture reproduced it to ~1e-7 - model is trustworthy here)
+  # and converged cleanly to a nearby same-branch solution (max joint delta
+  # from pick's joints: 0.29 rad on joint_5). Margins: joint_2 1.85 rad,
+  # joint_3 0.94 rad, joint_5 0.99 rad - all comfortable. NOT yet physically
+  # validated - dry-run first (watch for "QP failed to run()") same as every
+  # new pose in this file.
+  MoveToPickApproach:
+    base: JointMove
+    stiffness: 2.0
+    v_max: 0.05
+    target: [-0.00000, -0.38803, 1.62957, 0.00100, 1.09789, 0.00046]
+    duration: 15.0
+    threshold: 0.05
     next: MoveToPick
 
   # ── Pick-and-place cycle ─────────────────────────────────────────────
@@ -334,18 +200,18 @@ states:
   # estimate is computed as-if applied at the tool frame, so contact
   # elsewhere on the arm's body yields inconsistently, see session notes
   # 2026-08-19). Gains matched to HoldCurrent's live-tuned values below.
+  #
+  # SHORTENED 2026-08-26: now that MoveToPickApproach (above) handles the
+  # rigid hover-in, this leg only covers the final ~0.10 m vertical descent
+  # from hover to pick_pose - no waypoints needed (the hover via-point moved
+  # to MoveToPickApproach's target) and duration cut accordingly (still just
+  # a MINIMUM - v_max_lin/ang still auto-extend it if needed).
   MoveToPick:
     base: ComplianceCartesianMove
     target:
       ref: pick
-    # waypoint updated 2026-08-26 (3rd time) to match pick_pose's newest
-    # value [-0.4430, 0.0015, 0.2611] (gripper-perpendicular-to-table
-    # revision - previous waypoint hovered over the now-superseded pick_pose
-    # [-0.5114, -0.0083, 0.2319]). Same X/Y as pick_pose, +0.10 in Z to
-    # hover above it before descending.
-    waypoints:
-      - [-0.4430, 0.0015, 0.3611]
-    duration: 4.0
+    waypoints: []
+    duration: 2.0
     stiffness: 25.0
     damping: 12.0
     weight: 100.0
@@ -441,7 +307,8 @@ transitions:
   - [HoldCurrent,  HoldCurrent,  HoldCurrent,  Auto]
   # - [Unfold,       MoveHome,     MoveHome,     Auto]  # Unfold removed, see note near `init:` above
   - [MoveToZero,    MoveToSafePos, MoveToSafePos, Auto]
-  - [MoveToSafePos, MoveToPick,   MoveToPick,   Auto]
+  - [MoveToSafePos, MoveToPickApproach, MoveToPickApproach, Auto]
+  - [MoveToPickApproach, MoveToPick, MoveToPick, Auto]
   # - [MoveHome,     ReturnHome,   ReturnHome,   Auto]  # isolated MoveHome->ReturnHome validation bypass, reverted 2026-08-26 - see note near MoveHome above
   - [MoveToPick,   ReturnToZero, ReturnToZero, Auto]
   # - [MoveToPick,   CloseGripper, CloseGripper, Auto]  # isolated MoveHome->MoveToPick->ReturnHome validation bypass, 2026-08-26 - see note near MoveToPick above
