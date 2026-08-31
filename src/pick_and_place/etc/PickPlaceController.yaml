@@ -26,8 +26,23 @@ home_pose:
   # mc_rtc-native measurement, not a cross-convention guess - retest MoveHome
   # in dry-run first to confirm pos_err/ori_err shrink close to zero from
   # this pose before trusting it live.
-  translation: [0.454, 0.001, 0.423]
-  rotation: [3.0267, -1.5704, 1.6856]
+  #
+  # REPLACED 2026-08-26: home_pose is now Kinova's built-in Zero/retract
+  # position (all joints 0) instead of the bent-elbow pose above - simpler
+  # to physically reproduce between trials (one-button retract), and safe
+  # as a JointMove target (MoveToZero, formerly MoveHome, below) since pure
+  # joint-space interpolation doesn't hit the IK-search-gets-stuck-on-a-
+  # limit problem that ruled out Zero as a *Cartesian* seed for MoveToPick
+  # (see MoveToSafePos comment - from Zero, Cartesian IK to pick_pose stalls
+  # on joint_5's limit instead of joint_3's). Measured directly via
+  # MoveHome's dry-run startup log with the arm physically at Zero:
+  #   real tool_frame translation: [-0.0000, +0.0014, +1.1766]
+  #   YAML rotation: [-0.0000, 0.0001, 3.1413]
+  # NOTE: ReturnHome (`ref: home`) now also returns to Zero at the end of
+  # the cycle, not the old bent-elbow pose - intentional, flagging it since
+  # it's a behavior change beyond just the entry point.
+  translation: [-0.0000, 0.0014, 1.1766]
+  rotation: [-0.0000, 0.0001, 3.1413]
 
 pick_pose:
   # SET 2026-08-26: was a never-tested placeholder guess. Replaced with a
@@ -80,7 +95,10 @@ IdleKeepState: true
 # +-2.57 rad limit and plateaus there. Back to MoveHome so the live re-test
 # runs the real pipeline (MoveHome -> MoveToPick -> ReturnHome) instead of
 # starting the arm cold at MoveToPick.
-init: MoveHome
+#
+# RENAMED 2026-08-26: MoveHome -> MoveToZero (target now Zero, see home_pose
+# comment above) - pipeline is now MoveToZero -> MoveToSafePos -> MoveToPick.
+init: MoveToZero
 
 states:
 
@@ -181,7 +199,12 @@ states:
   # self-collision/singularity the arm needs to route around, not just a
   # Cartesian-path artifact - see README. Old Cartesian version preserved
   # below, commented out, for comparison/revert.
-  MoveHome:
+  # RENAMED 2026-08-26: MoveHome -> MoveToZero, target changed from the old
+  # bent-elbow home config to Kinova's built-in Zero (all joints 0) - see
+  # home_pose/init comments above for why. Still the same JointMove class,
+  # same v_max-bounded quintic pacing already live-validated below - only
+  # the target values changed.
+  MoveToZero:
     base: JointMove
     # PACING REWORKED 2026-08-26: the `stiffness: 0.05` approach tried
     # 2026-08-24 (lowering the posture task's spring gain 40x, estimating
@@ -203,7 +226,7 @@ states:
     # controls speed at all.
     stiffness: 2.0
     v_max: 0.05   # rad/s hard cap on any joint's peak velocity - keep well under delta_max's implied real-tracking ceiling (~0.2 rad/s @ delta_max=0.002, 100Hz)
-    target: [0.0000, 0.2622, -2.2691, 0.0000, 0.9598, 1.5708]
+    target: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]   # Kinova Zero/retract - see rename comment above
     duration: 15.0   # now a MINIMUM - actual duration auto-extends per v_max for large moves, see start() log
     threshold: 0.05
     # ISOLATED VALIDATION BYPASS REVERTED (2026-08-26): live-confirmed from
@@ -214,7 +237,7 @@ states:
     # itself (ComplianceCartesianMove, moving-target compliance tracking)
     # has NOT been live-tested yet and should be validated in isolation
     # next, same staged philosophy as HoldCurrent/MoveHome before it.
-    next: MoveToPick
+    next: MoveToSafePos
 
   # MoveHome:
   #   base: CartesianMove
@@ -226,6 +249,53 @@ states:
   #   pos_threshold: 0.02
   #   settle_timeout: 5.0
   #   next: ReturnHome
+
+  # ADDED 2026-08-26: intermediate joint-space waypoint between MoveHome and
+  # MoveToPick. Root cause found for MoveToPick's persistent non-convergence
+  # (unaffected by the effective_duration_/v_max fix applied the same day):
+  # real joint_3 gets pegged at -2.4840 rad - only 0.086 rad from its
+  # +-2.57 rad limit - and simply stops (zero model-vs-real deviation on
+  # joint_3 specifically, confirmed identically in two separate live runs)
+  # while pos_err/ori_err stay stuck ~0.24m/0.94rad short of pick_pose.
+  # home_pose's tool-frame approach axis points roughly world +X (sideways);
+  # pick_pose's points world -Z (~5 deg off straight down) - a large
+  # reorientation - and the QP's continuous Cartesian-space path from home
+  # apparently drives joint_3 into its limit along the way.
+  #
+  # Checked whether starting from Kinova's Zero position (all joints 0)
+  # instead of home would help: NO - numeric IK (own script, cross-checked
+  # against the real URDF, FK matches logged home_pose translation to
+  # sub-mm) shows Zero as a seed gets stuck on joint_5's +-2.09 rad limit
+  # instead, same failure mode via a different joint (pos_err~0.15m,
+  # ori_err~0.78rad, never reaches pick_pose).
+  #
+  # What DOES work in that same IK model: solving for pick_pose directly
+  # (as a joint-space target, not a Cartesian path) converges perfectly
+  # (pos_err/ori_err ~1e-7) from home AND even from the live stuck-pose
+  # joints themselves, landing on a materially different elbow/wrist
+  # configuration with joint_3 = -2.032 rad (0.538 rad of margin, vs 0.086
+  # rad live) and comfortable margin on every other constrained joint
+  # (joint_2 margin 2.15 rad, joint_5 margin 1.15 rad). The QP's continuous
+  # task-space tracking from home never finds this basin because it follows
+  # a Cartesian-space path with joint-limit damping, not a joint-space
+  # search - going there directly in joint space (this state) sidesteps
+  # that entirely.
+  #
+  # TARGET BELOW = that computed solution. CAVEAT: it comes from a
+  # simplified rigid-chain IK model (URDF-based FK + damped-least-squares,
+  # no self-collision constraint - this repo's `type: collision` iDist/
+  # sDist check is NOT modeled here) - not yet physically validated. Dry-run
+  # first (watch specifically for "QP failed to run()", the known signature
+  # of the self-collision constraint from README problem 15/17) before any
+  # live test, same discipline as every other pose in this file.
+  MoveToSafePos:
+    base: JointMove
+    stiffness: 2.0
+    v_max: 0.05
+    target: [0.74518, 0.08649, -2.03178, -0.00787, -0.93827, 1.61753]   # computed candidate - see comment above, dry-run validate before trusting
+    duration: 15.0
+    threshold: 0.05
+    next: MoveToPick
 
   # ── Pick-and-place cycle ─────────────────────────────────────────────
   # MoveToPick and MoveToPlace are ComplianceCartesianMove: they yield if
@@ -325,7 +395,8 @@ states:
 transitions:
   - [HoldCurrent,  HoldCurrent,  HoldCurrent,  Auto]
   # - [Unfold,       MoveHome,     MoveHome,     Auto]  # Unfold removed, see note near `init:` above
-  - [MoveHome,     MoveToPick,   MoveToPick,   Auto]
+  - [MoveToZero,    MoveToSafePos, MoveToSafePos, Auto]
+  - [MoveToSafePos, MoveToPick,   MoveToPick,   Auto]
   # - [MoveHome,     ReturnHome,   ReturnHome,   Auto]  # isolated MoveHome->ReturnHome validation bypass, reverted 2026-08-26 - see note near MoveHome above
   - [MoveToPick,   ReturnHome,   ReturnHome,   Auto]
   # - [MoveToPick,   CloseGripper, CloseGripper, Auto]  # isolated MoveHome->MoveToPick->ReturnHome validation bypass, 2026-08-26 - see note near MoveToPick above
