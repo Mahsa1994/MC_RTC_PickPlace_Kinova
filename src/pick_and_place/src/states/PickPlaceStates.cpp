@@ -622,6 +622,26 @@ struct ComplianceCartesianMove : mc_control::fsm::State
     {
       mc_rtc::log::warning("[{}] Settling: pos_err={:.4f} m, ori_err={:.4f} rad{}",
                            name(), pos_err, ori_err, paused_ ? " (paused - contact)" : "");
+
+      // DIAGNOSTIC (2026-08-26): a live MoveToPick stall showed pos_err/
+      // ori_err and the SIGN CHECK world_dev completely static (not slowly
+      // converging) while measured wrench was zero the whole time - i.e.
+      // an equilibrium, not a timing problem (the effective_duration_ fix
+      // above had no effect on this failure). Real joints snapshot added
+      // here to check directly whether a joint is pegged at/near its
+      // kinematic limit (a hard QP constraint no amount of extra time can
+      // overcome) - e.g. ReturnHome's post-mortem snapshot showed the real
+      // arm left at joint_3=-2.4840 rad, only 0.086 rad from its -2.57 rad
+      // limit.
+      const double r2d = 180.0 / M_PI;
+      const auto & rq   = ctl.realRobot().mbc().q;
+      const auto & mbs  = ctl.realRobot().mb().joints();
+      for(size_t ji = 0; ji < mbs.size(); ++ji)
+      {
+        if(mbs[ji].dof() != 1) continue;
+        mc_rtc::log::info("[{}]   real '{}' = {:+.4f} rad ({:+.1f} deg)",
+                          name(), mbs[ji].name(), rq[ji][0], rq[ji][0] * r2d);
+      }
     }
 
     if(t_elapsed_ > effective_duration_ + settle_timeout_)
