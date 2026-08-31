@@ -191,7 +191,12 @@ states:
     target:
       ref: pick
     waypoints: []
-    duration: 4.0
+    # TEMP 2026-08-26: duration stretched 4.0 -> 12.0 purely to give a
+    # comfortable push/release window for testing the contact-pause/
+    # impedance-yield behavior live (see contact_force_threshold/clear_hold_time
+    # below). Revert to 4.0 once that test is done - this is not a real
+    # trajectory-shape change.
+    duration: 12.0
     stiffness: 25.0
     damping: 12.0
     weight: 100.0
