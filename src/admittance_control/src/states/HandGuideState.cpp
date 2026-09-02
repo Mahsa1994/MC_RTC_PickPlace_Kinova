@@ -50,6 +50,24 @@ struct HandGuideState : mc_control::fsm::State
 
     ctl.solver().addTask(admTask_);
 
+    // BUILD-CHECK 2026-09-02: prints the task's ACTUAL live values right
+    // after configuring it, so a fresh run's log unambiguously proves
+    // whether this edited code is the code actually executing - compare
+    // these numbers against whatever this file currently has hardcoded
+    // above. If they don't match, the running binary is stale (old .so /
+    // old process), not a physics problem.
+    {
+      const auto & adm = admTask_->admittance();
+      mc_rtc::log::warning(
+          "[HandGuideState] BUILD-CHECK: admittance couple=({:.4f},{:.4f},{:.4f}) "
+          "force=({:.4f},{:.4f},{:.4f}) stiffness={:.4f} damping={:.4f} weight={:.1f} "
+          "maxLinVel={:.3f} maxAngVel={:.3f}",
+          adm.couple().x(), adm.couple().y(), adm.couple().z(),
+          adm.force().x(), adm.force().y(), adm.force().z(),
+          admTask_->stiffness(), admTask_->damping(), admTask_->weight(),
+          admTask_->maxLinearVel().x(), admTask_->maxAngularVel().x());
+    }
+
     postureTask_ = std::make_shared<mc_tasks::PostureTask>(
         ctl.solver(), ctl.robot().robotIndex(), 1.0, 1.0);
     ctl.solver().addTask(postureTask_);
