@@ -1,6 +1,10 @@
 MainRobot: Kinova6DOF
 Enabled: KinovaHandGuiding
-Timestep: 0.005
+# FIXED 2026-09-02: was 0.005, mismatched with the bridge's loop_dt_ (0.001,
+# 1kHz) - same class of bug impedance_control's mc_rtc.yaml explicitly warns
+# about ("Must match mc_rtc.yaml's global Timestep and the bridge's loop_dt").
+# Must match KinovaHandGuiding.yaml's Timestep too.
+Timestep: 0.001
 
 Plugins:
   - ROS
