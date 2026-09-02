@@ -39,8 +39,14 @@ struct HandGuideState : mc_control::fsm::State
     admTask_->damping(10.0);
     admTask_->weight(1000.0);
 
-    admTask_->maxLinearVel(Eigen::Vector3d(0.05, 0.05, 0.05));
-    admTask_->maxAngularVel(Eigen::Vector3d(0.10, 0.10, 0.10));
+    // RAISED 2026-09-02: requested to help "still rigid" complaint, but the
+    // achieved rate measured live (~0.003 rad/s) was only ~3% of the old
+    // 0.10 rad/s cap - these were very unlikely to be the actual limiter.
+    // Raising them anyway since it's harmless, but treat a stale build/
+    // process (old binary still running) as the more likely explanation if
+    // this doesn't change anything either.
+    admTask_->maxLinearVel(Eigen::Vector3d(0.15, 0.15, 0.15));
+    admTask_->maxAngularVel(Eigen::Vector3d(0.30, 0.30, 0.30));
 
     ctl.solver().addTask(admTask_);
 
