@@ -27,7 +27,16 @@ struct HandGuideState : mc_control::fsm::State
 
     // stiffness/damping take double (scalar)
     admTask_->stiffness(0.0001);
-    admTask_->damping(50.0);
+    // TUNED 2026-09-02 (3rd pass): admittance() tripled (see above) with
+    // damping left at its original 50.0 still felt just as rigid - a 6x
+    // gain increase producing no noticeable change means admittance isn't
+    // the bottleneck anymore. damping is a genuine viscous brake on
+    // achieved motion (TUNING_GUIDE.md), and was never touched while
+    // admittance kept climbing, so it's the more likely limiter now.
+    // Cutting it hard to isolate this before touching admittance again -
+    // watch for oscillation on release (guide step 5); if it's unstable,
+    // raise this back partway rather than lowering admittance.
+    admTask_->damping(10.0);
     admTask_->weight(1000.0);
 
     admTask_->maxLinearVel(Eigen::Vector3d(0.05, 0.05, 0.05));
