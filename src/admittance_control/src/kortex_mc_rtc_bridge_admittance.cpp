@@ -1,39 +1,13 @@
 // =============================================================================
 //  kortex_mc_rtc_bridge_admittance.cpp
 //
-//  PORTED 2026-09-02 from impedance_control's kortex_mc_rtc_bridge_impedance.cpp
-//  (real_robot_impedance / pick_and_place branches, via `git show` - not a
-//  from-scratch rewrite). Reason: this bridge originally subscribed to a
+//  this bridge originally subscribed to a
 //  "/EEForceSensor" WrenchStamped ROS topic that nothing on the real robot
-//  publishes (confirmed via `ros2 topic list` against the live Kortex
-//  driver - no wrench/force_torque topic exists at all), so HandGuide's
-//  AdmittanceTask could never see a nonzero wrench and would never respond
-//  to being pushed. The impedance bridge solved the identical problem by
+//  publishes 
+//  solved the identical problem by
 //  computing its own gravity/inertia-compensated wrench estimate directly
-//  from /joint_states' `effort` field (already published, already
-//  subscribed to here for position/velocity) via inverse dynamics + a
-//  damped-least-squares Jacobian-transpose solve - no extra topic needed.
-//  That estimate is written into the SAME mc_rtc wrench map key
-//  ("EEForceSensor") AdmittanceTask reads from - this key is an internal
-//  mc_rtc/robot-module identifier, unrelated to (and no longer dependent
-//  on) the old ROS topic of the same name.
+//  from /joint_states' `effort` field 
 //
-//  Carried over as-is: dry_run/delta_max/model_real_gate publish gating,
-//  the DLS-regularized + hard-clamped wrench solve, inertial-torque
-//  compensation, taring, filtering/deadband, and the velocity gate - all of
-//  this was tuned and live-validated on this exact physical arm this
-//  session; re-deriving it for a "simple" admittance bridge would just
-//  reintroduce bugs (three E-stops during the impedance work, before these
-//  existed) that are already fixed. See PickPlaceController's git history /
-//  README for the incident notes behind model_real_gate specifically.
-//
-//  NOT YET CHANGED: torque_sign_/deadband_force_/deadband_moment_/
-//  delta_max_/model_real_gate_ still default to this file's original
-//  generic values below - the REAL, live-validated values for this arm
-//  (torque_sign=-1.0, deadband_force=1.0, deadband_moment=1.5,
-//  delta_max=0.002, model_real_gate=0.05) need to be passed as launch
-//  parameters in admittance_real.launch.py, same as pick_and_place does -
-//  see that file's update alongside this one.
 // =============================================================================
 
 #include <rclcpp/rclcpp.hpp>

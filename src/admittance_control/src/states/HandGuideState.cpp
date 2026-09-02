@@ -12,18 +12,18 @@ struct HandGuideState : mc_control::fsm::State
         "tool_frame", ctl.robots(), ctl.robot().robotIndex());
 
     // admittance() takes sva::ForceVecd
-    // TUNED 2026-09-02: live test at 0.0005 (both axes) showed real motion
-    // correlated with a sustained ~4 Nm push (joint_2/joint_3 both crept
-    // several 0.001 rad over ~8-10s), confirming the whole pipeline
-    // (wrench estimation, torque_sign, joint_trajectory_controller config)
-    // works correctly - the gain itself was just far too conservative to
-    // feel by hand. Raised to the top of TUNING_GUIDE.md's documented
-    // range (0.001 "free float"), rotational kept slightly lower per the
-    // guide's own step 4 ratio. Re-tune from here per TUNING_GUIDE.md
-    // steps 3-5 if still too stiff or if it oscillates on release.
+    // TUNED 2026-09-02 (2nd pass): 0.0008/0.0010 (TUNING_GUIDE.md's
+    // documented "free float" ceiling) produced clearer motion (~0.04 rad
+    // swing under an ~8.7 Nm / 3.6 N sustained push) but still needed a
+    // firm push to feel. No payload here (empty gripper, pure hand-
+    // guiding), so pushing past the guide's documented range is reasonable
+    // - tripling rather than creeping, to actually feel the difference
+    // between iterations. Watch closely for oscillation/overshoot on
+    // release this time (per guide step 5) - if it overshoots, back this
+    // off or raise `damping` (currently 50.0) instead of lowering gain.
     admTask_->admittance(sva::ForceVecd(
-        Eigen::Vector3d(0.0008, 0.0008, 0.0008),  // couple (torque)
-        Eigen::Vector3d(0.0010, 0.0010, 0.0010))); // force
+        Eigen::Vector3d(0.0025, 0.0025, 0.0025),  // couple (torque)
+        Eigen::Vector3d(0.0030, 0.0030, 0.0030))); // force
 
     // stiffness/damping take double (scalar)
     admTask_->stiffness(0.0001);
