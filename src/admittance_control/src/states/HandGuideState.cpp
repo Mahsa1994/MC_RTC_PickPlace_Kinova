@@ -26,7 +26,23 @@ struct HandGuideState : mc_control::fsm::State
         Eigen::Vector3d(0.0030, 0.0030, 0.0030))); // force
 
     // stiffness/damping take double (scalar)
-    admTask_->stiffness(0.0001);
+    // TUNED 2026-09-02 (4th pass): read AdmittanceTask's actual source
+    // (update() in AdmittanceTask.cpp) after admittance/damping/maxVel
+    // changes all failed to change the felt response. Confirmed the
+    // velocity law itself (admittance * wrenchError) has nothing else
+    // attenuating it - but stiffness()/weight() are inherited unchanged
+    // from the underlying TransformTask and govern something completely
+    // different: how hard the QP actually drives the real joints toward
+    // the (separately, already force-computed) moving target - NOT a
+    // spring back to a fixed start pose, since the target itself already
+    // moves via the admittance law above. At 0.0001 (TUNING_GUIDE.md's
+    // literal "near-zero" advice) this tracking gain may simply be too
+    // weak to produce enough torque to move real joint friction/stiction,
+    // regardless of how fast the internal target races ahead - this is the
+    // one major parameter left untouched through 3 prior tuning passes.
+    // Raised to the guide's own documented ceiling ("never set > 1") to
+    // test this directly, isolated from every other change.
+    admTask_->stiffness(1.0);
     // TUNED 2026-09-02 (3rd pass): admittance() tripled (see above) with
     // damping left at its original 50.0 still felt just as rigid - a 6x
     // gain increase producing no noticeable change means admittance isn't
