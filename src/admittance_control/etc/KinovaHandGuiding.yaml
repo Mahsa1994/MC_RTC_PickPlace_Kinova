@@ -1,6 +1,8 @@
 Name: KinovaHandGuiding
 MainRobot: Kinova6DOF
-Timestep: 0.005
+# Must match mc_rtc.yaml's global Timestep and the bridge's loop_dt (1kHz) -
+# see that file's comment.
+Timestep: 0.001
 Managed: false
 StepByStep: false
 
