@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(ament_cmake REQUIRED)
 find_package(mc_rtc REQUIRED)
+find_package(RBDyn REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
@@ -20,6 +21,7 @@ add_executable(kortex_mc_rtc_bridge_admittance
 target_link_libraries(kortex_mc_rtc_bridge_admittance
   mc_rtc::mc_control
   mc_rtc::mc_rtc_utils
+  RBDyn::RBDyn
 )
 ament_target_dependencies(kortex_mc_rtc_bridge_admittance
   rclcpp
