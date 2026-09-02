@@ -466,6 +466,120 @@ mistaken for each other before the actual cause was isolated.
     verify what's actually installed and running, not just what's in the
     source tree, when a live/dry-run test's behavior doesn't match
     expectation.
+15. **Live test of `MoveHome` from a meaningful distance: the
+    `model_real_gate` correctly stopped the arm from moving at all -
+    safe, but revealed the `stiffness: 0.05` pacing fix from problem 13
+    didn't actually work, 2026-08-26.** With the arm moved to a real,
+    non-trivial distance from Home (largest joint deltas ~0.47-0.62 rad),
+    `[KortexBridge] SAFETY GATE ... NOT publishing` fired within the first
+    2 ticks and then continuously for the entire test - the arm never
+    moved at all (confirmed by the operator: "it didn't move at all"). This
+    is the safety mechanism working exactly as designed (no motion based on
+    a diverged model, no E-stop needed) - but it also means `MoveHome` made
+    zero real progress, which needed understanding, not just another blind
+    retune. The bridge's periodic log showed the model's `joint_6` moving
+    from 2.0397 -> 1.8309 -> 1.7147 -> 1.6504 -> 1.6147 rad over ~2s - an
+    initial rate around **0.4-0.9 rad/s**, essentially the SAME magnitude
+    as problem 13's estimate for the ORIGINAL, un-reduced `stiffness: 2.0`,
+    even though `stiffness` had already been cut 40x to `0.05`. Root cause
+    left deliberately undetermined between two possibilities that dry-run
+    can't distinguish and re-guessing live would risk repeating: (a) the
+    assumed relationship between `PostureTask` `stiffness` and convergence
+    velocity was wrong, or (b) the `0.05` value never actually took effect
+    in the tested build - the same class of stale-build mismatch already
+    hit once this session with `dry_run` (see problem 14's note). Also
+    newly observed: the model kept diverging further and further for the
+    ENTIRE test with no sign of leveling off (0.1355 -> ... -> 0.5818 rad
+    by the end) - the safety gate only blocks the bridge's *publish* step,
+    it does not pause the QP's own internal convergence, so a blocked
+    `ctl.robot()` just keeps racing toward the target unchecked regardless
+    of how long the real arm has been unable to follow.
+    **Fixed at the root, not retuned**: `JointMove` reworked
+    (`PickPlaceStates.cpp`) to make peak velocity an explicit, guaranteed,
+    directly-computed property instead of an estimate - it now interpolates
+    q(t) via the same quintic (minimum-jerk) time-scaling
+    `ComplianceCartesianMove` already uses successfully, from the real
+    start pose to `target` over an `effective_duration_` that auto-extends
+    (`= max(duration, 1.875*max|delta|/v_max)`) so the standard quintic
+    peak-velocity factor (1.875x the average rate) never exceeds a new
+    `v_max` config parameter (set to `0.05 rad/s` for `MoveHome`, a 4x
+    margin under `delta_max`'s ~0.2 rad/s real-tracking ceiling),
+    regardless of how large the starting displacement is. `stiffness` (now
+    `2.0`, restored from `0.05`) reverts to its normal meaning - a pure
+    TRACKING gain for how tightly the real posture follows this
+    already-slow reference, no longer responsible for pacing at all. A
+    `start()`-time log prints the computed `effective_duration_`, `v_max`,
+    and resulting peak velocity directly, so the next test can verify the
+    fix by construction rather than by estimate. Because this profile is a
+    pure function of time and the captured start/target values (not
+    dependent on real feedback beyond that initial capture), **dry-run CAN
+    now meaningfully validate the pacing itself** - unlike the previous
+    stiffness-based approach - by checking the model's logged position
+    advances at the expected bounded rate; a dry-run pass is worth doing
+    before the next live attempt, unlike problem 14's live-only situation.
+16. **Root cause found for problem 15 (and likely a compounding factor in
+    earlier incidents): a 5x mismatch between the controller's assumed
+    solver rate and the bridge's real invocation rate, affecting EVERY
+    timed motion in this controller, not just `JointMove`.**
+    `pick_and_place/etc/mc_rtc.yaml` sets `Timestep: 0.005` (200Hz) - with
+    a comment explicitly warning not to copy `impedance_control`'s
+    `Timestep: 0.001` (1kHz). But `kortex_mc_rtc_bridge_impedance.cpp`'s own
+    ROS wall timer fires on `loop_dt_` (`create_wall_timer(...,
+    loop_dt_...)`), which defaults to `0.001` and is **never overridden**
+    in `pick_place_real.launch.py` - so the bridge actually calls
+    `gc_->run()` every 1ms of real time, while every state's
+    `dt_ = ctl.solver().dt()` (used to advance `t_elapsed_` each tick, e.g.
+    `CartesianMove`, `ComplianceCartesianMove`, and problem 15's new
+    `JointMove`) believes each call represents 5ms. Net effect: `t_elapsed_`
+    advances 5x faster than real wall-clock time for every timed state,
+    silently, the entire session. Confirmed quantitatively, not just
+    suspected: the dry-run log testing problem 15's fix showed
+    `joint_4` (`start=-0.6206, target=0.0000`) reaching essentially full
+    convergence (`model=-0.0000`) by the 10th periodic divergence-log
+    sample - at the bridge's confirmed-real 1kHz tick rate (500-tick
+    spacing per sample = 0.5 real seconds), that's ~5.0 real seconds -
+    almost exactly matching the ~4.65s predicted by dividing the logged
+    `effective duration 23.27s` by 5. This was likely invisible until now
+    because every previously-live-tested motion either had a tiny delta
+    (problem 14's near-home `MoveHome`, imperceptible either way) or was
+    human-paced/reactive (`HoldCurrent`'s compliance yield, which a person
+    driving by feel wouldn't necessarily notice running faster than
+    configured) - a large, scheduled, non-reactive motion like problem 15's
+    test was needed to expose it clearly. Worth flagging, more tentatively:
+    this may also have been a compounding (not necessarily sole) factor in
+    some of this session's earlier "surprisingly fast/jerky" observations
+    and E-stop incidents, though the previously-found causes (delta_max/
+    time_from_start pacing, model-vs-real divergence) were independently
+    confirmed via direct mechanism and remain valid regardless.
+    **Not yet fixed - two viable approaches with different tradeoffs, a
+    decision worth making deliberately rather than picking unilaterally
+    given it touches previously-live-validated behavior:**
+    (a) correct `pick_and_place/etc/mc_rtc.yaml`'s `Timestep` to `0.001`
+    to match the bridge's real rate - fixes pacing for every timed state at
+    once, but means compliance dynamics (`HoldCurrent`'s gains, contact
+    debounce timing, etc.) will now run at their genuinely-configured
+    (slower) rate rather than the ~5x-faster rate they were actually
+    live-validated under - worth a spot-recheck, not just assumed fine;
+    (b) instead correct the bridge's `loop_dt_` to `0.005` (via a launch
+    parameter) to match the controller's stated 200Hz assumption - leaves
+    `Timestep` and prior tuning untouched, but also slows the bridge's own
+    real invocation rate, which cuts its publish rate 5x (100Hz -> 20Hz)
+    unless `pub_decim_` is retuned to compensate, and shifts its internal
+    accel-filter/tare-timing constants (all `loop_dt_`-derived) - more
+    moving parts to re-verify together.
+    **Decided and fixed, 2026-08-26: option (a)** - `Timestep` corrected to
+    `0.001` in `pick_and_place/etc/mc_rtc.yaml`, with a comment there
+    explaining the bug and pointing back here. **Critical**: this repo file
+    is not what the controller actually reads at runtime - it gets manually
+    copied to `~/.config/mc_rtc/mc_rtc.yaml` (confirmed earlier this
+    session), so the fix has zero effect until that copy is refreshed and
+    `pick_and_place` is rebuilt - this is the exact same class of mistake
+    (source edit vs. what's actually installed/active) already hit twice
+    this session (problem 14's stale-launch-file mixup, and problem 15's
+    stiffness-value uncertainty). `HoldCurrent`'s feel should be
+    spot-rechecked live before trusting it unchanged, per the note left in
+    the YAML - its gains were live-tuned under the old, ~5x-faster-than-
+    configured dynamics.
 
 ### Current state
 
@@ -482,25 +596,40 @@ mistaken for each other before the actual cause was isolated.
   test, problem 14) - **three live E-stops happened testing `MoveHome`**
   (problems 8-9) before the fixes in problems 10-13 were developed and
   dry-run-validated. First live retest (problem 14, arm started at/very
-  near Home) passed completely cleanly: full `MoveHome -> ReturnHome ->
-  Idle` sequence, `model_real_gate` never needed to fire, no operator
-  intervention needed. **Not yet validated live from a meaningful
-  distance** - the actual pacing fix (delta_max/stiffness retuning) and the
-  safety gate's real behavior under real divergence remain unexercised.
-  Treat the *next* live test (any non-trivial displacement) as needing the
-  same fresh E-stop reconfirmation as every `dry_run:false` transition this
-  project, even though the flag is already `False` - the risk profile of a
-  real, larger live move is materially different from what's been
-  confirmed so far.
+  near Home) passed completely cleanly. Second live retest, from a
+  meaningful distance (problem 15), showed the `model_real_gate` correctly
+  refusing to publish (safe - zero motion, no E-stop needed) because the
+  `stiffness: 0.05` pacing approach didn't actually slow the model down as
+  estimated - traced to a much more fundamental cause (problem 16): the
+  controller's `Timestep` (200Hz) never matched the bridge's real
+  invocation rate (1kHz), so EVERY timed state was running ~5x faster than
+  configured, the whole session. Fixed by correcting `Timestep` to `0.001`
+  in `pick_and_place/etc/mc_rtc.yaml`. `JointMove` was also separately
+  reworked (problem 15) to bound peak velocity explicitly via an
+  auto-extending quintic profile (`v_max` parameter), which remains a good
+  idea independent of the Timestep fix (explicit > estimated). **Neither
+  fix has been tested at all yet, dry-run included** - and problem 16's fix
+  needs the repo's `mc_rtc.yaml` re-copied to `~/.config/mc_rtc/mc_rtc.yaml`
+  plus a rebuild before it can take effect (see problem 16's note - do not
+  skip this, it is the same class of mistake already hit twice this
+  session). Treat the next test as validating two separate, brand-new
+  fixes together, not a retry of something already-confirmed-safe-just-slow.
 - **Live-validated** (`dry_run:false`, E-stop operator present):
   - A temporary standalone `HoldCurrent` state (compliant hold at whatever
     pose the arm starts at) - confirmed correct translational yield +
     return-to-position for 2 directions (down, right). Predates, and is
-    independent of, problems 8-14.
+    independent of, problems 8-16. **Worth a spot-recheck** once the
+    Timestep fix is active - its gains were live-tuned under the old,
+    ~5x-faster-than-configured dynamics (see problem 16).
   - `MoveHome -> ReturnHome -> Idle` (problem 14, 2026-08-26), for an
     arm-starts-at-Home case specifically - clean, full success, no operator
-    intervention needed. **Not yet validated for a meaningful displacement**
-    - see below.
+    intervention needed.
+  - `MoveHome` from a meaningful distance (problem 15, 2026-08-26) - the
+    `model_real_gate` safety mechanism itself is now live-confirmed working
+    correctly (blocked publishing the entire test, arm never moved), but
+    `MoveHome` itself did NOT make progress - not a validated success for
+    the actual "come home from a distance" requirement. Fixes in place
+    (problems 15-16), untested.
 - **Home-first guarantee**: architecturally, `init: MoveHome` in the YAML
   means every fresh controller start begins by driving to the fixed,
   configured `home_pose` - now (problem 12) derived directly from mc_rtc's
@@ -508,13 +637,13 @@ mistaken for each other before the actual cause was isolated.
   against the web app - and, as of problem 11, the state will hold rather
   than silently advancing until `realRobot()` actually confirms arrival.
   Live-confirmed (problem 14) for an arm-starts-at-Home case. **Still not
-  confirmed for the actual "come home from wherever you are" case** - the
-  scenario the joint-space switch and delta_max/stiffness retuning
-  (problems 13-14) specifically targeted remains live-untested: dry-run
-  showed clean convergence in the model from a realistic farther-away start
-  (problem 13), but dry-run cannot exercise real tracking pace or the
-  safety gate under real divergence. This is the current blocker on the
-  home-first guarantee actually holding in general, not just near-home.
+  confirmed for the actual "come home from wherever you are" case** - live
+  tested from a meaningful distance once (problem 15) and failed safely
+  (zero progress, blocked by the safety gate) due to a pacing approach that
+  didn't work as estimated; `JointMove` reworked with explicit,
+  by-construction velocity bounding as a result, but that rework itself is
+  completely untested. This remains the current blocker on the home-first
+  guarantee actually holding in general, not just near-home.
 - **Contact-safety scope deliberately narrowed**: the wrench estimator
   computes a single equivalent wrench as-if applied at the tool frame, so
   contact elsewhere on the arm's body (confirmed live: pushing near the
@@ -544,27 +673,50 @@ mistaken for each other before the actual cause was isolated.
 2. ~~Live retest `MoveHome -> ReturnHome` (arm starting at Home)~~ **Done,
    passed cleanly** (problem 14, 2026-08-26) - full sequence completed live
    with no operator intervention, `model_real_gate` never needed to fire.
-3. **Live-test `MoveHome` from a meaningful, non-trivial distance** - the
-   actual target of problems 13-14's fixes, still completely unexercised.
-   E-stop operator present, freshly re-confirmed immediately before this
-   specific test even though `dry_run` is already `False` (this is a
-   materially different, higher-risk test than problem 14's near-home
-   case - same standing protocol as every prior `dry_run:false`
-   transition). Move the arm to a real, meaningful distance from `home_pose`
-   first (via the web app, similar to or larger than problem 13's dry-run
-   test pose), then run. Watch for:
+3. ~~Live-test `MoveHome` from a meaningful, non-trivial distance~~
+   **Attempted twice, 2026-08-26 - failed safely both times, two different
+   causes found and fixed:**
+   - (problem 15) `model_real_gate` correctly blocked all publishing (zero
+     motion, no E-stop) because `stiffness: 0.05` didn't produce a slow
+     enough model velocity - `JointMove` reworked to bound peak velocity
+     explicitly via an auto-extending quintic profile (`v_max: 0.05` rad/s)
+     instead of an estimated spring gain.
+   - (problem 16, found while dry-run-verifying the above) that rework's
+     own dry-run test revealed the REAL root cause: `Timestep` (200Hz,
+     `pick_and_place/etc/mc_rtc.yaml`) never matched the bridge's actual
+     1kHz invocation rate, so every timed state - not just `JointMove` -
+     had been running ~5x faster than configured, the whole session. Fixed
+     by correcting `Timestep` to `0.001`.
+   Both fixes are now in place but **completely untested**. Remaining, in
+   order:
+   (a) copy `pick_and_place/etc/mc_rtc.yaml` to `~/.config/mc_rtc/mc_rtc.yaml`
+   again (the Timestep fix lives in the repo copy, not the active one -
+   don't skip this, see problem 16) and rebuild `pick_and_place`;
+   (b) dry-run test first - the `JointMove` rework's motion profile is a
+   pure function of time/start/target, so dry-run CAN meaningfully validate
+   it now (unlike the old stiffness-based approach). Check the `start()`
+   log's `effective_duration_`/peak-velocity numbers, and that the model's
+   logged position now advances at a rate consistent with real elapsed time
+   (roughly matching `v_max`), not 5x faster;
+   (c) spot-recheck `HoldCurrent` live briefly too - not because anything
+   about MoveHome depends on it, but because its gains were live-tuned
+   under the old, ~5x-faster-than-configured dynamics that the Timestep fix
+   just corrected (problem 16) - worth confirming it still feels reasonable
+   before assuming it does;
+   (d) only then, live retest `MoveHome` from a meaningful distance again
+   (similar to or the same pose as problem 15's), E-stop operator present,
+   freshly re-confirmed immediately before this specific test (materially
+   different/higher-risk than problem 14's near-home case, same standing
+   protocol as every `dry_run:false` transition). Watch for:
    - `[KortexBridge] SAFETY GATE ... NOT publishing` firing and holding -
-     not a failure, the intended fail-safe if divergence grows too fast;
-   - `[MoveHome] NOT converged ... holding` similarly - both mean the arm
-     stops and holds rather than completing, which is safe but means
-     `stiffness: 0.05` and/or `delta_max: 0.002` still need tuning
-     (probably `stiffness` lower still, since `delta_max` is the harder
-     unconditional cap and shouldn't need to move first);
-   - actual smooth, slow progress toward Home within the expected ~11.5
-     deg/s ceiling - the success case.
-   If this passes, loosen `delta_max` back toward `0.005` (problem 14's
-   note) and consider re-testing once more before treating `MoveHome` as
-   solved in general.
+     would mean `v_max` still needs lowering, or something else is still
+     off (this time backed by concrete, verifiable numbers, not a guess);
+   - `[MoveHome] NOT converged ... holding` similarly;
+   - actual smooth, slow progress toward Home at roughly the logged
+     predicted peak velocity, taking roughly the logged `effective_duration_`
+     in real seconds - the success case.
+   If this passes, consider loosening `delta_max` back toward `0.005` and
+   `v_max` somewhat before treating `MoveHome` as solved in general.
 4. Once step 3 passes: decide whether to restore `MoveHome`'s `next:` to
    `MoveToPick` (revert the temporary bypass) and live-validate
    `MoveToPick`/`MoveToPlace` in isolation next (moving-target compliance,
