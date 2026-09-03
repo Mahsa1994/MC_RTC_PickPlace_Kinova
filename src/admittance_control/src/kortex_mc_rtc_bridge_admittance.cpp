@@ -269,7 +269,16 @@ private:
         mc_rtc::log::error("[KortexBridge] /joint_states stale ({} ms) - holding", age_ns / 1'000'000);
     }
 
-    const auto &robot = gc_->robot();
+    // The wrench estimate below (inverse dynamics, Jacobian, sensor-frame
+    // rotation, velocity gate) must be evaluated at the configuration the arm
+    // is ACTUALLY in, i.e. the encoder-observed realRobot - not gc_->robot(),
+    // which is the QP's own open-loop integration state. Using the control
+    // robot made gravity compensation diverge exactly when it mattered: once
+    // the model led the real arm, tau_bias was computed at the wrong q, the
+    // residual showed up as a phantom contact wrench, the admittance
+    // integrated it, and the model ran away further. That positive feedback
+    // is what latched the model_real_gate at 0.10 rad on 2026-09-03.
+    const auto &robot = gc_->realRobot();
     const auto &mb = robot.mb(); // multi-body structure for mc_rtc
 
     // Build joint-name -> DOF-index map
@@ -492,9 +501,13 @@ private:
     force_sensor *= gate;
     moment_sensor *= gate;
 
-    wrenches["EEForceSensor"] = sva::ForceVecd(moment_sensor, force_sensor);
-
+    // Must come BEFORE the wrench is copied into the map - zeroing the local
+    // vectors afterwards was dead code, so a comms dropout still injected the
+    // last estimate into the controller.
     if (!comms_ok) { force_sensor.setZero(); moment_sensor.setZero(); }
+
+
+    wrenches["EEForceSensor"] = sva::ForceVecd(moment_sensor, force_sensor);
     gc_->setWrenches(wrenches);
 
     static int log_count = 0;
@@ -525,11 +538,14 @@ private:
     double model_real_worst_enc_q   = 0.0;
     {
       std::lock_guard<std::mutex> lock(effort_mutex_);
-      auto ref_order = robot.refJointOrder();
+      // NB: `robot` above is the realRobot; this check is specifically about
+      // the CONTROL robot drifting away from it, so read q from gc_->robot().
+      const auto &ctl_robot = gc_->robot();
+      auto ref_order = ctl_robot.refJointOrder();
       for (size_t i = 0; i < ref_order.size() && i < last_enc_q_.size(); ++i)
       {
-        auto idx = robot.jointIndexByName(ref_order[i]);
-        double model_q = robot.mbc().q[idx][0];
+        auto idx = ctl_robot.jointIndexByName(ref_order[i]);
+        double model_q = ctl_robot.mbc().q[idx][0];
         double dev = std::abs(model_q - last_enc_q_[i]);
         if (dev > model_real_dev)
         {
@@ -545,6 +561,7 @@ private:
             "(model={:.4f} rad, real={:.4f} rad)",
             model_real_dev, model_real_worst_joint, model_real_worst_model_q, model_real_worst_enc_q);
     }
+
 
     //// 9- Run controller and publish joint trajectory
 
