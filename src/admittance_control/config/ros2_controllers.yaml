@@ -19,6 +19,14 @@ controller_manager:
     robotiq_gripper_controller:
       type: parallel_gripper_action_controller/GripperActionController
 
+    # ADDED 2026-09-03: kortex_control.launch.py spawns twist_controller
+    # unconditionally, so without this definition every startup logs
+    # "[FATAL] spawner_twist_controller: Failed loading controller
+    # twist_controller". Nothing here uses it - it is declared only so the
+    # stock spawner succeeds and real failures stay visible.
+    twist_controller:
+      type: picknik_twist_controller/PicknikTwistController
+
     fault_controller:
       type: picknik_reset_fault_controller/PicknikResetFaultController
 
@@ -49,3 +57,14 @@ robotiq_gripper_controller:
   ros__parameters:
     joint: robotiq_85_left_knuckle_joint
     allow_stalling: true
+
+twist_controller:
+  ros__parameters:
+    joint: tcp
+    interface_names:
+      - twist.linear.x
+      - twist.linear.y
+      - twist.linear.z
+      - twist.angular.x
+      - twist.angular.y
+      - twist.angular.z
