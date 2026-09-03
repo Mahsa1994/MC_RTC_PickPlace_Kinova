@@ -49,7 +49,7 @@ public:
     // solve, and hard clamps on the result. Both exist because a plain
     // inverse blows up near kinematic singularities (noise gets amplified
     // into huge spurious force spikes) - see README.md.
-    wrench_dls_lambda2_ = this->declare_parameter("wrench_dls_lambda2", 4.0);
+    wrench_dls_lambda2_ = this->declare_parameter("wrench_dls_lambda2", 0.05);
     max_force_norm_     = this->declare_parameter("max_force_estimate", 60.0);   // N
     max_moment_norm_    = this->declare_parameter("max_moment_estimate", 15.0);  // Nm
 

@@ -5,6 +5,9 @@
 #include <mc_tasks/PostureTask.h>
 #include <cmath>
 
+#include "WristSingularity.h"
+
+
 struct HandGuideState : mc_control::fsm::State
 {
   void start(mc_control::fsm::Controller & ctl) override
@@ -45,8 +48,16 @@ struct HandGuideState : mc_control::fsm::State
     // off-tool pushes translate cleanly needs the contact point estimated and
     // the admittance frame moved to it (or a joint-space admittance), which is
     // a design change, not a gain. Until then: push on the gripper body.
+    // SUPERSEDED 2026-09-03 (same day): both of the above passes were chasing a
+    // gain for a problem that was not a gain problem. The arm was being guided
+    // 6.9 deg from the documented joints-4/6 wrist singularity (see
+    // WristSingularity.h), where one rotational DOF does not
+    // exist. 0.0025 felt dead, 0.05 spun parasitically on lever-arm moments,
+    // and NEITHER could have produced real rotation. 0.03 is a middle value to
+    // re-evaluate from a non-singular pose; it is a starting point, not a
+    // tuned result. Retune only after confirming |joint_5| > kWristSingularBand.
     admTask_->admittance(sva::ForceVecd(
-        Eigen::Vector3d(0.01, 0.01, 0.01),        // couple (torque)
+        Eigen::Vector3d(0.03, 0.03, 0.03),        // couple (torque)
         Eigen::Vector3d(0.0030, 0.0030, 0.0030))); // force
 
     // stiffness/damping take double (scalar)
@@ -117,6 +128,7 @@ struct HandGuideState : mc_control::fsm::State
           stopRequested_ = true;
         }));
 
+    khg::warnIfSingular(ctl.realRobot(), "HandGuideState", "at entry");
     mc_rtc::log::success("[HandGuideState] Active — push the arm!");
   }
 
@@ -134,6 +146,10 @@ struct HandGuideState : mc_control::fsm::State
     // error is then always exactly one timestep of refVel, so it cannot wind
     // up, and the QP is driven by the feedforward velocity as intended.
     admTask_->targetPose(ctl.realRobot().frame("tool_frame").position());
+
+    // Re-check every 2 s: the operator can guide the arm INTO a singularity
+    // mid-session, at which point rotation dies with no other visible symptom.
+    if(++tick_ % 2000 == 0) { khg::warnIfSingular(ctl.realRobot(), "HandGuideState", "during guiding"); }
 
     if(stopRequested_)
     {
@@ -155,6 +171,7 @@ private:
   std::shared_ptr<mc_tasks::force::AdmittanceTask> admTask_;
   std::shared_ptr<mc_tasks::PostureTask> postureTask_;
   bool stopRequested_ = false;
+  unsigned long tick_ = 0;
 };
 
 EXPORT_SINGLE_STATE("KHG::HandGuideState", HandGuideState)
