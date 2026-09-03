@@ -3,6 +3,7 @@
 #include <mc_rtc/logging.h>
 #include <mc_tasks/AdmittanceTask.h>
 #include <mc_tasks/PostureTask.h>
+#include <cmath>
 
 struct HandGuideState : mc_control::fsm::State
 {
@@ -21,8 +22,31 @@ struct HandGuideState : mc_control::fsm::State
     // between iterations. Watch closely for oscillation/overshoot on
     // release this time (per guide step 5) - if it overshoots, back this
     // off or raise `damping` (currently 50.0) instead of lowering gain.
+    // TUNED 2026-09-03 (couple only), then CORRECTED DOWN the same day.
+    // First pass raised couple 0.0025 -> 0.05 on the premise that the measured
+    // |M| (median 1.64 Nm, p95 5.79 Nm) was operator-intended twist and the
+    // wrist was simply under-driven. Decomposing the moment against the
+    // simultaneous force refuted that premise:
+    //   93% of |M| is PERPENDICULAR to F  (lever arm, not twist)
+    //   implied moment arm |M|/|F|: median 18 cm, p75 51 cm
+    //   true parallel twist: median |M_par| only 1.13 Nm
+    // i.e. most of the moment seen at tool_frame is the operator pushing the
+    // arm 20-50 cm away from tool_frame (wrist/forearm), not asking for
+    // rotation. The task is referenced at tool_frame and cannot distinguish
+    // the two, so at 0.05 every off-point linear push spun the wrist, while
+    // deliberate rotation - which can only muster ~1 Nm of genuine couple -
+    // still barely moved. Amplifying that channel 20x amplified the artifact.
+    // 0.01 is 4x the original: enough that a real couple at the gripper is
+    // feelable, low enough that an 18 cm-lever push yields ~0.03 rad/s of
+    // parasitic rotation instead of ~0.15.
+    // Note a single fixed contact offset fits the data poorly (least-squares
+    // |d| = 55 cm, R^2 = 0.157), so there is no consistent grab point to
+    // compensate for here - the operator's hand moved during the run. Making
+    // off-tool pushes translate cleanly needs the contact point estimated and
+    // the admittance frame moved to it (or a joint-space admittance), which is
+    // a design change, not a gain. Until then: push on the gripper body.
     admTask_->admittance(sva::ForceVecd(
-        Eigen::Vector3d(0.0025, 0.0025, 0.0025),  // couple (torque)
+        Eigen::Vector3d(0.01, 0.01, 0.01),        // couple (torque)
         Eigen::Vector3d(0.0030, 0.0030, 0.0030))); // force
 
     // stiffness/damping take double (scalar)
@@ -96,8 +120,21 @@ struct HandGuideState : mc_control::fsm::State
     mc_rtc::log::success("[HandGuideState] Active — push the arm!");
   }
 
-  bool run(mc_control::fsm::Controller &) override
+  bool run(mc_control::fsm::Controller & ctl) override
   {
+    // ANTI-WINDUP 2026-09-03. AdmittanceTask::update() integrates its target
+    // open-loop (`target(delta * target())`) - it never re-references where
+    // the arm actually is. Behind the bridge's delta_max clamp the real arm
+    // always follows with a small per-tick deficit, and because the target
+    // integrates from itself that deficit accumulates without bound: the
+    // 2026-09-03 log shows model-vs-real creeping to 0.0495 rad over ~12 s of
+    // guiding, then tripping model_real_gate (0.05) and latching.
+    // Re-anchoring the target to the measured pose each tick turns the task
+    // from a position integrator into pure velocity following: the position
+    // error is then always exactly one timestep of refVel, so it cannot wind
+    // up, and the QP is driven by the feedforward velocity as intended.
+    admTask_->targetPose(ctl.realRobot().frame("tool_frame").position());
+
     if(stopRequested_)
     {
       output("stopGuiding");

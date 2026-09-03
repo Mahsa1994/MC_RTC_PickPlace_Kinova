@@ -8,6 +8,20 @@ controller_manager:
     joint_trajectory_controller:
       type: joint_trajectory_controller/JointTrajectoryController
 
+    # ADDED 2026-09-03. gen3.launch.py spawns these two whenever
+    # `gripper:=robotiq_2f_85` is passed (robot_hand_controller_spawner is
+    # conditional on gripper != ""), and fault_controller is spawned whenever
+    # use_internal_bus_gripper_comm is true - which is its default, so that
+    # spawner has been failing silently on every run so far. Both definitions
+    # are copied from the stock
+    # kortex_description/arms/gen3/6dof/config/ros2_controllers.yaml so the
+    # spawners find what they expect.
+    robotiq_gripper_controller:
+      type: parallel_gripper_action_controller/GripperActionController
+
+    fault_controller:
+      type: picknik_reset_fault_controller/PicknikResetFaultController
+
 joint_trajectory_controller:
   ros__parameters:
     joints:
@@ -29,3 +43,9 @@ joint_trajectory_controller:
     allow_integration_in_goal_trajectories: false
     allow_nonzero_velocity_at_trajectory_end: true
     stopped_velocity_tolerance: 0.05
+
+
+robotiq_gripper_controller:
+  ros__parameters:
+    joint: robotiq_85_left_knuckle_joint
+    allow_stalling: true
