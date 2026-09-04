@@ -49,9 +49,9 @@ public:
     // solve, and hard clamps on the result. Both exist because a plain
     // inverse blows up near kinematic singularities (noise gets amplified
     // into huge spurious force spikes) - see README.md.
-    wrench_dls_lambda2_ = this->declare_parameter("wrench_dls_lambda2", 0.05);
-    max_force_norm_     = this->declare_parameter("max_force_estimate", 60.0);   // N
-    max_moment_norm_    = this->declare_parameter("max_moment_estimate", 15.0);  // Nm
+    wrench_dls_lambda2_ = this->declare_parameter("wrench_dls_lambda2", 2);
+    max_force_norm_     = this->declare_parameter("max_force_estimate", 9.0);   // N
+    max_moment_norm_    = this->declare_parameter("max_moment_estimate", 10.0);  // Nm
 
     // Velocity gate for the wrench estimate (rad/s). Raised from the old
     // 0.05/0.15 defaults now that inertial torque is compensated (see the
@@ -176,6 +176,22 @@ private:
       dof_offset += j.dof();
     }
     return dof_map;
+  }
+
+  // Soft (continuous) deadband: shrink the vector's magnitude by `db` and
+  // keep its direction, instead of zeroing it below a hard threshold.
+  // A hard cutoff is discontinuous exactly where guiding happens: 0.49 N
+  // gives nothing, 0.51 N gives the full 0.51 N. That cliff chatters -
+  // push past the threshold, the arm moves, the measured force falls back
+  // under it, the wrench snaps to zero, the arm stops, push again. Soft
+  // thresholding rejects sub-deadband noise exactly as before (output is
+  // still identically zero below `db`) but has no step at the crossing.
+  static Eigen::Vector3d softDeadband(const Eigen::Vector3d &v, double db)
+  {
+    const double n = v.norm();
+    if (n <= db)
+      return Eigen::Vector3d::Zero();
+    return v * ((n - db) / n);
   }
 
   void jointStateCallback(const sensor_msgs::msg::JointState::SharedPtr msg)
@@ -473,9 +489,9 @@ private:
       Eigen::Vector3d output_force = filtered_force;
       Eigen::Vector3d output_moment = filtered_moment;
 
-      // 3. Apply Deadband on the temporary copies
-      if (output_force.norm()  < deadband_force_)  output_force.setZero();
-      if (output_moment.norm() < deadband_moment_) output_moment.setZero();
+      // 3. Apply the soft deadband on the temporary copies (see softDeadband)
+      output_force  = softDeadband(output_force,  deadband_force_);
+      output_moment = softDeadband(output_moment, deadband_moment_);
 
       // 4. Update the active sensor readings to send to mc_rtc
       force_sensor = output_force;
