@@ -26,5 +26,5 @@ kinova_6dof:
     joint_2: [0.2618]
     joint_3: [3.13497]
     joint_4: [-2.269]
-    joint_5: [1.2]   # NOT 0.0: exactly the joints-4/6 wrist singularity (see src/states/WristSingularity.h)
+    joint_5: [0.0]
     joint_6: [0.959879]
