@@ -32,7 +32,13 @@ place_pose:
   # constrained joint (joint_2 1.72 rad, joint_3 1.40 rad, joint_5 1.86 rad),
   # so this is not near the limit-lock failure mode that plagued the earlier
   # pick_pose candidates.
-  # NOT yet dry-run/live validated as a MoveToPlace target.
+  # CURRENTLY UNREFERENCED (2026-09-07): the place side was rewritten as a
+  # carry-and-tip sequence (MoveUpFromPick -> HoverToPlace -> UnloadObj),
+  # all captured as joint configurations, so no state resolves `ref: place`
+  # any more. Kept because it is a valid, cross-checked capture of that
+  # location and costs nothing - it becomes live again the moment any state
+  # uses `ref: place`. NOTE it is NOT the same spot as HoverToPlace
+  # (that one's tool pose is [-0.2360, +0.3378, +0.4003]).
   translation: [-0.4984, 0.4515, 0.5492]
   rotation:    [-1.0763, 2.3677, 1.9208]
 
@@ -64,18 +70,23 @@ place_pose:
 # existed - see the launch file's history).
 #
 # DISTANCE / TRAJECTORY SHAPE.
-#   * `waypoints: [[x,y,z], ...]` - Cartesian legs only (MoveToPick,
-#     RetreatToPick, MoveToPlace, RetreatToPlace). Via-points the arm passes
-#     through on the way to the target; they inherit the target's
-#     orientation. This is the knob for "how close does the arm pass to the
-#     participant" - e.g. a via-point that bows the path away from or toward
-#     the person.
-#   * The reference poses themselves (pick_pose / place_pose above) set the
-#     endpoints.
-#   * JointMove legs (MoveToZero, MoveToSafe, PickUpPos, PutDownPos,
-#     ReturnToZero) have NO waypoint support - they interpolate straight in
-#     joint space. Shape a leg's path by making it Cartesian, or by adding
-#     another intermediate JointMove state.
+#   * `waypoints: [[x,y,z], ...]` - Cartesian legs only, which after the
+#     2026-09-07 rewrite means MoveToPick and HoverToPlace. Via-points are
+#     passed through on the way to the target and inherit the target's
+#     orientation.
+#   * HoverToPlace is the one that matters for the study: it is the
+#     participant-facing traverse, and it is Cartesian precisely so that its
+#     path can be reshaped per condition (a via-point bowing the path toward
+#     or away from the person) and so that it yields on contact.
+#   * The remaining JointMove legs (MoveToZero, MoveToSafe, PickUpPos,
+#     MoveUpFromPick, UnloadObj, ReturnToPickPose) interpolate straight in
+#     joint space and have no waypoint support - shape one by converting it
+#     to Cartesian, or by inserting another intermediate pose.
+#   * WATCH WHICH LIMIT BINDS: a leg's duration is set by whichever of
+#     v_max_lin / v_max_ang needs longer. HoverToPlace is angular-limited
+#     (0.968 rad of reorientation vs 0.377 m of travel), so raising
+#     v_max_lin alone does nothing there - raise v_max_ang. Each Cartesian
+#     leg logs both deltas at startup, so check the log rather than assume.
 #
 # COMPLIANCE (how the arm yields to a participant pushing it) is per
 # Cartesian leg: `stiffness`/`damping`/`weight`, the `gains:` block, and
@@ -351,203 +362,90 @@ states:
     base: Gripper
     action: close
     timeout: 2.0
-    next: RetreatToPick
+    next: MoveUpFromPick
 
-  # STEP 7 - lift back up to the pick approach pose, now holding the object.
-  # Same `ref: pick` target as MoveToPick (STEP 3), so there is exactly one
-  # pick pose defined in this file and both legs track it - this is a
-  # separate state only because mc_rtc routes transitions by state name, so
-  # visiting the same pose twice with different successors needs two names.
-  # Kept compliant (not a rigid JointMove) because a participant may be near
-  # the arm while it retreats with the object.
-  RetreatToPick:
-    base: ComplianceCartesianMove
-    target:
-      ref: pick
-    waypoints: []   # EXPERIMENT KNOB
-    duration: 4.0
-    v_max_lin: 0.05 # EXPERIMENT KNOB
-    v_max_ang: 0.05 # EXPERIMENT KNOB
-    stiffness: 25.0
-    damping: 12.0
-    weight: 100.0
-    contact_force_threshold: 8.0
-    clear_hold_time: 0.3
-    settle_timeout: 8.0
-    next: MoveToPlace
-    gains:
-      mass:
-        linear:  [3, 3, 3]
-        angular: [2, 2, 2]
-      stiffness:
-        linear:  [100, 100, 100]
-        angular: [10, 10, 10]
-      damping:
-        linear:  [60, 60, 60]
-        angular: [15, 15, 15]
-
-  # STEP 8 - compliant transfer to the place location. THE
-  # experiment-manipulation leg: this is the long traverse that actually
-  # passes the participant, so it is the one whose `waypoints` (distance)
-  # and `v_max_lin`/`v_max_ang` (velocity) the trial conditions vary.
-  # CORRECTION 2026-09-07: the old comment here said `duration` sets the
-  # velocity. That stopped being true when v_max-bounded pacing was added
-  # (2026-08-26) - `duration` is now only a MINIMUM and is not the binding
-  # constraint at these v_max values. See the EXPERIMENT KNOBS header.
-  # `ref: place` now resolves to a real capture (2026-09-07) - see place_pose
-  # at the top of this file. Not yet dry-run/live validated as a target.
-  MoveToPlace:
-    base: ComplianceCartesianMove
-    target:
-      ref: place
-    waypoints: []   # EXPERIMENT KNOB - via-points, see header block
-    duration: 5.0   # MINIMUM only - NOT the velocity knob, see above
-    v_max_lin: 0.05 # EXPERIMENT KNOB - m/s
-    v_max_ang: 0.05 # EXPERIMENT KNOB - rad/s
-    stiffness: 20.0
-    damping: 10.0
-    weight: 100.0
-    contact_force_threshold: 8.0
-    clear_hold_time: 0.3
-    # PERMANENT FIX 2026-08-26: same settle_timeout raise as MoveToPick (see
-    # its comment) - this is "THE experiment-manipulation state" per the
-    # comment above, i.e. the one most likely to actually get pushed by a
-    # participant, so it needs the same headroom to recover from a firm push
-    # before FORCED ADVANCE gives up on it.
-    settle_timeout: 8.0
-    next: PlaceHover
-    gains:
-      mass:
-        linear:  [3, 3, 3]
-        angular: [2, 2, 2]
-      stiffness:
-        linear:  [100, 100, 100]
-        angular: [10, 10, 10]
-      damping:
-        linear:  [60, 60, 60]
-        angular: [15, 15, 15]
-
-  # STEP 9 - descend/settle to set the object down. Mirror of PickUpPos:
-  # rigid JointMove, so the final pose (and therefore the gripper
-  # orientation) is exact rather than left to whichever IK branch the QP
-  # happens to land on.
-  # STEP 8b - descend most of the way to the drop point and finish the
-  # reorientation, stopping 5.3 cm short. ADDED 2026-09-07 to mirror the pick
-  # side's two-stage structure (approach -> short final descent) instead of
-  # one 0.307 m rigid drop; 5.3 cm is exactly the height MoveToPick sits
-  # above PickUpPos, so the final leg matches the pick side's.
-  # Compliant (Cartesian), like MoveToPick and unlike the rigid final leg:
-  # this is the long travel portion, where a participant may be near.
-  # Doing the big reorientation HERE, 5.3 cm clear of the table, means
-  # PutDownPos below is a pure vertical descent with no attitude change near
-  # the object - safer than the pick side, which reorients on the way in.
-  # Target is explicit rather than `ref: place` + offset because it needs
-  # place's x,y with PICK's gripper orientation (verified: this rotation
-  # reproduces PickUpPos's orientation to 4e-4, and IK for the full pose
-  # converges to pos_err 3.7e-7 m / ori_err 7.0e-8 rad, 4.3 deg off
-  # straight-down). Nearest-limit margin at the resulting configuration is
-  # joint_5 +0.45 rad - the tightest anywhere in this file, so watch joint_5
-  # in the dry-run log.
-  PlaceHover:
-    base: ComplianceCartesianMove
-    target:
-      translation: [-0.4984, 0.4515, 0.2946]
-      rotation:    [0.0245, -3.0701, 3.1183]   # = PickUpPos's orientation
-    waypoints: []   # EXPERIMENT KNOB
-    duration: 4.0
-    v_max_lin: 0.05 # EXPERIMENT KNOB
-    v_max_ang: 0.05 # EXPERIMENT KNOB
-    stiffness: 20.0
-    damping: 10.0
-    weight: 100.0
-    contact_force_threshold: 8.0
-    clear_hold_time: 0.3
-    settle_timeout: 8.0
-    next: PutDownPos
-    gains:
-      mass:
-        linear:  [3, 3, 3]
-        angular: [2, 2, 2]
-      stiffness:
-        linear:  [100, 100, 100]
-        angular: [10, 10, 10]
-      damping:
-        linear:  [60, 60, 60]
-        angular: [15, 15, 15]
-
-  # TARGET BELOW IS COMPUTED, NOT CAPTURED (2026-09-07) - replaces the
-  # earlier placeholder (a copy of PickUpPos's joints, which pointed at the
-  # PICK location and would have released the object back where it came
-  # from).
+  # ════════════════════════════════════════════════════════════════════
+  #  TRANSFER + UNLOAD (rewritten 2026-09-07)
+  # ════════════════════════════════════════════════════════════════════
+  # SUPERSEDES the previous place side (RetreatToPick / MoveToPlace /
+  # PlaceHover / PutDownPos / OpenGripper / RetreatToPlace). That version
+  # assumed the object was carried to a place location and SET DOWN by
+  # opening the gripper. The actual task is different: the arm carries a
+  # CONTAINER and unloads it by tipping the wrist - the gripper never
+  # reopens. Old definitions are in git history if any are wanted back.
   #
-  # Derived from the operator's observation that the table height and object
-  # are the same at both sites, so two of the three things that define the
-  # put-down pose carry over from PickUpPos unchanged:
-  #   * grasp HEIGHT      z = 0.2420 m   (same table)
-  #   * gripper ORIENTATION  4.3 deg off straight-down, i.e. PickUpPos's
-  #     exact rotation matrix (same object, held the same way)
-  # Only x,y differ, and those come from place_pose. Target pose therefore:
-  #     translation [-0.4984, +0.4515, +0.2420]  (place x,y + pick-grasp z)
-  #     rotation    identical to PickUpPos
-  # Damped-least-squares IK for that pose (same URDF-derived model used
-  # earlier this session, FK cross-checked against home_pose to sub-mm)
-  # converges exactly - pos_err 1.4e-7 m, ori_err 2.9e-8 rad - and the
-  # resulting configuration reproduces the 4.3 deg gripper angle.
-  # Limit margins: joint_2 +1.10, joint_3 +2.00, joint_5 +0.60 rad. joint_5
-  # is the tightest of any pose in this file (PickUpPos has 1.24 there);
-  # still clear, but worth watching in the dry-run log.
-  #
-  # Both open questions from the first version of this comment are now
-  # settled (operator-confirmed 2026-09-07):
-  #  1. The drop point IS directly below the captured place approach pose,
-  #     so place's x,y are correct here (unlike the pick side, where
-  #     PickUpPos sits 13.3 cm in x from MoveToPick).
-  #  2. The 0.307 m single rigid descent is gone - PlaceHover above now
-  #     covers 0.255 m of it compliantly, leaving this leg a pure 5.3 cm
-  #     vertical drop with no reorientation, matching the pick side's
-  #     approach-to-grasp height exactly. Joint-space cost of this leg is
-  #     now max |delta| 0.145 rad (it was 1.26 rad as a single step).
-  # STILL UNVALIDATED: the IK model behind these joint values has no
-  # self-collision term (the `type: collision` constraint below is NOT
-  # modeled) - dry-run and watch for "QP failed to run()" before any live
-  # attempt, same as every other new pose here.
-  PutDownPos:
+  # All four legs below are JointMove because all four were captured
+  # directly as joint configurations (snapshots/*.txt, each cross-checked
+  # against its .json via tools/snapshot_to_joints.py to <0.03 deg), and
+  # each is dominated by a single joint - which is what makes them
+  # meaningful as joint-space moves rather than Cartesian ones:
+  #   MoveUpFromPick  joint_2 +0.374 rad -> lift 15.9 cm straight up
+  #   HoverToPlace    joint_1 +0.958 rad -> 55 deg base swing at constant height
+  #   UnloadObj       joint_5 -0.818 rad -> 47 deg wrist unfold (the tip/pour)
+  #   ReturnToPickPose joint_1 -0.974 rad -> swing back
+  # Limit margins are comfortable at every one (tightest is joint_3, 0.76 rad
+  # throughout - it barely moves across the whole transfer).
+
+  # STEP 7 - lift the container clear of the pick location.
+  MoveUpFromPick:
     base: JointMove
     stiffness: 2.0
     v_max: 0.05   # EXPERIMENT KNOB - rad/s
-    target: [0.7269, -1.1431, 0.5742, 0.0291, 1.4938, 0.7012]   # COMPUTED - see above
+    target: [0.0156, -0.1794, 1.8109, -0.0325, 0.8444, 0.0000]   # snapshots/MoveUpFromPick.txt
     duration: 15.0   # MINIMUM only
     threshold: 0.05
-    next: OpenGripper
+    next: HoverToPlace
 
-  # STEP 9b - release the object. NOT in the 10-step list as written, but a
-  # pick-and-place cycle cannot put anything down without it, and without it
-  # the arm would carry the object back to Zero still gripped. Added on that
-  # reading - say so if the intent was to release somewhere else.
-  OpenGripper:
-    base: Gripper
-    action: open
-    timeout: 3.0
-    next: RetreatToPlace
-
-  # STEP 10 - retreat back up to the place approach pose, now empty-handed.
-  # Same `ref: place` target as MoveToPlace (STEP 8); separate state for the
-  # same transition-routing reason as RetreatToPick.
-  RetreatToPlace:
+  # STEP 8 - carry the container across to the unload location.
+  # THE PARTICIPANT-FACING LEG: the long traverse (0.377 m of tool travel)
+  # that passes the person. This is the state the trial conditions
+  # manipulate - both `v_max_*` (velocity) and `waypoints` (how close the
+  # path comes to the participant).
+  #
+  # CONVERTED JointMove -> ComplianceCartesianMove 2026-09-07, so that it
+  # (a) YIELDS if a participant pushes it, instead of driving rigidly
+  #     through - it is the one leg where contact is actually plausible, and
+  #     it is carrying a container; and
+  # (b) gains `waypoints`, without which there is no distance/proximity knob
+  #     on the only leg where distance matters.
+  #
+  # The usual objection to making a leg Cartesian is IK-branch ambiguity:
+  # the QP may land in a different joint configuration than the capture, and
+  # the next state (UnloadObj) is a JointMove that assumes a specific one.
+  # CHECKED, and it does not apply here - damped-least-squares IK for this
+  # target, seeded from MoveUpFromPick (the actual pose this leg starts
+  # from), converges to pos_err 7.8e-08 m / ori_err 2.3e-08 rad at joint
+  # values identical to snapshots/HoverToPlace.txt to 4 decimal places
+  # (max difference 0.0000 rad). Same branch, so UnloadObj still starts from
+  # exactly the configuration it expects.
+  #
+  # Target below is that same captured pose, expressed as tool_frame
+  # translation/rotation (snapshots/HoverToPlace.txt).
+  #
+  # SPEED NOTE: this leg is ANGULAR-limited, not linear-limited -
+  # pos_delta 0.377 m needs 14.1 s at v_max_lin 0.05, but ori_delta
+  # 0.968 rad needs 36.3 s at v_max_ang 0.05, and the longer one wins.
+  # Raising v_max_lin alone will therefore do NOTHING to this leg's
+  # duration; raise v_max_ang. Both at 0.10 gives ~18 s.
+  # Gains copied from MoveToPick, the compliant leg already live-validated
+  # against a firm push (including its settle_timeout: 8.0, raised after a
+  # push recovery outlasted the 2.0 s default).
+  HoverToPlace:
     base: ComplianceCartesianMove
     target:
-      ref: place
-    waypoints: []   # EXPERIMENT KNOB
-    duration: 5.0
-    v_max_lin: 0.05 # EXPERIMENT KNOB
-    v_max_ang: 0.05 # EXPERIMENT KNOB
-    stiffness: 20.0
-    damping: 10.0
+      translation: [-0.2360, 0.3378, 0.4003]
+      rotation:    [-0.2424, 2.9319, 2.1118]
+    waypoints: []   # EXPERIMENT KNOB - proximity to participant, see header
+    duration: 4.0   # MINIMUM only
+    v_max_lin: 0.05 # EXPERIMENT KNOB - m/s (NOT binding on this leg, see above)
+    v_max_ang: 0.05 # EXPERIMENT KNOB - rad/s (this is the binding one)
+    stiffness: 25.0
+    damping: 12.0
     weight: 100.0
-    contact_force_threshold: 8.0
+    contact_force_threshold: 8.0   # must stay above deadband_force on the bridge
     clear_hold_time: 0.3
     settle_timeout: 8.0
-    next: ReturnToZero
+    next: UnloadObj
     gains:
       mass:
         linear:  [3, 3, 3]
@@ -558,6 +456,38 @@ states:
       damping:
         linear:  [60, 60, 60]
         angular: [15, 15, 15]
+
+  # STEP 9 - unfold the wrist to tip the container and unload it.
+  # joint_5 0.8323 -> 0.0143 is the whole motion; the gripper stays CLOSED
+  # throughout (nothing is released - the container is emptied by tipping).
+  UnloadObj:
+    base: JointMove
+    stiffness: 2.0
+    v_max: 0.05   # EXPERIMENT KNOB - rad/s
+    target: [0.9740, -0.1852, 1.8141, -0.0544, 0.0143, 0.0000]   # snapshots/UnloadObj.txt
+    duration: 15.0   # MINIMUM only
+    threshold: 0.05
+    next: ReturnToPickPose
+
+  # STEP 10 - return to the pick pose, still holding the (now empty)
+  # container, and stop. Target is MoveToPick's own captured joint
+  # configuration (snapshots/MoveToPick.txt), per "all joints same as this
+  # pose" - a JointMove, not the Cartesian MoveToPick state, so the arm
+  # lands in exactly that configuration rather than whichever IK branch a
+  # Cartesian solve would pick.
+  # NOTE: the cycle ENDS here holding the container, with the gripper still
+  # closed - there is no release step and no return to Zero, per the
+  # sequence as specified. Re-running the loop from this state would try to
+  # pick again while already holding; add an OpenGripper (and optionally
+  # ReturnToZero) before Idle if the cycle should repeat.
+  ReturnToPickPose:
+    base: JointMove
+    stiffness: 2.0
+    v_max: 0.05   # EXPERIMENT KNOB - rad/s
+    target: [0.0000, -0.5532, 1.7666, -0.0326, 0.0940, 0.0000]   # = MoveToPick's joints
+    duration: 15.0   # MINIMUM only
+    threshold: 0.05
+    next: Idle
 
   # REPLACED 2026-08-26: ReturnHome (CartesianMove back to home_pose) dropped
   # now that home_pose IS Zero (see home_pose comment above) - a Cartesian
@@ -593,37 +523,31 @@ states:
 transitions:
   - [HoldCurrent,  HoldCurrent,  HoldCurrent,  Auto]
   # - [Unfold,       MoveHome,     MoveHome,     Auto]  # Unfold removed, see note near `init:` above
-  # ── Full pick-and-place loop, wired 2026-09-07 ──────────────────────────
-  #  1 MoveToZero      check/go to Zero (skips instantly if already there)
-  #  2 MoveToSafe      joint-space safe midpoint
-  #  3 MoveToPick      compliant approach to pick
-  #  4 OpenGripperHalf pre-open jaws
-  #  5 PickUpPos       descend onto object
-  #  6 CloseGripper    grasp
-  #  7 RetreatToPick   lift back to pick approach pose
-  #  8 MoveToPlace     compliant transfer to place
-  # 8b PlaceHover      compliant descent to 5.3 cm above drop
-  #  9 PutDownPos      final 5.3 cm vertical drop
-  # 9b OpenGripper     release
-  # 10 RetreatToPlace  retreat to place approach pose
-  #    ReturnToZero -> Idle
-  - [MoveToZero,      MoveToSafe,      MoveToSafe,      Auto]
-  - [MoveToSafe,      MoveToPick,      MoveToPick,      Auto]
-  - [MoveToPick,      OpenGripperHalf, OpenGripperHalf, Auto]
-  - [OpenGripperHalf, PickUpPos,       PickUpPos,       Auto]
-  - [PickUpPos,       CloseGripper,    CloseGripper,    Auto]
-  - [CloseGripper,    RetreatToPick,   RetreatToPick,   Auto]
-  - [RetreatToPick,   MoveToPlace,     MoveToPlace,     Auto]
-  # PICK-SIDE-ONLY BYPASS: uncomment the next line AND set
-  # `RetreatToPick.next: ReturnToZero` to run steps 1-7 in isolation without
-  # touching the not-yet-captured place poses. Same staged-validation pattern
-  # used for every previous leg in this file.
-  # - [RetreatToPick,   ReturnToZero,    ReturnToZero,    Auto]
-  - [MoveToPlace,     PlaceHover,      PlaceHover,      Auto]
-  - [PlaceHover,      PutDownPos,      PutDownPos,      Auto]
-  - [PutDownPos,      OpenGripper,     OpenGripper,     Auto]
-  - [OpenGripper,     RetreatToPlace,  RetreatToPlace,  Auto]
-  - [RetreatToPlace,  ReturnToZero,    ReturnToZero,    Auto]
+  # ── Full pick / transfer / unload loop ─────────────────────────────────
+  #  1 MoveToZero       check/go to Zero (skips instantly if already there)
+  #  2 MoveToSafe       joint-space safe midpoint
+  #  3 MoveToPick       compliant approach to pick
+  #  4 OpenGripperHalf  pre-open jaws
+  #  5 PickUpPos        descend onto the container
+  #  6 CloseGripper     grasp
+  #  7 MoveUpFromPick   lift 15.9 cm clear
+  #  8 HoverToPlace     55 deg base swing to the unload site  [participant-facing]
+  #  9 UnloadObj        47 deg wrist unfold - tip to unload
+  # 10 ReturnToPickPose swing back to MoveToPick's joints -> Idle
+  # Gripper stays CLOSED from step 6 onward; the container is emptied by
+  # tipping, not released. Rewritten 2026-09-07 - the previous place-side
+  # chain (RetreatToPick/MoveToPlace/PlaceHover/PutDownPos/OpenGripper/
+  # RetreatToPlace) is superseded, see the states block above.
+  - [MoveToZero,       MoveToSafe,       MoveToSafe,       Auto]
+  - [MoveToSafe,       MoveToPick,       MoveToPick,       Auto]
+  - [MoveToPick,       OpenGripperHalf,  OpenGripperHalf,  Auto]
+  - [OpenGripperHalf,  PickUpPos,        PickUpPos,        Auto]
+  - [PickUpPos,        CloseGripper,     CloseGripper,     Auto]
+  - [CloseGripper,     MoveUpFromPick,   MoveUpFromPick,   Auto]
+  - [MoveUpFromPick,   HoverToPlace,     HoverToPlace,     Auto]
+  - [HoverToPlace,     UnloadObj,        UnloadObj,        Auto]
+  - [UnloadObj,        ReturnToPickPose, ReturnToPickPose, Auto]
+  - [ReturnToPickPose, Idle,             Idle,             Auto]
   - [ReturnToZero,    Idle,            Idle,            Auto]
 constraints:
   - type: kinematics
