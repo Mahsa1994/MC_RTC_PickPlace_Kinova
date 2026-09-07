@@ -39,10 +39,23 @@ public:
   bool isGripperDone() const { return gripper_done_.load(); }
   void resetGripperDone()     { gripper_done_ = false; }
 
-  bool sendGripperGoal(const std::string & action)
+  // `position` (2026-09-07): optional explicit knuckle-joint target that
+  // OVERRIDES the action->position mapping below. Added for the "half open"
+  // step of the full pick-and-place loop, where neither of the two hardcoded
+  // presets applies. Units are robotiq_85_left_knuckle_joint radians on the
+  // same scale the presets already use: ~0.0 = fully open, ~0.8 = fully
+  // closed (so open=0.1 / close=0.7 below are near-but-not-at the extremes,
+  // and "half open" is ~0.4). Negative means "not specified" -> fall back to
+  // the action preset, so every existing `action: open|close` call site keeps
+  // its previous behavior untouched.
+  bool sendGripperGoal(const std::string & action, double position = -1.0)
   {
     double target_pos = 0.0;
-    if(action == "close")
+    if(position >= 0.0)
+    {
+      target_pos = position;
+    }
+    else if(action == "close")
     {
       target_pos = 0.7; //0.8
     }
@@ -56,7 +69,6 @@ public:
       gripper_done_ = true;
       return true;
     }
-
 #ifdef MC_RTC_HAS_ROS_SUPPORT
     if(!nh_ || !gripper_action_client_)
     {
@@ -74,6 +86,12 @@ public:
 
     // auto goal_msg = control_msgs::action::GripperCommand::Goal();
     // goal_msg.command.position = target_pos;
+    // Logged HERE, not earlier: everything above this point is retried every
+    // tick by Gripper::run() until the action server is discovered, so a log
+    // before the readiness gate would spam at the control rate.
+    mc_rtc::log::info("[Gripper] action '{}' -> knuckle target {:.3f} rad{}",
+                      action, target_pos,
+                      position >= 0.0 ? " (explicit position override)" : " (action preset)");
     gripper_done_ = false;
 
     auto goal_msg = control_msgs::action::ParallelGripperCommand::Goal();
@@ -120,7 +138,8 @@ public:
     gripper_action_client_->async_send_goal(goal_msg, send_goal_options);
     return true;
 #else
-    mc_rtc::log::info("[Gripper] Stub mode active. Simulating action: {}", action);
+    mc_rtc::log::info("[Gripper] Stub mode active. Simulating action: {} (knuckle target {:.3f} rad)",
+                      action, target_pos);
     gripper_done_ = true;
     return true;
 #endif

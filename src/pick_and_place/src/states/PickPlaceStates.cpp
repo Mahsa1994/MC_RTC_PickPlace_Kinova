@@ -689,6 +689,19 @@ struct JointMove : mc_control::fsm::State
   // real-tracking ceiling (~0.2 rad/s @ delta_max=0.002, 100Hz publish);
   // override in YAML per-launch-config if delta_max changes.
   double v_max_      = 0.05;
+  // ADDED 2026-09-07: if every joint is already within this many rad of
+  // `target` when the state starts, skip the move entirely and advance
+  // immediately instead of holding a no-op reference for the full
+  // effective_duration_. Motivating case: the pick-and-place loop's first
+  // step is "check if at Zero, go there if not" - without this, starting a
+  // cycle from Zero burns the full `duration` (15s by default) doing
+  // literally nothing, since convergence is only ever tested AFTER
+  // t_elapsed_ >= effective_duration_ (see run()). 0 = disabled, which is
+  // the default, so every state that doesn't opt in keeps its old behavior
+  // exactly. The startup pose-capture logs still print before the skip
+  // decision, so the "jog the arm, read the log" workflow used to derive
+  // every pose in the YAML is unaffected.
+  double skip_if_within_ = 0.0;
   std::string next_state_;
 
   double t_elapsed_           = 0.0;
@@ -696,6 +709,7 @@ struct JointMove : mc_control::fsm::State
   double prev_weight_         = 1.0;
   double prev_stiffness_      = 1.0;
   double effective_duration_  = 3.0;  // = max(duration_, time needed so peak velocity <= v_max_)
+  bool   skipped_             = false;
   std::map<std::string, double> q_start_;
 
   int tick_ = 0;
@@ -707,6 +721,7 @@ struct JointMove : mc_control::fsm::State
     if(config.has("weight"))    weight_    = config("weight");
     if(config.has("threshold")) threshold_ = config("threshold");
     if(config.has("v_max"))     v_max_     = config("v_max");
+    if(config.has("skip_if_within")) skip_if_within_ = config("skip_if_within");
     if(config.has("next"))      next_state_ = static_cast<std::string>(config("next"));
 
     // target: [v1, v2, ... v6]  (array form only — simplest and most common)
@@ -771,6 +786,7 @@ void start(mc_control::fsm::Controller & ctl) override
     tick_      = 0;
 
     resyncControlToReal(ctl);
+    skipped_ = false;
 
     auto pt = ctl.getPostureTask(ctl.robot().name());
     if(!pt)
@@ -893,10 +909,25 @@ void start(mc_control::fsm::Controller & ctl) override
           name(), cur_ea.z() * r2d, cur_ea.y() * r2d, cur_ea.x() * r2d,
           cur_ea.z(), cur_ea.y(), cur_ea.x());
     }
+
+    // "Already there?" check (see skip_if_within_ above). Deliberately placed
+    // at the very END of start(), after the logs: the gains have already been
+    // set and the initial (s=0, "stay put") target written, so teardown()
+    // restores them exactly as in the normal path - and the pose-capture logs
+    // above still print either way.
+    if(skip_if_within_ > 0.0 && max_abs_delta < skip_if_within_)
+    {
+      skipped_ = true;
+      mc_rtc::log::success(
+          "[{}] Already at target (max |delta|={:.4f} rad < skip_if_within={:.4f} rad) - skipping move.",
+          name(), max_abs_delta, skip_if_within_);
+    }
   }
 
   bool run(mc_control::fsm::Controller & ctl) override
   {
+    if(skipped_) { output(next_state_); return true; }
+
     t_elapsed_ += dt_;
     auto pt = ctl.getPostureTask(ctl.robot().name());
     if(!pt) { output(next_state_); return true; }
@@ -1015,6 +1046,10 @@ struct Gripper : mc_control::fsm::State
 {
   std::string action_    = "close";
   double      timeout_   = 5.0; // Increased default timeout slightly to allow ROS 2 discovery
+  // Optional explicit knuckle-joint position (rad) overriding the action
+  // preset - see sendGripperGoal() in PickPlaceController.h for the scale.
+  // Negative = not specified = use the action preset (previous behavior).
+  double      position_  = -1.0;
   std::string next_state_;
 
   bool   sent_      = false;
@@ -1025,6 +1060,7 @@ struct Gripper : mc_control::fsm::State
   {
     if(config.has("action"))  action_  = static_cast<std::string>(config("action"));
     if(config.has("timeout")) timeout_ = config("timeout");
+    if(config.has("position")) position_ = config("position");
     if(config.has("next"))    next_state_ = static_cast<std::string>(config("next"));
   }
 
@@ -1033,10 +1069,18 @@ struct Gripper : mc_control::fsm::State
     dt_        = ctl.solver().dt();
     t_elapsed_ = 0.0;
     ppc(ctl).resetGripperDone();
-    
+
     // We do NOT send the goal on start() because the DDS discovery might not be ready.
-    sent_ = false; 
-    mc_rtc::log::info("[{}] Gripper state initialized. Waiting to establish connection for action: {}", name(), action_);
+    sent_ = false;
+    if(position_ >= 0.0)
+    {
+      mc_rtc::log::info("[{}] Gripper state initialized. Waiting to establish connection for action: {} "
+                        "(explicit position {:.3f} rad)", name(), action_, position_);
+    }
+    else
+    {
+      mc_rtc::log::info("[{}] Gripper state initialized. Waiting to establish connection for action: {}", name(), action_);
+    }
   }
 
   bool run(mc_control::fsm::Controller & ctl) override
@@ -1046,7 +1090,7 @@ struct Gripper : mc_control::fsm::State
     // Attempt to send the goal to ROS 2 until the action server is discovered and ready
     if(!sent_)
     {
-      sent_ = ppc(ctl).sendGripperGoal(action_);
+      sent_ = ppc(ctl).sendGripperGoal(action_, position_);
       if(sent_)
       {
         mc_rtc::log::info("[{}] Connection established. Gripper action successfully sent: {}", name(), action_);
