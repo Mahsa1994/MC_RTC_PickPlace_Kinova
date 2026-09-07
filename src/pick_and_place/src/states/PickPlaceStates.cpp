@@ -407,6 +407,11 @@ struct ComplianceCartesianMove : mc_control::fsm::State
   // decision site in run() for why the default flipped on 2026-09-07.
   bool advance_on_timeout_ = false;
 
+  // Saved posture-task gains, restored in teardown() - see the back-off in
+  // start() and the root-cause note there.
+  double prev_posture_weight_    = 1.0;
+  double prev_posture_stiffness_ = 1.0;
+
   // Runtime
   std::shared_ptr<mc_tasks::force::ImpedanceTask> task_;
   std::vector<sva::PTransformd> waypts_; // full chain: start -> waypoints -> target
@@ -492,6 +497,41 @@ struct ComplianceCartesianMove : mc_control::fsm::State
     if(total_chord > 1e-6)
       for(size_t i = 0; i < chord.size(); ++i)
         seg_duration_[i] = effective_duration_ * (chord[i] / total_chord);
+
+    // ROOT CAUSE FIX 2026-09-07 - back off the posture task, exactly as
+    // CartesianMove has always done.
+    //
+    // This state never did, and that is why it has NEVER converged: the FSM
+    // posture task stays active with its target left at whatever the
+    // preceding JointMove drove it to (e.g. MoveToSafe's joint
+    // configuration) and, at the default weight, competes on equal terms
+    // with the ImpedanceTask below (also weight 100). The QP settles at an
+    // equilibrium partway between the two - which is exactly what every
+    // failure of this state has looked like: the arm stops ~0.24-0.29 m
+    // short of target, perfectly static, with zero measured wrench, no
+    // joint anywhere near a limit, and model-vs-real agreement of 0.0001
+    // rad (the model is not being asked to move, rather than failing to).
+    //
+    // Diagnosed 2026-09-07 after ruling out the alternatives on live data:
+    // not a joint limit (joint_3 at 1.16 rad, 1.41 rad of margin), not a
+    // singularity (the stuck pose is BETTER conditioned than the healthy
+    // start pose - condition number 26.9 vs 75.3, manipulability 0.014 vs
+    // 0.0045 - and the remaining direction needs only 0.023 rad/s on
+    // joint_3), and not the contact-pause clock (logged as running, force
+    // 0.00 N, 45 s past the end of the trajectory).
+    //
+    // The tell was that CartesianMove converges cleanly on the same robot
+    // (ReturnHome reached pos_err 0.0004 m) and differs in exactly this.
+    // NOTE this bug was masked for weeks by the old force-advance-on-timeout
+    // default: MoveToPick never actually reached its target, it just got
+    // close and the FSM moved on regardless.
+    if(auto pt = ctl.getPostureTask(ctl.robot().name()))
+    {
+      prev_posture_weight_    = pt->weight();
+      prev_posture_stiffness_ = pt->stiffness();
+      pt->weight(1.0);
+      pt->stiffness(1.0);
+    }
 
     task_ = std::make_shared<mc_tasks::force::ImpedanceTask>(
         ctl.robot().frame(ee_frame_), task_stiffness_, task_weight_);
@@ -739,6 +779,13 @@ struct ComplianceCartesianMove : mc_control::fsm::State
   void teardown(mc_control::fsm::Controller & ctl) override
   {
     if(task_) ctl.solver().removeTask(task_);
+
+    // Restore the posture task gains backed off in start().
+    if(auto pt = ctl.getPostureTask(ctl.robot().name()))
+    {
+      pt->weight(prev_posture_weight_);
+      pt->stiffness(prev_posture_stiffness_);
+    }
   }
 };
 
