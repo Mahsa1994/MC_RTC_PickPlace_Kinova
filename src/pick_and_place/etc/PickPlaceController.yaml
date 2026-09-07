@@ -16,21 +16,25 @@ pick_pose:
   rotation:    [0.0041, 2.4140, 3.1119]
 
 place_pose:
-  # !!! PLACEHOLDER - NOT A REAL CAPTURE, DO NOT RUN THE PLACE LEGS LIVE !!!
-  # These numbers are the original never-tested 2026-08-19 guess and are
-  # almost certainly wrong for the current workspace: every validated pose in
-  # this file now sits at NEGATIVE x (pick_pose x=-0.5570, MoveToSafe
-  # x=-0.6097), while this one is at +0.35 - i.e. the opposite side of the
-  # robot. Running MoveToPlace against it would send the arm on a large
-  # traverse across the workspace to a pose nobody has ever verified is
-  # reachable or collision-free.
-  # REPLACE with a real capture first, exactly the way pick_pose /
-  # MoveToSafe / PickUpPos were derived: physically jog the arm to the place
-  # location, then read MoveToZero's startup log
-  # ("real tool_frame translation:" / "-> YAML rotation:") and paste the
-  # numbers here.
-  translation: [0.35, -0.10, 0.15]
-  rotation:    [3.1416, 0.0, 0.0]
+  # REPLACED 2026-09-07 - real capture, superseding the never-tested
+  # 2026-08-19 placeholder ([0.35, -0.10, 0.15] / [3.1416, 0, 0], which sat
+  # at +x, the opposite side of the robot from everything else in this file).
+  # Derived the same mc_rtc-native way as pick_pose/MoveToSafe/PickUpPos:
+  # arm jogged to the place location, then read straight off MoveToZero's
+  # startup log (raw capture kept in snapshots/MoveToPlace.txt):
+  #   real tool_frame translation: [-0.4984, +0.4515, +0.5492]
+  #   real tool_frame rotation [roll,pitch,yaw] (deg): [-61.67, +135.66, +110.06]
+  # Cross-checked against snapshots/MoveToPlace.json (the Kinova web-app
+  # snapshot of the same pose) via tools/snapshot_to_joints.py: the joint
+  # angles agree to 0.00027 rad (0.015 deg), i.e. web-app rounding only.
+  # Joint configuration there: [0.7344, -0.5168, 1.1662, -0.0047, 0.2341,
+  # -0.0054] - margins to the nearest limit are comfortable on every
+  # constrained joint (joint_2 1.72 rad, joint_3 1.40 rad, joint_5 1.86 rad),
+  # so this is not near the limit-lock failure mode that plagued the earlier
+  # pick_pose candidates.
+  # NOT yet dry-run/live validated as a MoveToPlace target.
+  translation: [-0.4984, 0.4515, 0.5492]
+  rotation:    [-1.0763, 2.3677, 1.9208]
 
 # ─────────────────────────────────────────────────────────────────────────
 #  EXPERIMENT KNOBS (2026-09-07) - what to change per trial condition
@@ -316,7 +320,19 @@ states:
   #   YAML rotation: [0.0245, -3.0701, 3.1183]
   # Delta from MoveToPick's captured joints: joint_3 +0.0463 rad, joint_5
   # +0.7526 rad (the actual gripper-orientation adjustment), everything else
-  # ~unchanged - confirms this is a wrist-only nudge, not a big move.
+  # ~unchanged.
+  # CORRECTION 2026-09-07: an earlier version of this comment called that "a
+  # wrist-only nudge, not a big move". True in joint space, misleading in
+  # Cartesian: forward kinematics puts MoveToPick's tool at
+  # [-0.5570, +0.0008, +0.2946] and PickUpPos's at [-0.4237, -0.0027, +0.2420]
+  # - the tool actually travels 14.3 cm (+13.3 cm x, -5.3 cm z). It is a real
+  # approach motion, and it is what swings the gripper from 41.7 deg off
+  # straight-down to 4.3 deg (i.e. perpendicular to the table).
+  # NOTE: this joint delta is NOT reusable at the place location. Applying it
+  # to MoveToPlace's joints yields 24.4 deg off straight-down (a 28.4 deg
+  # gripper-axis mismatch vs here), because joint_1 differs by 0.73 rad
+  # between the two sites - joint-space offsets do not carry across the
+  # workspace. PutDownPos needs its own capture.
   # joint_3 = +1.8129 rad here - 0.76 rad of margin from +2.57, still clear.
   # STEP 5 - descend/settle onto the object. ISOLATED-VALIDATION BYPASS
   # LIFTED 2026-09-07 (was `next: ReturnToZero` to test the pick side alone;
@@ -378,9 +394,8 @@ states:
   # velocity. That stopped being true when v_max-bounded pacing was added
   # (2026-08-26) - `duration` is now only a MINIMUM and is not the binding
   # constraint at these v_max values. See the EXPERIMENT KNOBS header.
-  # !!! `ref: place` resolves to the PLACEHOLDER place_pose - see its
-  # warning at the top of this file. Capture a real one before running
-  # this leg. !!!
+  # `ref: place` now resolves to a real capture (2026-09-07) - see place_pose
+  # at the top of this file. Not yet dry-run/live validated as a target.
   MoveToPlace:
     base: ComplianceCartesianMove
     target:
@@ -400,7 +415,7 @@ states:
     # participant, so it needs the same headroom to recover from a firm push
     # before FORCED ADVANCE gives up on it.
     settle_timeout: 8.0
-    next: PutDownPos
+    next: PlaceHover
     gains:
       mass:
         linear:  [3, 3, 3]
@@ -416,22 +431,91 @@ states:
   # rigid JointMove, so the final pose (and therefore the gripper
   # orientation) is exact rather than left to whichever IK branch the QP
   # happens to land on.
-  # !!! TARGET BELOW IS A PLACEHOLDER - it is a copy of PickUpPos's joint
-  # values, i.e. it would drive the arm back to the PICK location, not the
-  # place location. It exists only so the FSM is complete and parses.
-  # REPLACE before running this leg, captured the same way every other pose
-  # in this file was: physically jog the arm to the put-down pose, then read
-  # the "Joint current_q vs target" line from MoveToZero's startup log and
-  # paste the six current= values here.
-  # If you would rather define this leg by Cartesian pose than joint values,
-  # switch `base:` to ComplianceCartesianMove and give it a `target:` block -
-  # the trade-off is the same one discussed on PickUpPos (exact joint
-  # configuration vs. compliance during the descent). !!!
+  # STEP 8b - descend most of the way to the drop point and finish the
+  # reorientation, stopping 5.3 cm short. ADDED 2026-09-07 to mirror the pick
+  # side's two-stage structure (approach -> short final descent) instead of
+  # one 0.307 m rigid drop; 5.3 cm is exactly the height MoveToPick sits
+  # above PickUpPos, so the final leg matches the pick side's.
+  # Compliant (Cartesian), like MoveToPick and unlike the rigid final leg:
+  # this is the long travel portion, where a participant may be near.
+  # Doing the big reorientation HERE, 5.3 cm clear of the table, means
+  # PutDownPos below is a pure vertical descent with no attitude change near
+  # the object - safer than the pick side, which reorients on the way in.
+  # Target is explicit rather than `ref: place` + offset because it needs
+  # place's x,y with PICK's gripper orientation (verified: this rotation
+  # reproduces PickUpPos's orientation to 4e-4, and IK for the full pose
+  # converges to pos_err 3.7e-7 m / ori_err 7.0e-8 rad, 4.3 deg off
+  # straight-down). Nearest-limit margin at the resulting configuration is
+  # joint_5 +0.45 rad - the tightest anywhere in this file, so watch joint_5
+  # in the dry-run log.
+  PlaceHover:
+    base: ComplianceCartesianMove
+    target:
+      translation: [-0.4984, 0.4515, 0.2946]
+      rotation:    [0.0245, -3.0701, 3.1183]   # = PickUpPos's orientation
+    waypoints: []   # EXPERIMENT KNOB
+    duration: 4.0
+    v_max_lin: 0.05 # EXPERIMENT KNOB
+    v_max_ang: 0.05 # EXPERIMENT KNOB
+    stiffness: 20.0
+    damping: 10.0
+    weight: 100.0
+    contact_force_threshold: 8.0
+    clear_hold_time: 0.3
+    settle_timeout: 8.0
+    next: PutDownPos
+    gains:
+      mass:
+        linear:  [3, 3, 3]
+        angular: [2, 2, 2]
+      stiffness:
+        linear:  [100, 100, 100]
+        angular: [10, 10, 10]
+      damping:
+        linear:  [60, 60, 60]
+        angular: [15, 15, 15]
+
+  # TARGET BELOW IS COMPUTED, NOT CAPTURED (2026-09-07) - replaces the
+  # earlier placeholder (a copy of PickUpPos's joints, which pointed at the
+  # PICK location and would have released the object back where it came
+  # from).
+  #
+  # Derived from the operator's observation that the table height and object
+  # are the same at both sites, so two of the three things that define the
+  # put-down pose carry over from PickUpPos unchanged:
+  #   * grasp HEIGHT      z = 0.2420 m   (same table)
+  #   * gripper ORIENTATION  4.3 deg off straight-down, i.e. PickUpPos's
+  #     exact rotation matrix (same object, held the same way)
+  # Only x,y differ, and those come from place_pose. Target pose therefore:
+  #     translation [-0.4984, +0.4515, +0.2420]  (place x,y + pick-grasp z)
+  #     rotation    identical to PickUpPos
+  # Damped-least-squares IK for that pose (same URDF-derived model used
+  # earlier this session, FK cross-checked against home_pose to sub-mm)
+  # converges exactly - pos_err 1.4e-7 m, ori_err 2.9e-8 rad - and the
+  # resulting configuration reproduces the 4.3 deg gripper angle.
+  # Limit margins: joint_2 +1.10, joint_3 +2.00, joint_5 +0.60 rad. joint_5
+  # is the tightest of any pose in this file (PickUpPos has 1.24 there);
+  # still clear, but worth watching in the dry-run log.
+  #
+  # Both open questions from the first version of this comment are now
+  # settled (operator-confirmed 2026-09-07):
+  #  1. The drop point IS directly below the captured place approach pose,
+  #     so place's x,y are correct here (unlike the pick side, where
+  #     PickUpPos sits 13.3 cm in x from MoveToPick).
+  #  2. The 0.307 m single rigid descent is gone - PlaceHover above now
+  #     covers 0.255 m of it compliantly, leaving this leg a pure 5.3 cm
+  #     vertical drop with no reorientation, matching the pick side's
+  #     approach-to-grasp height exactly. Joint-space cost of this leg is
+  #     now max |delta| 0.145 rad (it was 1.26 rad as a single step).
+  # STILL UNVALIDATED: the IK model behind these joint values has no
+  # self-collision term (the `type: collision` constraint below is NOT
+  # modeled) - dry-run and watch for "QP failed to run()" before any live
+  # attempt, same as every other new pose here.
   PutDownPos:
     base: JointMove
     stiffness: 2.0
     v_max: 0.05   # EXPERIMENT KNOB - rad/s
-    target: [-0.0000, -0.5538, 1.8129, -0.0326, 0.8466, 0.0000]   # PLACEHOLDER - see above
+    target: [0.7269, -1.1431, 0.5742, 0.0291, 1.4938, 0.7012]   # COMPUTED - see above
     duration: 15.0   # MINIMUM only
     threshold: 0.05
     next: OpenGripper
@@ -517,10 +601,11 @@ transitions:
   #  5 PickUpPos       descend onto object
   #  6 CloseGripper    grasp
   #  7 RetreatToPick   lift back to pick approach pose
-  #  8 MoveToPlace     compliant transfer to place        [PLACEHOLDER POSE]
-  #  9 PutDownPos      descend to set object down         [PLACEHOLDER POSE]
+  #  8 MoveToPlace     compliant transfer to place
+  # 8b PlaceHover      compliant descent to 5.3 cm above drop
+  #  9 PutDownPos      final 5.3 cm vertical drop
   # 9b OpenGripper     release
-  # 10 RetreatToPlace  retreat to place approach pose     [PLACEHOLDER POSE]
+  # 10 RetreatToPlace  retreat to place approach pose
   #    ReturnToZero -> Idle
   - [MoveToZero,      MoveToSafe,      MoveToSafe,      Auto]
   - [MoveToSafe,      MoveToPick,      MoveToPick,      Auto]
@@ -534,7 +619,8 @@ transitions:
   # touching the not-yet-captured place poses. Same staged-validation pattern
   # used for every previous leg in this file.
   # - [RetreatToPick,   ReturnToZero,    ReturnToZero,    Auto]
-  - [MoveToPlace,     PutDownPos,      PutDownPos,      Auto]
+  - [MoveToPlace,     PlaceHover,      PlaceHover,      Auto]
+  - [PlaceHover,      PutDownPos,      PutDownPos,      Auto]
   - [PutDownPos,      OpenGripper,     OpenGripper,     Auto]
   - [OpenGripper,     RetreatToPlace,  RetreatToPlace,  Auto]
   - [RetreatToPlace,  ReturnToZero,    ReturnToZero,    Auto]
