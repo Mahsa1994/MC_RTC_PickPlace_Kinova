@@ -1,0 +1,404 @@
+[
+    {
+        "title": "base",
+        "flat": true,
+        "data": [
+            {
+                "title": "Operating Mode",
+                "value": "Running",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "title": "Control Mode",
+                "value": "Angular Joystick",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "title": "Servoing Mode",
+                "value": "Single Level",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            }
+        ]
+    },
+    {
+        "title": "actuators",
+        "grid": true,
+        "data": [
+            {
+                "isHeaderColumn": true,
+                "title": "actuator #1"
+            },
+            {
+                "isHeaderColumn": true,
+                "title": "actuator #2"
+            },
+            {
+                "isHeaderColumn": true,
+                "title": "actuator #3"
+            },
+            {
+                "isHeaderColumn": true,
+                "title": "actuator #4"
+            },
+            {
+                "isHeaderColumn": true,
+                "title": "actuator #5"
+            },
+            {
+                "isHeaderColumn": true,
+                "title": "actuator #6"
+            },
+            {
+                "isHeaderRow": true,
+                "title": "position"
+            },
+            {
+                "value": "55.807 °",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "value": "349.716 °",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "value": "103.912 °",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "value": "356.886 °",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "value": "47.683 °",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "value": "0.001 °",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "isHeaderRow": true,
+                "title": "torque"
+            },
+            {
+                "value": "-0.698 Nm",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "value": "-11.401 Nm",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "value": "7.991 Nm",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "value": "-0.138 Nm",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "value": "0.428 Nm",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "value": "-0.115 Nm",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "isHeaderRow": true,
+                "title": "velocity"
+            },
+            {
+                "value": "0 °/s",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "value": "0 °/s",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "value": "0 °/s",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "value": "0 °/s",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "value": "0 °/s",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "value": "0 °/s",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            }
+        ]
+    },
+    {
+        "title": "Interconnect",
+        "flat": true,
+        "data": [
+            {
+                "title": "Acceleration X",
+                "value": "-3.171 m/s²",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "title": "Acceleration Y",
+                "value": "0.319 m/s²",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "title": "Acceleration Z",
+                "value": "-9.541 m/s²",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "title": "Angular Velocity X",
+                "value": "4.016 °/s",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "title": "Angular Velocity Y",
+                "value": "-0.009 °/s",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "title": "Angular Velocity Z",
+                "value": "0.07 °/s",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            }
+        ]
+    },
+    {
+        "title": "end effector",
+        "flat": true,
+        "data": [
+            {
+                "title": "x",
+                "value": "-0.27 m",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "title": "y",
+                "value": "0.363 m",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "title": "z",
+                "value": "0.281 m",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "title": "thetax",
+                "value": "-3.045 °",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "title": "thetay",
+                "value": "162.395 °",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "title": "thetaz",
+                "value": "123.102 °",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "title": "Tool Twist Linear X",
+                "value": "0 m/s",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "title": "Tool Twist Linear Y",
+                "value": "0 m/s",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "title": "Tool Twist Linear Z",
+                "value": "0 m/s",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "title": "Tool Twist Angular X",
+                "value": "0 °/s",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "title": "Tool Twist Angular Y",
+                "value": "0 °/s",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "title": "Tool Twist Angular Z",
+                "value": "0 °/s",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "title": "Commanded Tool Pose X",
+                "value": "-0.27 m",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "title": "Commanded Tool Pose Y",
+                "value": "0.363 m",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "title": "Commanded Tool Pose Z",
+                "value": "0.281 m",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "title": "Commanded Tool Pose Theta X",
+                "value": "-3.045 °",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "title": "Commanded Tool Pose Theta Y",
+                "value": "162.382 °",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            },
+            {
+                "title": "Commanded Tool Pose Theta Z",
+                "value": "123.105 °",
+                "safety": {
+                    "status": 3,
+                    "safeties": []
+                }
+            }
+        ]
+    }
+]
