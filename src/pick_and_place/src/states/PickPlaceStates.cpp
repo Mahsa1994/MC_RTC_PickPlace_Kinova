@@ -636,6 +636,28 @@ struct ComplianceCartesianMove : mc_control::fsm::State
       }
     }
 
+    // DEADLOCK FIX 2026-09-07: while a human is holding the arm, glue the
+    // QP's internal model to the real arm.
+    //
+    // Pausing the clock freezes the trajectory TARGET, but it never stopped
+    // the control robot from converging to that frozen target. ctl.robot()
+    // integrates open-loop and (before this) was resynced only at state
+    // start - so during a hold the model walked to the target while the
+    // real arm was physically restrained, model-vs-real divergence grew
+    // past the bridge's model_real_gate (0.05 rad), the bridge refused to
+    // publish, and because nothing resyncs mid-run the arm could then NEVER
+    // catch up. Live HoverToPlace test: model joint_1 = 0.9713 rad vs real
+    // 0.2171 rad, gate tripped, permanent deadlock - the state kept
+    // reporting "HOLDING" while the bridge had already stopped publishing
+    // for an unrelated reason.
+    //
+    // Resyncing every tick while paused keeps the model on top of reality,
+    // so the divergence never accumulates: the published command stays
+    // within a tick of the encoders (the bridge's delta_max clamp then has
+    // nothing to fight), and on release the model resumes from where the
+    // arm actually is rather than from a fiction.
+    if(paused_) resyncControlToReal(ctl);
+
     if(!paused_) t_elapsed_ += dt_;
 
     task_->targetPose(targetAt(std::min(t_elapsed_, effective_duration_)));
@@ -702,15 +724,38 @@ struct ComplianceCartesianMove : mc_control::fsm::State
       // clock is running, and the live force, every time it prints.
       // Escalates to an error past the deadline (mirrors CartesianMove), so
       // an arm that is holding rather than advancing is impossible to miss.
+      // Model-vs-real divergence, computed here rather than only in the
+      // bridge (2026-09-07). The bridge's model_real_gate blocks publishing
+      // once this exceeds its threshold, but the STATE could not see that -
+      // during a live deadlock this line kept reporting "HOLDING, will not
+      // advance" while the real reason nothing moved was that the bridge had
+      // silently stopped publishing 28 s earlier. Surfacing it here makes
+      // the two failure modes distinguishable in one log line.
+      double maxdev = 0.0;
+      std::string devjoint;
+      {
+        const auto & mq  = ctl.robot().mbc().q;
+        const auto & rq  = ctl.realRobot().mbc().q;
+        const auto & mbs = ctl.robot().mb().joints();
+        for(size_t ji = 0; ji < mbs.size(); ++ji)
+        {
+          if(mbs[ji].dof() != 1) continue;
+          double d = std::abs(mq[ji][0] - rq[ji][0]);
+          if(d > maxdev) { maxdev = d; devjoint = mbs[ji].name(); }
+        }
+      }
+
       const bool past_deadline = t_elapsed_ > effective_duration_ + settle_timeout_;
       if(past_deadline && !advance_on_timeout_)
         mc_rtc::log::error(
             "[{}] NOT converged {:.2f}s past schedule (pos_err={:.4f} m, ori_err={:.4f} rad) - "
             "HOLDING here, will NOT advance to {} until the real arm reaches the target. "
-            "clock {:.2f}/{:.2f}s{} | force {:.2f} N",
+            "clock {:.2f}/{:.2f}s{} | force {:.2f} N | model-vs-real {:.4f} rad on '{}'{}",
             name(), t_elapsed_ - effective_duration_ - settle_timeout_, pos_err, ori_err,
             next_state_, t_elapsed_, effective_duration_,
-            paused_ ? " PAUSED - contact" : " running", f);
+            paused_ ? " PAUSED - contact" : " running", f, maxdev, devjoint,
+            maxdev > 0.05 ? "  <<< EXCEEDS model_real_gate - bridge is NOT publishing, arm cannot"
+                            " recover on its own; restart the state/controller" : "");
       else
         mc_rtc::log::warning(
             "[{}] Settling: pos_err={:.4f} m, ori_err={:.4f} rad | clock {:.2f}/{:.2f}s{} | "
