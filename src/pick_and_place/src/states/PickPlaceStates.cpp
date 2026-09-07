@@ -401,6 +401,12 @@ struct ComplianceCartesianMove : mc_control::fsm::State
   double contact_force_threshold_ = 8.0;  // N
   double clear_hold_time_         = 0.3;  // s of sustained clear force before resuming
 
+  // What to do if the real arm still hasn't reached the target
+  // settle_timeout_ seconds past schedule. false (default) = HOLD and keep
+  // logging loudly; true = advance anyway. See the long note at the
+  // decision site in run() for why the default flipped on 2026-09-07.
+  bool advance_on_timeout_ = false;
+
   // Runtime
   std::shared_ptr<mc_tasks::force::ImpedanceTask> task_;
   std::vector<sva::PTransformd> waypts_; // full chain: start -> waypoints -> target
@@ -425,6 +431,7 @@ struct ComplianceCartesianMove : mc_control::fsm::State
     if(config.has("gains"))          gains_config_   = config("gains");
     if(config.has("contact_force_threshold")) contact_force_threshold_ = config("contact_force_threshold");
     if(config.has("clear_hold_time"))         clear_hold_time_         = config("clear_hold_time");
+    if(config.has("advance_on_timeout"))      advance_on_timeout_      = config("advance_on_timeout");
     if(config.has("v_max_lin"))               v_max_lin_               = config("v_max_lin");
     if(config.has("v_max_ang"))               v_max_ang_               = config("v_max_ang");
 
@@ -551,6 +558,7 @@ struct ComplianceCartesianMove : mc_control::fsm::State
     // says the arm is in contact, resume only after it's been clear for
     // clear_hold_time_ (avoids chattering pause/resume at the threshold).
     double f = task_->measuredWrench().force().norm();
+    const bool was_paused = paused_;
     if(f > contact_force_threshold_)
     {
       paused_      = true;
@@ -560,6 +568,32 @@ struct ComplianceCartesianMove : mc_control::fsm::State
     {
       clear_timer_ += dt_;
       if(clear_timer_ >= clear_hold_time_) paused_ = false;
+    }
+
+    // CLOCK DIAGNOSTIC (2026-09-07): edge-triggered, so it prints once per
+    // pause and once per resume rather than every tick. Added after a live
+    // HoverToPlace test where the arm was held, stopped, resumed on release,
+    // but then never reconverged and FORCED ADVANCE fired mid-traverse -
+    // the question being whether the trajectory clock genuinely froze and
+    // restarted, or whether something else stalled it. t_elapsed_ is the
+    // clock itself, so comparing its value across the pause/resume pair
+    // answers that directly: it must be identical at PAUSE and RESUME.
+    if(paused_ != was_paused)
+    {
+      if(paused_)
+      {
+        mc_rtc::log::warning(
+            "[{}] CLOCK PAUSED  - contact {:.2f} N > {:.2f} N threshold. "
+            "t_elapsed frozen at {:.2f}s of {:.2f}s",
+            name(), f, contact_force_threshold_, t_elapsed_, effective_duration_);
+      }
+      else
+      {
+        mc_rtc::log::warning(
+            "[{}] CLOCK RESUMED - clear for {:.2f}s (force now {:.2f} N). "
+            "t_elapsed resuming from {:.2f}s of {:.2f}s",
+            name(), clear_hold_time_, f, t_elapsed_, effective_duration_);
+      }
     }
 
     if(!paused_) t_elapsed_ += dt_;
@@ -620,8 +654,29 @@ struct ComplianceCartesianMove : mc_control::fsm::State
 
     if((tick_++ % 200) == 0)
     {
-      mc_rtc::log::warning("[{}] Settling: pos_err={:.4f} m, ori_err={:.4f} rad{}",
-                           name(), pos_err, ori_err, paused_ ? " (paused - contact)" : "");
+      // Clock + contact state added 2026-09-07 alongside the edge-triggered
+      // CLOCK PAUSED/RESUMED lines above: during a live HoverToPlace stall
+      // the only thing this line said was that pos_err was static, which
+      // could not distinguish "still paused on contact" from "resumed but
+      // not converging". Now it states the clock position, whether the
+      // clock is running, and the live force, every time it prints.
+      // Escalates to an error past the deadline (mirrors CartesianMove), so
+      // an arm that is holding rather than advancing is impossible to miss.
+      const bool past_deadline = t_elapsed_ > effective_duration_ + settle_timeout_;
+      if(past_deadline && !advance_on_timeout_)
+        mc_rtc::log::error(
+            "[{}] NOT converged {:.2f}s past schedule (pos_err={:.4f} m, ori_err={:.4f} rad) - "
+            "HOLDING here, will NOT advance to {} until the real arm reaches the target. "
+            "clock {:.2f}/{:.2f}s{} | force {:.2f} N",
+            name(), t_elapsed_ - effective_duration_ - settle_timeout_, pos_err, ori_err,
+            next_state_, t_elapsed_, effective_duration_,
+            paused_ ? " PAUSED - contact" : " running", f);
+      else
+        mc_rtc::log::warning(
+            "[{}] Settling: pos_err={:.4f} m, ori_err={:.4f} rad | clock {:.2f}/{:.2f}s{} | "
+            "force {:.2f} N (pause threshold {:.2f} N)",
+            name(), pos_err, ori_err, t_elapsed_, effective_duration_,
+            paused_ ? " PAUSED - contact" : " running", f, contact_force_threshold_);
 
       // DIAGNOSTIC (2026-08-26): a live MoveToPick stall showed pos_err/
       // ori_err and the SIGN CHECK world_dev completely static (not slowly
@@ -646,21 +701,36 @@ struct ComplianceCartesianMove : mc_control::fsm::State
 
     if(t_elapsed_ > effective_duration_ + settle_timeout_)
     {
-      // FORCED ADVANCE (2026-08-24): still transitions on non-convergence,
-      // unlike CartesianMove/MoveHome (which now holds instead - see the
-      // note there), so a stuck compliant move can't hang an experiment
-      // session mid-trial. But this means the arm may not actually be at
-      // the target (e.g. CloseGripper could close on empty air) - tagged
-      // distinctly and consistently ("FORCED ADVANCE") so it's greppable in
-      // saved session logs and never reads as an ordinary "Reached target"
-      // success.
-      mc_rtc::log::error(
-          "[{}] FORCED ADVANCE -> {}: NOT converged after {:.2f}s extra "
-          "(pos_err={:.4f} m, ori_err={:.4f} rad) - target may not have been "
-          "reached; treat this trial/cycle as suspect.",
-          name(), next_state_, settle_timeout_, pos_err, ori_err);
-      output(next_state_);
-      return true;
+      // DEFAULT CHANGED 2026-09-07: advance -> hold.
+      //
+      // This used to force-advance unconditionally (added 2026-08-24) on the
+      // reasoning that a stuck compliant move shouldn't hang an experiment
+      // session mid-trial. A live HoverToPlace test showed the cost of that:
+      // the operator held the arm, released it, it failed to reconverge, and
+      // this timeout advanced the FSM into UnloadObj - which tipped the
+      // carried container 0.77 rad short of the unload site, i.e. dumped the
+      // payload in the wrong place, mid-traverse. "Don't hang the session"
+      // is not worth an irreversible physical action at an unintended
+      // location, and CartesianMove already made exactly this change on
+      // 2026-08-19 (it holds and escalates its log instead) - the two are
+      // now consistent.
+      //
+      // Set `advance_on_timeout: true` per-state to opt back in where the
+      // next state is harmless if the target was missed. Do NOT set it where
+      // the next state grips, releases, tips, or otherwise commits to
+      // something physical.
+      if(advance_on_timeout_)
+      {
+        mc_rtc::log::error(
+            "[{}] FORCED ADVANCE -> {}: NOT converged after {:.2f}s extra "
+            "(pos_err={:.4f} m, ori_err={:.4f} rad) - target may not have been "
+            "reached; treat this trial/cycle as suspect.",
+            name(), next_state_, settle_timeout_, pos_err, ori_err);
+        output(next_state_);
+        return true;
+      }
+      // Holding: the periodic log above escalates to the "NOT converged ...
+      // holding here" error, so this is loud rather than silent.
     }
 
     return false;
