@@ -3,7 +3,9 @@
 #include <mc_rtc/logging.h>
 #include <mc_tasks/AdmittanceTask.h>
 #include <mc_tasks/PostureTask.h>
+#include <mc_rtc/gui.h>
 #include <cmath>
+#include <string>
 
 struct HandGuideState : mc_control::fsm::State
 {
@@ -112,10 +114,35 @@ struct HandGuideState : mc_control::fsm::State
         ctl.solver(), ctl.robot().robotIndex(), 1.0, 1.0);
     ctl.solver().addTask(postureTask_);
 
+    // Enter HandGuide already holding: the operator is not pushing yet, so the
+    // correct initial behaviour is to keep the pose we arrived at, not to float.
+    holding_   = true;
+    hold_pose_ = ctl.realRobot().frame("tool_frame").position();
+
     ctl.gui()->addElement({"Control"},
         mc_rtc::gui::Button("Stop Hand-Guiding", [this]() {
           stopRequested_ = true;
-        }));
+        }),
+        // Live readout: which branch run() is in, and the wrench norms driving
+        // the decision. Tune the four thresholds below against THESE numbers -
+        // they are post-deadband, and the moment channel carries the ~0.45 Nm
+        // pose-dependent phantom moment (see INCIDENT_2026-09-04.md), so the
+        // moment thresholds must sit above whatever this shows at rest.
+        mc_rtc::gui::Label("Guide state", [this]() {
+          return holding_ ? std::string("HOLD (latched)") : std::string("GUIDING");
+        }),
+        mc_rtc::gui::ArrayLabel("wrench norms", {"|F| N", "|M| Nm"}, [this]() {
+          const auto w = admTask_->measuredWrench();
+          return Eigen::Vector2d(w.force().norm(), w.couple().norm());
+        }),
+        mc_rtc::gui::NumberInput("hold when |F| below",
+            [this]() { return hold_force_; }, [this](double v) { hold_force_ = v; }),
+        mc_rtc::gui::NumberInput("hold when |M| below",
+            [this]() { return hold_moment_; }, [this](double v) { hold_moment_ = v; }),
+        mc_rtc::gui::NumberInput("guide when |F| above",
+            [this]() { return guide_force_; }, [this](double v) { guide_force_ = v; }),
+        mc_rtc::gui::NumberInput("guide when |M| above",
+            [this]() { return guide_moment_; }, [this](double v) { guide_moment_ = v; }));
 
     mc_rtc::log::success("[HandGuideState] Active — push the arm!");
   }
@@ -133,7 +160,63 @@ struct HandGuideState : mc_control::fsm::State
     // from a position integrator into pure velocity following: the position
     // error is then always exactly one timestep of refVel, so it cannot wind
     // up, and the QP is driven by the feedforward velocity as intended.
-    admTask_->targetPose(ctl.realRobot().frame("tool_frame").position());
+    // HOLD LATCH 2026-09-16.
+    // The re-anchor below is correct while the operator is pushing - it turns
+    // the task into pure velocity following so the position error cannot wind
+    // up (see the ANTI-WINDUP note above). But it also means the task has NO
+    // restoring term and no memory of a commanded pose, so the instant the
+    // push stops there is nothing holding position: any residual wrench keeps
+    // integrating, and gravity sag is silently accepted as the new setpoint
+    // rather than corrected. That is why HandGuide drifts where HoldPosition
+    // does not - HoldPosition has a fixed PostureTask target to spring back to
+    // (see UpdateHoldTarget.h), and HandGuide has none.
+    //
+    // So: detect hands-off from the measured wrench and latch the pose at that
+    // instant, then keep re-asserting it. Re-asserting every tick is required,
+    // not optional - AdmittanceTask::update() integrates its own target
+    // (`target(delta * target())`) after run() returns, so a latch written once
+    // would creep away under any residual refVel.
+    //
+    // Hysteresis (hold_* below, guide_* above) stops it chattering at the
+    // boundary. Force is the more trustworthy channel of the two: at rest a
+    // healthy run reports force (0.00, 0.00, 0.00) N but moment (0.10, 0.14,
+    // -0.42) Nm, because the world-frame tare cannot cancel a moment whose
+    // lever arm rotates with the wrist. Hence the moment thresholds default
+    // well above the force ones. Known cost: a deliberate pure-rotation guide
+    // with little net force will latch to HOLD. Fixing that properly means
+    // removing the phantom moment at source (gripper payload correction), not
+    // lowering these thresholds below it.
+    const auto w_meas = admTask_->measuredWrench();
+    const double f_norm = w_meas.force().norm();
+    const double m_norm = w_meas.couple().norm();
+
+    if(holding_)
+    {
+      if(f_norm > guide_force_ || m_norm > guide_moment_)
+      {
+        holding_ = false;
+        mc_rtc::log::info("[HandGuideState] GUIDING (|F|={:.2f} N, |M|={:.2f} Nm)",
+                          f_norm, m_norm);
+      }
+    }
+    else if(f_norm < hold_force_ && m_norm < hold_moment_)
+    {
+      holding_   = true;
+      hold_pose_ = ctl.realRobot().frame("tool_frame").position();
+      mc_rtc::log::info("[HandGuideState] HOLD latched (|F|={:.2f} N, |M|={:.2f} Nm)",
+                        f_norm, m_norm);
+    }
+
+    if(holding_)
+    {
+      // Fixed target -> the PD term finally has an error to act on, so the arm
+      // springs back to where it was released instead of accepting drift.
+      admTask_->targetPose(hold_pose_);
+    }
+    else
+    {
+      admTask_->targetPose(ctl.realRobot().frame("tool_frame").position());
+    }
 
     if(stopRequested_)
     {
@@ -155,6 +238,15 @@ private:
   std::shared_ptr<mc_tasks::force::AdmittanceTask> admTask_;
   std::shared_ptr<mc_tasks::PostureTask> postureTask_;
   bool stopRequested_ = false;
+
+  // Hold latch. Thresholds are post-deadband wrench norms and are live-tunable
+  // from the GUI; these defaults are starting points, not measured values.
+  bool holding_ = true;
+  sva::PTransformd hold_pose_ = sva::PTransformd::Identity();
+  double hold_force_   = 0.3;   // N   - enter HOLD below this
+  double hold_moment_  = 0.8;   // Nm  - must stay above the ~0.45 Nm phantom
+  double guide_force_  = 0.8;   // N   - leave HOLD above this
+  double guide_moment_ = 1.2;   // Nm
 };
 
 EXPORT_SINGLE_STATE("KHG::HandGuideState", HandGuideState)
