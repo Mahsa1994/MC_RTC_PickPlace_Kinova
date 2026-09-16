@@ -49,7 +49,10 @@ public:
     // solve, and hard clamps on the result. Both exist because a plain
     // inverse blows up near kinematic singularities (noise gets amplified
     // into huge spurious force spikes) - see README.md.
-    wrench_dls_lambda2_ = this->declare_parameter("wrench_dls_lambda2", 2);
+    // NB: must stay a double literal. An integer default (`2`) makes rclcpp
+    // declare the ROS parameter as type integer, and every `-p
+    // wrench_dls_lambda2:=X.0` override is then rejected at startup.
+    wrench_dls_lambda2_ = this->declare_parameter("wrench_dls_lambda2", 2.0);
     max_force_norm_     = this->declare_parameter("max_force_estimate", 9.0);   // N
     max_moment_norm_    = this->declare_parameter("max_moment_estimate", 10.0);  // Nm
 
