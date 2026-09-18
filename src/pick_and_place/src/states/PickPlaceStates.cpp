@@ -155,6 +155,14 @@ struct CartesianMove : mc_control::fsm::State
     tick_      = 0;
     target_    = resolveTarget(ctl, target_cfg_, ee_frame_);
 
+    {
+      auto cur0 = ctl.robot().frame(ee_frame_).position();
+      Eigen::Vector3d err = sva::rotationError(cur0.rotation(), target_.rotation());
+      mc_rtc::log::warning(
+          "[{}] DEBUG rotationError(cur,target) = ({:.4f}, {:.4f}, {:.4f}) rad, norm={:.4f}",
+          name(), err.x(), err.y(), err.z(), err.norm());
+    }
+
     // Back off the posture task so the QP respects the Cartesian trajectory.
     if(auto pt = ctl.getPostureTask(ctl.robot().name()))
     {

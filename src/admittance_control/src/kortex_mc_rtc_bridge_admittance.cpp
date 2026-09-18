@@ -39,7 +39,6 @@ public:
     delta_max_  = this->declare_parameter("delta_max", 0.05);
     model_real_gate_ = this->declare_parameter("model_real_gate", 0.05); // rad; hard publish gate, see run()
     pub_decim_  = this->declare_parameter("publish_decimation", 10); // 1kHz/10 = 100Hz
-    loop_dt_ = this->declare_parameter("loop_dt", 0.001);   // seconds; sim keeps 0.001
 
     torque_sign_    = this->declare_parameter("torque_sign", 1.0);   // flip to -1.0 if inverted on real
     deadband_force_ = this->declare_parameter("deadband_force", 1.5);  // sim value; real: start 6.0
@@ -144,7 +143,15 @@ private:
   std::vector<double> last_enc_q_;
   bool first_cmd_checked_{false};
   int pub_count_{0};
-  double loop_dt_{0.001};
+  // Always set from gc_->timestep() once the controller is initialized (see
+  // jointStateCallback) - must match the controller's configured Timestep
+  // exactly, since the QP/trajectory tasks integrate assuming this many
+  // seconds pass per gc_->run() call regardless of real wall-clock time.
+  // Calling run() faster than this makes the internal model race ahead of
+  // real time (e.g. a "10s" trajectory finishes in 2s of wall time), which
+  // is what produced the runaway QP divergence and eventual segfault seen
+  // on 2026-09-18.
+  double loop_dt_{0.005};
 
   double torque_sign_{1.0};
   double deadband_force_{1.5};
@@ -264,6 +271,13 @@ private:
       mc_rtc::log::info("[KortexBridge] Joint {} | init_q: {} | mbc.q: {}",
                         ref_order[i], init_q[i], gc_->robot().mbc().q[idx][0]);
     }
+
+    // Drive the control loop at exactly the controller's configured
+    // Timestep. The QP/trajectory tasks assume this many seconds pass per
+    // gc_->run() call regardless of real elapsed time, so any mismatch here
+    // makes the internal model race ahead of (or lag behind) real time.
+    loop_dt_ = gc_->timestep();
+    mc_rtc::log::info("[KortexBridge] Control loop period set to controller timestep: {} s", loop_dt_);
 
     initialized_ = true;
     timer_ = this->create_wall_timer(
