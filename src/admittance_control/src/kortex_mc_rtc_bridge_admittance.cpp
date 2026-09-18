@@ -19,8 +19,6 @@
 #include <SpaceVecAlg/SpaceVecAlg>
 
 #include <RBDyn/ID.h>
-#include <RBDyn/Jacobian.h>
-#include <Eigen/QR>
 
 #include <mutex>
 #include <atomic>
@@ -41,19 +39,11 @@ public:
     pub_decim_  = this->declare_parameter("publish_decimation", 10); // 1kHz/10 = 100Hz
 
     torque_sign_    = this->declare_parameter("torque_sign", 1.0);   // flip to -1.0 if inverted on real
-    deadband_force_ = this->declare_parameter("deadband_force", 1.5);  // sim value; real: start 6.0
-    deadband_moment_= this->declare_parameter("deadband_moment", 0.5); // sim value; real: start 1.5
 
-    // Damped-least-squares regularization for the Jacobian-transpose wrench
-    // solve, and hard clamps on the result. Both exist because a plain
-    // inverse blows up near kinematic singularities (noise gets amplified
-    // into huge spurious force spikes) - see README.md.
-    // NB: must stay a double literal. An integer default (`2`) makes rclcpp
-    // declare the ROS parameter as type integer, and every `-p
-    // wrench_dls_lambda2:=X.0` override is then rejected at startup.
-    wrench_dls_lambda2_ = this->declare_parameter("wrench_dls_lambda2", 2.0);
-    max_force_norm_     = this->declare_parameter("max_force_estimate", 9.0);   // N
-    max_moment_norm_    = this->declare_parameter("max_moment_estimate", 10.0);  // Nm
+    // Per-joint torque deadband (Nm). Reusing the old Cartesian moment
+    // deadband's value as the starting point for the joint-space version -
+    // same units (Nm), not yet re-tuned per joint.
+    deadband_torque_ = this->declare_parameter("deadband_torque", 0.5);
 
     // Velocity gate for the wrench estimate (rad/s). Raised from the old
     // 0.05/0.15 defaults now that inertial torque is compensated (see the
@@ -128,11 +118,11 @@ private:
   std::vector<double> latest_efforts_;
   std::mutex effort_mutex_;
 
-  // Software-level Wrench Tare Variables
-  bool tared_{false};
-  int tare_ticks_{0};
-  Eigen::Vector3d bias_force_world_{0.0, 0.0, 0.0};
-  Eigen::Vector3d bias_moment_world_{0.0, 0.0, 0.0};
+  // Software-level per-joint torque tare (gravity/inertia-residual bias),
+  // sized to refJointOrder() once initialized.
+  bool tau_tared_{false};
+  int tau_tare_ticks_{0};
+  Eigen::VectorXd bias_tau_;
 
 
   bool dry_run_{true};
@@ -154,12 +144,8 @@ private:
   double loop_dt_{0.005};
 
   double torque_sign_{1.0};
-  double deadband_force_{1.5};
-  double deadband_moment_{0.5};
+  double deadband_torque_{0.5};
 
-  double wrench_dls_lambda2_{4.0};
-  double max_force_norm_{60.0};
-  double max_moment_norm_{15.0};
   double qd_gate_low_{0.05};
   double qd_gate_high_{0.3};
   double accel_filter_tau_{0.1};
@@ -188,19 +174,19 @@ private:
     return dof_map;
   }
 
-  // Soft (continuous) deadband: shrink the vector's magnitude by `db` and
-  // keep its direction, instead of zeroing it below a hard threshold.
-  // A hard cutoff is discontinuous exactly where guiding happens: 0.49 N
-  // gives nothing, 0.51 N gives the full 0.51 N. That cliff chatters -
-  // push past the threshold, the arm moves, the measured force falls back
-  // under it, the wrench snaps to zero, the arm stops, push again. Soft
-  // thresholding rejects sub-deadband noise exactly as before (output is
-  // still identically zero below `db`) but has no step at the crossing.
-  static Eigen::Vector3d softDeadband(const Eigen::Vector3d &v, double db)
+  // Soft (continuous) deadband: shrink the value's magnitude by `db` instead
+  // of zeroing it below a hard threshold. A hard cutoff is discontinuous
+  // exactly where guiding happens: 0.49 Nm gives nothing, 0.51 Nm gives the
+  // full 0.51 Nm. That cliff chatters - push past the threshold, the joint
+  // moves, the measured torque falls back under it, it snaps to zero, the
+  // joint stops, push again. Soft thresholding rejects sub-deadband noise
+  // exactly as before (output is still identically zero below `db`) but has
+  // no step at the crossing.
+  static double softDeadband(double v, double db)
   {
-    const double n = v.norm();
+    const double n = std::abs(v);
     if (n <= db)
-      return Eigen::Vector3d::Zero();
+      return 0.0;
     return v * ((n - db) / n);
   }
 
@@ -255,6 +241,11 @@ private:
         }
 
     gc_->init(init_q);
+
+    // Per-joint external torque estimate, published each control tick below
+    // and consumed by HandGuideState's joint-space admittance law.
+    gc_->controller().datastore().make<Eigen::VectorXd>(
+        "KHG::tau_ext", Eigen::VectorXd::Zero(static_cast<int>(ref_order.size())));
 
     for (const auto &fs : gc_->robot().forceSensors())
     {
@@ -384,178 +375,117 @@ private:
         tau_bias[it->second] = mbc_id.jointTorque[i][0];
     }
 
-    ///// 4- Full Jacobian of end-effector frame
-    rbd::Jacobian jac(mb, "tool_frame");
-    Eigen::MatrixXd J_full = jac.jacobian(mb, robot.mbc());
-
-    ///// 5- Extract only active joint components
+    ///// 4- Per-joint external torque residual (no Jacobian/Cartesian solve -
+    // this is the final signal now, not an intermediate for a wrench).
     auto ref_order = robot.refJointOrder();
-    Eigen::MatrixXd J_active = Eigen::MatrixXd::Zero(6, ref_order.size());
-    Eigen::VectorXd tau_ext_active = Eigen::VectorXd::Zero(ref_order.size());
-
+    Eigen::VectorXd tau_ext = Eigen::VectorXd::Zero(ref_order.size());
     for (size_t i = 0; i < ref_order.size(); ++i)
     {
       auto it = dof_map.find(ref_order[i]);
       if (it != dof_map.end())
-      {
-        int col_idx = it->second;
-        J_active.col(i) = J_full.col(col_idx);
-        tau_ext_active[i] = tau_bias[col_idx] - torque_sign_ * tau_meas[col_idx];
-      }
+        tau_ext[i] = tau_bias[it->second] - torque_sign_ * tau_meas[it->second];
     }
 
-    ///// 6- Solve J_active^T * F_world = tau_ext_active via damped least squares.
-    // A plain solve/pseudo-inverse blows up near kinematic singularities
-    // (routine during reach/pick-place motion): any torque-sensor noise in
-    // that direction gets amplified into a huge spurious force spike. This is
-    // the most likely cause of "goes crazy" behavior at specific
-    // configurations. lambda2 trades singularity robustness for estimate bias
-    // - re-tune wrench_dls_lambda2_ against real data if needed.
-    Eigen::MatrixXd JT  = J_active.transpose(); // 6x6 for a 6-DOF arm
-    Eigen::MatrixXd JJT = JT * JT.transpose();
-    Eigen::VectorXd F_world =
-        JT.transpose() * (JJT + wrench_dls_lambda2_ * Eigen::MatrixXd::Identity(JJT.rows(), JJT.rows()))
-                              .ldlt()
-                              .solve(tau_ext_active);
-
-    // Split wrench into moment and force components (world frame)
-    Eigen::Vector3d moment_world(F_world[0], F_world[1], F_world[2]);
-    Eigen::Vector3d force_world(F_world[3], F_world[4], F_world[5]);
-
-    // Hard safety clamp: whatever the estimator produces, never inject a
-    // wrench larger than this into the compliance controller. Bounds how far
-    // a single bad estimate (residual singularity ringing, glitch) can
-    // deflect the arm, independent of how well-tuned lambda2 is.
-    if (force_world.norm() > max_force_norm_)
-      force_world *= max_force_norm_ / force_world.norm();
-    if (moment_world.norm() > max_moment_norm_)
-      moment_world *= max_moment_norm_ / moment_world.norm();
-
+    if (bias_tau_.size() != static_cast<int>(ref_order.size()))
+      bias_tau_ = Eigen::VectorXd::Zero(ref_order.size());
 
     // delay at startup
     static int startup_delay_ticks = 0;
 
-    // Ignore wrench during initial stabilization period
+    // Ignore torque estimate during initial stabilization period
     const int startup_ticks_max = static_cast<int>(3.0 / loop_dt_);
 
     if (startup_delay_ticks < startup_ticks_max) //3000
     {
-      // During the 3-second startup delay, we keep command tracking active but force wrench to 0
+      // During the 3-second startup delay, we keep command tracking active but force the estimate to 0
       startup_delay_ticks++;
-      force_world.setZero();
-      moment_world.setZero();
+      tau_ext.setZero();
     }
     else
     {
-      // Dynamic World-Frame Tare (Zeroing) - runs AFTER the 3s delay is complete
-      if (!tared_)
+      // Dynamic per-joint tare (zeroing) - runs AFTER the 3s delay is complete
+      if (!tau_tared_)
       {
         const int tare_ticks_max = static_cast<int>(0.5 / loop_dt_);   // 0.5 s of samples
-        if (tare_ticks_ < tare_ticks_max)
+        if (tau_tare_ticks_ < tare_ticks_max)
         {
-          bias_force_world_ += force_world;
-          bias_moment_world_ += moment_world;
-          tare_ticks_++;
+          bias_tau_ += tau_ext;
+          tau_tare_ticks_++;
         }
         else
         {
-          bias_force_world_ /= tare_ticks_;
-          bias_moment_world_ /= tare_ticks_;
-          tared_ = true;
-          mc_rtc::log::success("[KortexBridge] World-frame wrench tared successfully!");
-          mc_rtc::log::success("[KortexBridge] Tared. Bias force: ({:.2f},{:.2f},{:.2f}) N, norm={:.2f}",
-                     bias_force_world_.x(), bias_force_world_.y(), bias_force_world_.z(),
-                     bias_force_world_.norm());
+          bias_tau_ /= tau_tare_ticks_;
+          tau_tared_ = true;
+          mc_rtc::log::success("[KortexBridge] Per-joint torque tared successfully!");
         }
-        force_world.setZero();
-        moment_world.setZero();
+        tau_ext.setZero();
       }
       else
       {
-        // Subtract tared gravity offsets
-        force_world -= bias_force_world_;
-        moment_world -= bias_moment_world_;
+        // Subtract tared gravity/inertia-model residual bias
+        tau_ext -= bias_tau_;
       }
     }
 
-    //// 7- Rotate the tared wrench from World Frame to Sensor Local Frame
-    Eigen::Matrix3d R_world_sensor = robot.bodyPosW("tool_frame").rotation();
-
-    Eigen::Vector3d moment_sensor = R_world_sensor * moment_world;
-    Eigen::Vector3d force_sensor = R_world_sensor * force_world;
-
-    // Raw wrench (Local frame), post-tare but before the 50ms low-pass
+    // Raw (Local, per-joint) torque, post-tare but before the 50ms low-pass
     // filter and the deadband - kept aside purely so the periodic log below
     // can show what the estimator actually computed vs. what survived
     // filtering/deadbanding.
-    const Eigen::Vector3d raw_force_sensor  = force_sensor;
-    const Eigen::Vector3d raw_moment_sensor = moment_sensor;
+    const Eigen::VectorXd raw_tau_ext = tau_ext;
 
     // Filtering + deadbanding (only after taring)
-    static Eigen::Vector3d filtered_force = Eigen::Vector3d::Zero();
-    static Eigen::Vector3d filtered_moment = Eigen::Vector3d::Zero();
-    if (tared_)
+    static Eigen::VectorXd filtered_tau = Eigen::VectorXd::Zero(ref_order.size());
+    if (filtered_tau.size() != static_cast<int>(ref_order.size()))
+      filtered_tau = Eigen::VectorXd::Zero(ref_order.size());
+    if (tau_tared_)
     {
       // 1. Accumulate the filter state normally (no resetting here!)
       const double tau_f = 0.05;                          // 50 ms time constant
       const double alpha_f = loop_dt_ / (loop_dt_ + tau_f);
-      filtered_force  = (1.0 - alpha_f) * filtered_force  + alpha_f * force_sensor;
-      filtered_moment = (1.0 - alpha_f) * filtered_moment + alpha_f * moment_sensor;
+      filtered_tau = (1.0 - alpha_f) * filtered_tau + alpha_f * tau_ext;
 
-      // 2. temporary copies for output thresholding
-      Eigen::Vector3d output_force = filtered_force;
-      Eigen::Vector3d output_moment = filtered_moment;
+      // 2. Apply the per-joint soft deadband on a temporary copy (see softDeadband)
+      Eigen::VectorXd output_tau = filtered_tau;
+      for (int i = 0; i < output_tau.size(); ++i)
+        output_tau[i] = softDeadband(output_tau[i], deadband_torque_);
 
-      // 3. Apply the soft deadband on the temporary copies (see softDeadband)
-      output_force  = softDeadband(output_force,  deadband_force_);
-      output_moment = softDeadband(output_moment, deadband_moment_);
-
-      // 4. Update the active sensor readings to send to mc_rtc
-      force_sensor = output_force;
-      moment_sensor = output_moment;
+      // 3. Update the active reading to send to mc_rtc
+      tau_ext = output_tau;
     }
 
-    ///// 8- Inject estimated wrench into mc_rtc
-    std::map<std::string, sva::ForceVecd> wrenches;
-
-    double max_qd = 0.0;
-    for (int i = 0; i < mb.nrJoints(); ++i)
+    ///// 5- Per-joint velocity gate: each joint's own motion suppresses its
+    // own torque reading (rejects inertial jitter as "contact"), rather than
+    // any joint's motion suppressing the whole arm's compliance as the old
+    // Cartesian version did.
+    for (size_t i = 0; i < ref_order.size(); ++i)
     {
-      if (mb.joint(i).dof() == 1) // only 1-DOF revolute joints
-      {
-        double qd = std::abs(robot.mbc().alpha[i][0]);
-        if (qd > max_qd)
-          max_qd = qd;
-      }
+      auto idx = robot.jointIndexByName(ref_order[i]);
+      double qd = std::abs(robot.mbc().alpha[idx][0]);
+      double gate = 1.0 - std::clamp((qd - qd_gate_low_) / (qd_gate_high_ - qd_gate_low_), 0.0, 1.0);
+      tau_ext[i] *= gate;
     }
 
-    // Gate: full wrench (1) below qd_gate_low_, zero above qd_gate_high_.
-    double gate = 1.0 - std::clamp((max_qd - qd_gate_low_) / (qd_gate_high_ - qd_gate_low_), 0.0, 1.0);
-    force_sensor *= gate;
-    moment_sensor *= gate;
-
-    // Must come BEFORE the wrench is copied into the map - zeroing the local
-    // vectors afterwards was dead code, so a comms dropout still injected the
+    // Must come BEFORE the estimate is published - zeroing afterwards was
+    // dead code in the old version, so a comms dropout still injected the
     // last estimate into the controller.
-    if (!comms_ok) { force_sensor.setZero(); moment_sensor.setZero(); }
+    if (!comms_ok) { tau_ext.setZero(); }
 
-
-    wrenches["EEForceSensor"] = sva::ForceVecd(moment_sensor, force_sensor);
-    gc_->setWrenches(wrenches);
+    ///// 6- Publish the per-joint external torque estimate to the datastore
+    // for HandGuideState's joint-space admittance law.
+    gc_->controller().datastore().assign<Eigen::VectorXd>("KHG::tau_ext", tau_ext);
 
     static int log_count = 0;
     if (++log_count % 500 == 0)
     {
-      mc_rtc::log::info(
-          "[KortexBridge] RAW wrench (Local, pre-filter/deadband) -- force: ({:.3f}, {:.3f}, {:.3f}) N  "
-          "moment: ({:.3f}, {:.3f}, {:.3f}) Nm",
-          raw_force_sensor.x(), raw_force_sensor.y(), raw_force_sensor.z(),
-          raw_moment_sensor.x(), raw_moment_sensor.y(), raw_moment_sensor.z());
-      mc_rtc::log::info(
-          "[KortexBridge] Est. wrench (Local) -- force: ({:.2f}, {:.2f}, {:.2f}) N  "
-          "moment: ({:.2f}, {:.2f}, {:.2f}) Nm",
-          force_sensor.x(), force_sensor.y(), force_sensor.z(),
-          moment_sensor.x(), moment_sensor.y(), moment_sensor.z());
+      auto fmtVec = [](const Eigen::VectorXd & v)
+      {
+        std::string s;
+        for (int i = 0; i < v.size(); ++i)
+          s += fmt::format("{}{:.3f}", i == 0 ? "" : ", ", v[i]);
+        return s;
+      };
+      mc_rtc::log::info("[KortexBridge] RAW tau_ext (Nm, pre-filter/deadband): [{}]", fmtVec(raw_tau_ext));
+      mc_rtc::log::info("[KortexBridge] Est. tau_ext (Nm): [{}]", fmtVec(tau_ext));
     }
 
     // Model-vs-real divergence: the QP-solved control robot (robot.mbc(),
