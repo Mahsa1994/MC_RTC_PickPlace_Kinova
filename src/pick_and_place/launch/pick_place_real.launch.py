@@ -147,7 +147,7 @@ def generate_launch_description():
                     'torque_sign': -1.0,
                     'deadband_force': 1.0,
                     'deadband_moment': 1.5,
-                    'delta_max': 0.002,
+                    'delta_max': 0.003,
                     'model_real_gate': 0.05,
                 }]
             )
