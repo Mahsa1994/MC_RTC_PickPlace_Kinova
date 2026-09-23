@@ -31,20 +31,36 @@ try : mc_control::fsm::Controller(rm, dt, config)
   // by this and divide `duration` by it; `duration` has to scale too or the
   // duration-floored legs (MoveUpFromPick is one) would simply ignore the
   // change and the cycle would not actually get faster.
-  // Clamped hard: every leg currently peaks near 0.05 rad/s of real joint
-  // speed and the bridge's delta_max (0.002 rad @ 100 Hz) puts the ceiling
-  // at ~0.2 rad/s, i.e. about 4x. 3.0 keeps a margin under that; past it the
-  // real arm falls behind the model and the run ends in a STALLED hold.
+  // CEILING CORRECTED 2026-09-23 after a live speed_scale=2.0 run.
+  //
+  // The first estimate here (~0.2 rad/s, "about 4x") was wrong twice over:
+  // it used the admittance bridge's delta_max (0.002) rather than this one's
+  // (0.01), and more importantly delta_max is not what limits tracking at
+  // all. The bridge publishes a new single-point trajectory every 10 ms but
+  // asks the JTC to reach it in 50 ms WITH ZERO TERMINAL VELOCITY
+  // (time_from_start = 50'000'000 ns, pt.velocities = 0), so the arm is
+  // permanently decelerating toward a point that is replaced before it
+  // arrives. That caps real joint speed far below the delta_max figure and
+  // is also what the operator perceives as the arm "braking and moving".
+  //
+  // Measured at speed_scale 2.0 on MoveToSafe: commanded peak 0.100 rad/s,
+  // real arm saturated near 0.077 rad/s, the 0.023 rad/s shortfall showing
+  // up as a divergence ramp that hit the 0.03 stall guard every ~1.5 s.
+  // So usable headroom over the validated 0.05 rad/s is ~1.5x, not 4x.
+  // 1.5 is the clamp; going higher needs the BRIDGE fixed first (shorten
+  // time_from_start toward the publish period and/or publish a non-zero
+  // terminal velocity), not a bigger number here.
   if(config.has("speed_scale"))
   {
     speed_scale_ = config("speed_scale");
-    if(speed_scale_ < 0.1 || speed_scale_ > 3.0)
+    if(speed_scale_ < 0.1 || speed_scale_ > 1.5)
     {
       double req = speed_scale_;
-      speed_scale_ = std::min(3.0, std::max(0.1, speed_scale_));
-      mc_rtc::log::error("[PickPlaceController] speed_scale {:.2f} out of range [0.1, 3.0] - "
-                         "clamped to {:.2f}. Above ~4x the real arm cannot track the model "
-                         "(delta_max ceiling ~0.2 rad/s).", req, speed_scale_);
+      speed_scale_ = std::min(1.5, std::max(0.1, speed_scale_));
+      mc_rtc::log::error("[PickPlaceController] speed_scale {:.2f} out of range [0.1, 1.5] - "
+                         "clamped to {:.2f}. Above ~1.5x the real arm cannot track the model - it "
+                         "saturates near 0.077 rad/s because the bridge asks the JTC to reach "
+                         "each point in 50 ms with zero terminal velocity.", req, speed_scale_);
     }
   }
   if(speed_scale_ != 1.0)

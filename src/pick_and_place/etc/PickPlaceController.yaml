@@ -56,15 +56,24 @@ place_pose:
 # v_max alone would leave it at 15s no matter what and the cycle would not
 # actually speed up.
 #
-# CEILING: clamped to [0.1, 3.0] in PickPlaceController.cpp. Every leg
-# currently peaks near 0.05 rad/s of real joint speed and the bridge's
-# delta_max (0.002 rad @ 100 Hz) caps real tracking at ~0.2 rad/s - about 4x.
-# 3.0 keeps margin under that. Past the ceiling the real arm falls behind the
-# model, the stall guard fires, and the run ends in a held STALLED state.
+# CEILING: clamped to [0.1, 1.5] in PickPlaceController.cpp.
+# MEASURED, not estimated. A live run at 2.0 showed MoveToSafe commanding a
+# 0.100 rad/s peak while the real arm saturated near 0.077 rad/s; the
+# shortfall accumulated into the 0.03 stall guard every ~1.5 s, giving a
+# continuous brake-and-go judder with nobody touching the robot.
 #
-# ONLY 1.0 HAS BEEN RUN ON HARDWARE. Validate 2.0 before trying 3.0, and
-# watch the "model-vs-real" figure in the per-state logs as you go up - that
-# is the number that decides whether the arm can still track.
+# The limit is NOT delta_max. The bridge publishes a new single-point
+# trajectory every 10 ms but asks the joint_trajectory_controller to reach it
+# in 50 ms with ZERO terminal velocity, so the arm is always decelerating
+# toward a point that gets replaced before it arrives. To go genuinely faster,
+# fix that (shorten time_from_start toward the publish period, and/or publish
+# a non-zero terminal velocity) - raising speed_scale past 1.5 only makes the
+# model outrun the arm.
+#
+# 1.0 is the only value validated end-to-end on hardware. 2.0 is known to
+# judder. Step through 1.25 and watch "model-vs-real" in the per-state logs:
+# it should stay well under 0.03. If it ramps toward 0.03 repeatedly, the arm
+# is already at its tracking limit for that leg.
 #
 # Per-leg overrides still work: set a state's own v_max* if one leg needs to
 # differ from the global scale (e.g. keeping the descent slow while the
