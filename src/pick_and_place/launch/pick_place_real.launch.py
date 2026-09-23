@@ -147,7 +147,13 @@ def generate_launch_description():
                     'torque_sign': -1.0,
                     'deadband_force': 1.0,
                     'deadband_moment': 1.5,
-                    'delta_max': 0.003,
+                    # RAISED 0.003 -> 0.004 (2026-09-23) to lift the tracking
+                    # ceiling from ~0.12 to ~0.16 rad/s, which is what
+                    # speed_scale 2.5-3.0 needs. This does NOT itself make the
+                    # arm move faster - speed_scale does - it only stops the
+                    # per-cycle clamp from being the binding limit. Measured:
+                    # at 0.003 the arm tracked a commanded 0.089 rad/s at 99%.
+                    'delta_max': 0.004,
                     'model_real_gate': 0.05,
                 }]
             )

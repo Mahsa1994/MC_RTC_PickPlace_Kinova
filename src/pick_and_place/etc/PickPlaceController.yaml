@@ -78,8 +78,7 @@ place_pose:
 # Per-leg overrides still work: set a state's own v_max* if one leg needs to
 # differ from the global scale (e.g. keeping the descent slow while the
 # traverse speeds up).
-speed_scale: 1.0
-
+speed_scale: 2.5
 # ─────────────────────────────────────────────────────────────────────────
 #  EXPERIMENT KNOBS (2026-09-07) - what to change per trial condition
 # ─────────────────────────────────────────────────────────────────────────
@@ -140,8 +139,18 @@ StatesLibraries:
 StatesFiles: []
 IdleKeepState: true
 
-init: MoveToZero
-
+# CYCLE ENTRY CHANGED 2026-09-23: MoveToZero -> MoveToSafe.
+# The cycle now starts by going to MoveToSafe from wherever the arm happens
+# to be (MoveToSafe is a JointMove, so it interpolates from the current
+# configuration), then runs the pick/transfer/unload sequence. MoveToZero is
+# still defined below and simply unreferenced - restore by setting
+# `init: MoveToZero` and re-adding the [MoveToZero, MoveToSafe, ...]
+# transition.
+# Rationale: Zero is straight up, the furthest configuration from every pose
+# the cycle actually uses, which made it a poor reference for the startup
+# wrench tare. Entering at MoveToSafe keeps the arm inside its working range
+# throughout.
+init: MoveToSafe
 states:
 
   # Push/release sanity check: capture the arm's current pose as the
@@ -425,7 +434,8 @@ states:
     # enough push could still outlast this; revisit with an error-scaled
     # settle_timeout if that turns out to matter in practice.
     settle_timeout: 8.0
-    next: OpenGripperHalf
+    # BYPASSED 2026-09-23 (was OpenGripperHalf) - container stays gripped.
+    next: PickUpPos
     gains:
       mass:
         linear:  [3, 3, 3]
@@ -492,7 +502,8 @@ states:
     # bridge's model_real_gate into an unrecoverable deadlock. See the
     # note on divergence_pause_ in PickPlaceStates.cpp (JointMove).
     divergence_pause: 0.03
-    next: CloseGripper
+    # BYPASSED 2026-09-23 (was CloseGripper) - container stays gripped.
+    next: MoveUpFromPick
 
   # STEP 6 - grasp.
   CloseGripper:
@@ -727,10 +738,8 @@ transitions:
   #  1 MoveToZero       check/go to Zero (skips instantly if already there)
   #  2 MoveToSafe       joint-space safe midpoint
   #  3 MoveToPick       compliant approach to pick
-  #  4 OpenGripperHalf  pre-open jaws
-  #  5 PickUpPos        descend onto the container
-  #  6 CloseGripper     grasp
-  #  7 MoveUpFromPick   lift 15.9 cm clear
+  #  4 PickUpPos        descend      (gripper steps bypassed - container fixed)
+  #  5 MoveUpFromPick   lift 15.9 cm clear
   #  8 HoverToPlace     55 deg base swing to the unload site  [participant-facing]
   #  9 UnloadObj        47 deg wrist unfold - tip to unload
   # 10 ReturnToPickPose swing back to MoveToPick's joints -> Idle
@@ -738,12 +747,19 @@ transitions:
   # tipping, not released. Rewritten 2026-09-07 - the previous place-side
   # chain (RetreatToPick/MoveToPlace/PlaceHover/PutDownPos/OpenGripper/
   # RetreatToPlace) is superseded, see the states block above.
-  - [MoveToZero,       MoveToSafe,       MoveToSafe,       Auto]
+  # - [MoveToZero,       MoveToSafe,       MoveToSafe,       Auto]  # entry moved to MoveToSafe, 2026-09-23
   - [MoveToSafe,       MoveToPick,       MoveToPick,       Auto]
-  - [MoveToPick,       OpenGripperHalf,  OpenGripperHalf,  Auto]
-  - [OpenGripperHalf,  PickUpPos,        PickUpPos,        Auto]
-  - [PickUpPos,        CloseGripper,     CloseGripper,     Auto]
-  - [CloseGripper,     MoveUpFromPick,   MoveUpFromPick,   Auto]
+  # Gripper steps bypassed 2026-09-23 (container permanently attached, the
+  # arm must never open or close). To restore: re-comment the two active
+  # lines, uncomment the four below, and put back `next: OpenGripperHalf` on
+  # MoveToPick and `next: CloseGripper` on PickUpPos. Both Gripper states
+  # are still defined above, untouched.
+  - [MoveToPick,       PickUpPos,        PickUpPos,        Auto]
+  - [PickUpPos,        MoveUpFromPick,   MoveUpFromPick,   Auto]
+  # - [MoveToPick,       OpenGripperHalf,  OpenGripperHalf,  Auto]
+  # - [OpenGripperHalf,  PickUpPos,        PickUpPos,        Auto]
+  # - [PickUpPos,        CloseGripper,     CloseGripper,     Auto]
+  # - [CloseGripper,     MoveUpFromPick,   MoveUpFromPick,   Auto]
   - [MoveUpFromPick,   HoverToPlace,     HoverToPlace,     Auto]
   - [HoverToPlace,     UnloadObj,        UnloadObj,        Auto]
   - [UnloadObj,        ReturnToPickPose, ReturnToPickPose, Auto]
