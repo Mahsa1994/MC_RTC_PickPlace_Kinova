@@ -119,6 +119,18 @@ states:
     damping: 12.0
     weight: 100.0
     contact_force_threshold: 8.0   # must stay above deadband_force on the bridge
+    # ADDED 2026-09-18 - the channel that actually sees a human contact here.
+    # A live test with a hand in the arm's path produced raw force ~0.86 N
+    # (below the bridge's 1.0 N deadband_force, so it reached the task as
+    # exactly 0.00) but moment ~1.5 Nm. Force-based detection therefore never
+    # fired at any threshold; this one does. 0.00 Nm when clear, ~1.5 Nm when
+    # blocked, so 0.5 leaves wide margin both ways.
+    contact_moment_threshold: 0.5
+    # Wrench-independent backstop: pause + resync if the QP model outruns the
+    # real arm by this much. 60% of the bridge's model_real_gate (0.05 rad),
+    # so it fires before the gate does - past the gate the bridge stops
+    # publishing and the arm cannot recover without a restart.
+    divergence_pause: 0.03
     clear_hold_time: 0.3
     next: HoldCurrent
     
@@ -279,6 +291,18 @@ states:
     damping: 12.0
     weight: 100.0
     contact_force_threshold: 8.0   # must stay above deadband_force on the bridge
+    # ADDED 2026-09-18 - the channel that actually sees a human contact here.
+    # A live test with a hand in the arm's path produced raw force ~0.86 N
+    # (below the bridge's 1.0 N deadband_force, so it reached the task as
+    # exactly 0.00) but moment ~1.5 Nm. Force-based detection therefore never
+    # fired at any threshold; this one does. 0.00 Nm when clear, ~1.5 Nm when
+    # blocked, so 0.5 leaves wide margin both ways.
+    contact_moment_threshold: 0.5
+    # Wrench-independent backstop: pause + resync if the QP model outruns the
+    # real arm by this much. 60% of the bridge's model_real_gate (0.05 rad),
+    # so it fires before the gate does - past the gate the bridge stops
+    # publishing and the arm cannot recover without a restart.
+    divergence_pause: 0.03
     clear_hold_time: 0.3
     # PERMANENT FIX 2026-08-26: settle_timeout raised from the struct default
     # (2.0s) after a live push-recovery test showed a firm push (~0.29m/29deg
@@ -443,6 +467,18 @@ states:
     damping: 12.0
     weight: 100.0
     contact_force_threshold: 8.0   # must stay above deadband_force on the bridge
+    # ADDED 2026-09-18 - the channel that actually sees a human contact here.
+    # A live test with a hand in the arm's path produced raw force ~0.86 N
+    # (below the bridge's 1.0 N deadband_force, so it reached the task as
+    # exactly 0.00) but moment ~1.5 Nm. Force-based detection therefore never
+    # fired at any threshold; this one does. 0.00 Nm when clear, ~1.5 Nm when
+    # blocked, so 0.5 leaves wide margin both ways.
+    contact_moment_threshold: 0.5
+    # Wrench-independent backstop: pause + resync if the QP model outruns the
+    # real arm by this much. 60% of the bridge's model_real_gate (0.05 rad),
+    # so it fires before the gate does - past the gate the bridge stops
+    # publishing and the arm cannot recover without a restart.
+    divergence_pause: 0.03
     clear_hold_time: 0.3
     settle_timeout: 8.0
     next: UnloadObj

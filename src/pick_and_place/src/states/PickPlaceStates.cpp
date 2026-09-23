@@ -401,6 +401,33 @@ struct ComplianceCartesianMove : mc_control::fsm::State
   double contact_force_threshold_ = 8.0;  // N
   double clear_hold_time_         = 0.3;  // s of sustained clear force before resuming
 
+  // ADDED 2026-09-18: contact detection on the MOMENT channel.
+  // A live HoverToPlace test (hand placed in the arm's path) showed the
+  // contact registering ONLY here - the estimator reported
+  //   RAW  force (0.069, 0.773, 0.367) N   moment (-0.879, 0.959, -1.065) Nm
+  //   Est. force (0.00, 0.00, 0.00) N      moment (-0.83, 0.80, -0.97) Nm
+  // i.e. raw force norm ~0.86 N, which is BELOW the bridge's 1.0 N
+  // deadband_force and is therefore zeroed before the task ever sees it.
+  // Force-based detection was structurally dead: no value of
+  // contact_force_threshold_ could ever have fired, and the arm ran on
+  // through the obstruction until model-vs-real tripped the safety gate.
+  // The moment channel by contrast is close to binary here - ~1.5 Nm norm
+  // while blocked, exactly 0.00 otherwise - so 0.5 Nm sits with wide margin
+  // on both sides. Keep this ABOVE the bridge's deadband_moment only in the
+  // sense that anything under the deadband reads as exactly zero anyway.
+  double contact_moment_threshold_ = 0.5;  // Nm
+
+  // Backstop that does not depend on the wrench estimate at all: if the QP
+  // model outruns the real arm by this much, treat it as an obstruction,
+  // pause, and resync. Exists because the wrench estimate has now twice
+  // failed to notice a real contact, and the consequence is not a missed
+  // pause but a permanent deadlock - once divergence passes the bridge's
+  // model_real_gate (0.05 rad) publishing stops and nothing recovers it.
+  // Set at 60% of that gate so this fires first, with the gate left intact
+  // as the last line of defence. 0 disables.
+  double divergence_pause_ = 0.03;  // rad
+  const char * pause_cause_ = "";   // which test latched the current pause
+
   // What to do if the real arm still hasn't reached the target
   // settle_timeout_ seconds past schedule. false (default) = HOLD and keep
   // logging loudly; true = advance anyway. See the long note at the
@@ -436,6 +463,8 @@ struct ComplianceCartesianMove : mc_control::fsm::State
     if(config.has("gains"))          gains_config_   = config("gains");
     if(config.has("contact_force_threshold")) contact_force_threshold_ = config("contact_force_threshold");
     if(config.has("clear_hold_time"))         clear_hold_time_         = config("clear_hold_time");
+    if(config.has("contact_moment_threshold")) contact_moment_threshold_ = config("contact_moment_threshold");
+    if(config.has("divergence_pause"))        divergence_pause_        = config("divergence_pause");
     if(config.has("advance_on_timeout"))      advance_on_timeout_      = config("advance_on_timeout");
     if(config.has("v_max_lin"))               v_max_lin_               = config("v_max_lin");
     if(config.has("v_max_ang"))               v_max_ang_               = config("v_max_ang");
@@ -597,12 +626,34 @@ struct ComplianceCartesianMove : mc_control::fsm::State
     // Contact gate: pause the trajectory clock while the measured wrench
     // says the arm is in contact, resume only after it's been clear for
     // clear_hold_time_ (avoids chattering pause/resume at the threshold).
-    double f = task_->measuredWrench().force().norm();
+    const double f = task_->measuredWrench().force().norm();
+    const double m = task_->measuredWrench().couple().norm();
+
+    // Model-vs-real divergence, same quantity the bridge gates on.
+    double dev = 0.0;
+    {
+      const auto & mq  = ctl.robot().mbc().q;
+      const auto & rq  = ctl.realRobot().mbc().q;
+      const auto & mbs = ctl.robot().mb().joints();
+      for(size_t ji = 0; ji < mbs.size(); ++ji)
+      {
+        if(mbs[ji].dof() != 1) continue;
+        dev = std::max(dev, std::abs(mq[ji][0] - rq[ji][0]));
+      }
+    }
+
+    const bool by_force  = f > contact_force_threshold_;
+    const bool by_moment = m > contact_moment_threshold_;
+    const bool by_dev    = divergence_pause_ > 0.0 && dev > divergence_pause_;
+
     const bool was_paused = paused_;
-    if(f > contact_force_threshold_)
+    if(by_force || by_moment || by_dev)
     {
       paused_      = true;
       clear_timer_ = 0.0;
+      if(by_force)       pause_cause_ = "force";
+      else if(by_moment) pause_cause_ = "moment";
+      else               pause_cause_ = "model-vs-real divergence";
     }
     else if(paused_)
     {
@@ -623,16 +674,17 @@ struct ComplianceCartesianMove : mc_control::fsm::State
       if(paused_)
       {
         mc_rtc::log::warning(
-            "[{}] CLOCK PAUSED  - contact {:.2f} N > {:.2f} N threshold. "
-            "t_elapsed frozen at {:.2f}s of {:.2f}s",
-            name(), f, contact_force_threshold_, t_elapsed_, effective_duration_);
+            "[{}] CLOCK PAUSED  - triggered by {}: force {:.2f}/{:.2f} N, moment {:.2f}/{:.2f} Nm, "
+            "model-vs-real {:.4f}/{:.4f} rad. t_elapsed frozen at {:.2f}s of {:.2f}s",
+            name(), pause_cause_, f, contact_force_threshold_, m, contact_moment_threshold_,
+            dev, divergence_pause_, t_elapsed_, effective_duration_);
       }
       else
       {
         mc_rtc::log::warning(
-            "[{}] CLOCK RESUMED - clear for {:.2f}s (force now {:.2f} N). "
-            "t_elapsed resuming from {:.2f}s of {:.2f}s",
-            name(), clear_hold_time_, f, t_elapsed_, effective_duration_);
+            "[{}] CLOCK RESUMED - clear for {:.2f}s (force {:.2f} N, moment {:.2f} Nm, "
+            "model-vs-real {:.4f} rad). t_elapsed resuming from {:.2f}s of {:.2f}s",
+            name(), clear_hold_time_, f, m, dev, t_elapsed_, effective_duration_);
       }
     }
 
@@ -759,9 +811,10 @@ struct ComplianceCartesianMove : mc_control::fsm::State
       else
         mc_rtc::log::warning(
             "[{}] Settling: pos_err={:.4f} m, ori_err={:.4f} rad | clock {:.2f}/{:.2f}s{} | "
-            "force {:.2f} N (pause threshold {:.2f} N)",
+            "force {:.2f}/{:.2f} N, moment {:.2f}/{:.2f} Nm",
             name(), pos_err, ori_err, t_elapsed_, effective_duration_,
-            paused_ ? " PAUSED - contact" : " running", f, contact_force_threshold_);
+            paused_ ? " PAUSED - contact" : " running", f, contact_force_threshold_,
+            m, contact_moment_threshold_);
 
       // DIAGNOSTIC (2026-08-26): a live MoveToPick stall showed pos_err/
       // ori_err and the SIGN CHECK world_dev completely static (not slowly
