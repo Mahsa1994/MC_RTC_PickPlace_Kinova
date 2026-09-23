@@ -171,6 +171,12 @@ states:
     target: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]   # Kinova Zero/retract - see rename comment above
     duration: 15.0   # now a MINIMUM - actual duration auto-extends per v_max for large moves, see start() log
     threshold: 0.05
+    # Stall guard: freeze the interpolation clock and hold the model on
+    # the encoders if the real arm falls this far behind, so a physically
+    # blocked joint holds loudly instead of running the model past the
+    # bridge's model_real_gate into an unrecoverable deadlock. See the
+    # note on divergence_pause_ in PickPlaceStates.cpp (JointMove).
+    divergence_pause: 0.03
     # STEP 1 of the loop - "check if at Zero, go there if not". Without this,
     # starting a cycle with the arm already parked at Zero would still hold a
     # no-op reference for the full 15s `duration` (convergence is only tested
@@ -257,6 +263,12 @@ states:
     target: [-0.0000, -0.3424, 0.9991, 0.0002, 0.0939, 0.0000]
     duration: 15.0
     threshold: 0.05
+    # Stall guard: freeze the interpolation clock and hold the model on
+    # the encoders if the real arm falls this far behind, so a physically
+    # blocked joint holds loudly instead of running the model past the
+    # bridge's model_real_gate into an unrecoverable deadlock. See the
+    # note on divergence_pause_ in PickPlaceStates.cpp (JointMove).
+    divergence_pause: 0.03
     next: MoveToPick
 
   # ── Pick-and-place cycle ─────────────────────────────────────────────
@@ -379,6 +391,12 @@ states:
     target: [-0.0000, -0.5538, 1.8129, -0.0326, 0.8466, 0.0000]
     duration: 15.0   # MINIMUM only
     threshold: 0.05
+    # Stall guard: freeze the interpolation clock and hold the model on
+    # the encoders if the real arm falls this far behind, so a physically
+    # blocked joint holds loudly instead of running the model past the
+    # bridge's model_real_gate into an unrecoverable deadlock. See the
+    # note on divergence_pause_ in PickPlaceStates.cpp (JointMove).
+    divergence_pause: 0.03
     next: CloseGripper
 
   # STEP 6 - grasp.
@@ -418,6 +436,12 @@ states:
     target: [0.0156, -0.1794, 1.8109, -0.0325, 0.8444, 0.0000]   # snapshots/MoveUpFromPick.txt
     duration: 15.0   # MINIMUM only
     threshold: 0.05
+    # Stall guard: freeze the interpolation clock and hold the model on
+    # the encoders if the real arm falls this far behind, so a physically
+    # blocked joint holds loudly instead of running the model past the
+    # bridge's model_real_gate into an unrecoverable deadlock. See the
+    # note on divergence_pause_ in PickPlaceStates.cpp (JointMove).
+    divergence_pause: 0.03
     next: HoverToPlace
 
   # STEP 8 - carry the container across to the unload location.
@@ -503,6 +527,12 @@ states:
     target: [0.9740, -0.1852, 1.8141, -0.0544, 0.0143, 0.0000]   # snapshots/UnloadObj.txt
     duration: 15.0   # MINIMUM only
     threshold: 0.05
+    # Stall guard: freeze the interpolation clock and hold the model on
+    # the encoders if the real arm falls this far behind, so a physically
+    # blocked joint holds loudly instead of running the model past the
+    # bridge's model_real_gate into an unrecoverable deadlock. See the
+    # note on divergence_pause_ in PickPlaceStates.cpp (JointMove).
+    divergence_pause: 0.03
     next: ReturnToPickPose
 
   # STEP 10 - return to the pick pose, still holding the (now empty)
@@ -523,6 +553,12 @@ states:
     target: [0.0000, -0.5532, 1.7666, -0.0326, 0.0940, 0.0000]   # = MoveToPick's joints
     duration: 15.0   # MINIMUM only
     threshold: 0.05
+    # Stall guard: freeze the interpolation clock and hold the model on
+    # the encoders if the real arm falls this far behind, so a physically
+    # blocked joint holds loudly instead of running the model past the
+    # bridge's model_real_gate into an unrecoverable deadlock. See the
+    # note on divergence_pause_ in PickPlaceStates.cpp (JointMove).
+    divergence_pause: 0.03
     next: Idle
 
   # REPLACED 2026-08-26: ReturnHome (CartesianMove back to home_pose) dropped
@@ -543,6 +579,12 @@ states:
     target: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     duration: 15.0
     threshold: 0.05
+    # Stall guard: freeze the interpolation clock and hold the model on
+    # the encoders if the real arm falls this far behind, so a physically
+    # blocked joint holds loudly instead of running the model past the
+    # bridge's model_real_gate into an unrecoverable deadlock. See the
+    # note on divergence_pause_ in PickPlaceStates.cpp (JointMove).
+    divergence_pause: 0.03
     next: Idle
 
   # ReturnHome:

@@ -917,6 +917,25 @@ struct JointMove : mc_control::fsm::State
   // decision, so the "jog the arm, read the log" workflow used to derive
   // every pose in the YAML is unaffected.
   double skip_if_within_ = 0.0;
+
+  // ADDED 2026-09-23: same wrench-independent backstop ComplianceCartesianMove
+  // got on 2026-09-18, ported here after a live UnloadObj failure.
+  //
+  // JointMove is rigid by design - no compliance, no contact detection - but
+  // that only governs how it RESPONDS to an obstruction, not what happens to
+  // the model when the real arm physically cannot follow. UnloadObj commands
+  // joint_5 from 0.8323 to 0.0143 rad (a 46.9 deg wrist tip to empty the
+  // container); live, the real joint stalled dead at 0.4095 rad - 52% through
+  // - while the model marched on to 0.2688. Divergence passed the bridge's
+  // model_real_gate (0.05 rad), publishing stopped, and nothing recovers from
+  // that without a restart. Every other joint had reached target, so the
+  // reported err=0.3952 was exactly |0.4095 - 0.0143|, i.e. joint_5 alone.
+  //
+  // Freezing the interpolation clock and resyncing the model to the encoders
+  // keeps divergence at roughly one tick's worth, so the gate never latches:
+  // a blocked joint now HOLDS loudly instead of deadlocking the session.
+  // 0 disables.
+  double divergence_pause_ = 0.03;  // rad
   std::string next_state_;
 
   double t_elapsed_           = 0.0;
@@ -925,6 +944,8 @@ struct JointMove : mc_control::fsm::State
   double prev_stiffness_      = 1.0;
   double effective_duration_  = 3.0;  // = max(duration_, time needed so peak velocity <= v_max_)
   bool   skipped_             = false;
+  bool   stalled_             = false;
+  double stall_time_          = 0.0;
   std::map<std::string, double> q_start_;
 
   int tick_ = 0;
@@ -937,6 +958,7 @@ struct JointMove : mc_control::fsm::State
     if(config.has("threshold")) threshold_ = config("threshold");
     if(config.has("v_max"))     v_max_     = config("v_max");
     if(config.has("skip_if_within")) skip_if_within_ = config("skip_if_within");
+    if(config.has("divergence_pause")) divergence_pause_ = config("divergence_pause");
     if(config.has("next"))      next_state_ = static_cast<std::string>(config("next"));
 
     // target: [v1, v2, ... v6]  (array form only — simplest and most common)
@@ -1001,7 +1023,9 @@ void start(mc_control::fsm::Controller & ctl) override
     tick_      = 0;
 
     resyncControlToReal(ctl);
-    skipped_ = false;
+    skipped_    = false;
+    stalled_    = false;
+    stall_time_ = 0.0;
 
     auto pt = ctl.getPostureTask(ctl.robot().name());
     if(!pt)
@@ -1143,9 +1167,47 @@ void start(mc_control::fsm::Controller & ctl) override
   {
     if(skipped_) { output(next_state_); return true; }
 
-    t_elapsed_ += dt_;
     auto pt = ctl.getPostureTask(ctl.robot().name());
     if(!pt) { output(next_state_); return true; }
+
+    // Stall guard (see divergence_pause_ above). Advance the interpolation
+    // clock ONLY while the real arm is still keeping up; if it has fallen
+    // behind, freeze the reference and glue the model to the encoders so the
+    // gap cannot accumulate into a model_real_gate deadlock.
+    double dev = 0.0;
+    std::string devjoint;
+    {
+      const auto & mq  = ctl.robot().mbc().q;
+      const auto & rq  = ctl.realRobot().mbc().q;
+      const auto & mbs = ctl.robot().mb().joints();
+      for(size_t ji = 0; ji < mbs.size(); ++ji)
+      {
+        if(mbs[ji].dof() != 1) continue;
+        double d = std::abs(mq[ji][0] - rq[ji][0]);
+        if(d > dev) { dev = d; devjoint = mbs[ji].name(); }
+      }
+    }
+    const bool stalled = divergence_pause_ > 0.0 && dev > divergence_pause_;
+    if(stalled)
+    {
+      resyncControlToReal(ctl);
+      if(!stalled_) mc_rtc::log::error(
+          "[{}] STALLED - real arm not following: model-vs-real {:.4f} rad on '{}' "
+          "(limit {:.4f}). Freezing the trajectory clock at {:.2f}s of {:.2f}s and holding the "
+          "model on the encoders. The joint is physically blocked or the target is unreachable - "
+          "this will NOT advance to {} until it moves.",
+          name(), dev, devjoint, divergence_pause_, t_elapsed_, effective_duration_, next_state_);
+      stall_time_ += dt_;
+    }
+    else
+    {
+      if(stalled_) mc_rtc::log::success(
+          "[{}] Stall cleared after {:.1f}s (model-vs-real {:.4f} rad) - resuming from {:.2f}s.",
+          name(), stall_time_, dev, t_elapsed_);
+      stall_time_ = 0.0;
+      t_elapsed_ += dt_;
+    }
+    stalled_ = stalled;
 
     // Feed the interpolated (slow, bounded) reference every tick - the
     // posture task's stiffness_/weight_ now only controls how tightly it
@@ -1188,7 +1250,9 @@ void start(mc_control::fsm::Controller & ctl) override
 //    static int tick = 0;
     if((tick_++ % 200) == 0)
     {
-      mc_rtc::log::info("[{}] err={:.4f}", name(), err);
+      mc_rtc::log::info("[{}] err={:.4f} | clock {:.2f}/{:.2f}s{} | model-vs-real {:.4f} rad on '{}'",
+                        name(), err, t_elapsed_, effective_duration_,
+                        stalled_ ? " STALLED - frozen" : " running", dev, devjoint);
     }
     return false;
   }
