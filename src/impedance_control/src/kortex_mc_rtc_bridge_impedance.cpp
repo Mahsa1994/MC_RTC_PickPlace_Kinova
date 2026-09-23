@@ -128,6 +128,10 @@ private:
   int pub_decim_{10};
   std::atomic<int64_t> last_js_stamp_ns_{0};
   std::vector<double> last_enc_q_;
+  // Encoder velocities kept alongside positions (2026-09-23) purely for the
+  // tracking diagnostic below - they were already read for
+  // setEncoderVelocities but never retained.
+  std::vector<double> last_enc_alpha_;
   bool first_cmd_checked_{false};
   int pub_count_{0};
   double loop_dt_{0.001};
@@ -198,6 +202,7 @@ private:
         std::lock_guard<std::mutex> lock(effort_mutex_);
         latest_efforts_ = enc_tau;
         last_enc_q_ = enc_q;
+        last_enc_alpha_ = enc_alpha;
       }
       return;
     }
@@ -541,6 +546,8 @@ private:
     std::string model_real_worst_joint;
     double model_real_worst_model_q = 0.0;
     double model_real_worst_enc_q   = 0.0;
+    double model_real_worst_model_qd = 0.0;
+    double model_real_worst_enc_qd   = 0.0;
     {
       std::lock_guard<std::mutex> lock(effort_mutex_);
       auto ref_order = robot.refJointOrder();
@@ -555,6 +562,8 @@ private:
           model_real_worst_joint = ref_order[i];
           model_real_worst_model_q = model_q;
           model_real_worst_enc_q   = last_enc_q_[i];
+          model_real_worst_model_qd = robot.mbc().alpha[idx][0];
+          model_real_worst_enc_qd   = (i < last_enc_alpha_.size()) ? last_enc_alpha_[i] : 0.0;
         }
       }
       // Absolute values alongside the gap (2026-08-24): a gap that grows
@@ -566,8 +575,13 @@ private:
       if (log_count % 500 == 0)
         mc_rtc::log::info(
             "[KortexBridge] model-vs-real max joint deviation: {:.4f} rad on '{}' "
-            "(model={:.4f} rad, real={:.4f} rad)",
-            model_real_dev, model_real_worst_joint, model_real_worst_model_q, model_real_worst_enc_q);
+            "(model={:.4f} rad, real={:.4f} rad) | VEL cmd={:.4f} real={:.4f} rad/s "
+            "(tracking {:.0f}%)",
+            model_real_dev, model_real_worst_joint, model_real_worst_model_q, model_real_worst_enc_q,
+            model_real_worst_model_qd, model_real_worst_enc_qd,
+            std::abs(model_real_worst_model_qd) > 1e-6
+                ? 100.0 * model_real_worst_enc_qd / model_real_worst_model_qd
+                : 100.0);
     }
 
     //// 9- Run controller and publish joint trajectory
