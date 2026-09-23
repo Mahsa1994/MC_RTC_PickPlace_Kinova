@@ -35,6 +35,12 @@ public:
   const sva::PTransformd & placePose() const { return place_pose_; }
   double                   zMinLimit() const { return z_min_limit_; }
 
+  // Global experiment speed knob (see `speed_scale` in the YAML). Every
+  // motion state multiplies its v_max* by this and divides its `duration`
+  // by it, so one number makes the whole cycle uniformly faster or slower
+  // for a trial condition.
+  double                   speedScale() const { return speed_scale_; }
+
   // Gripper interface (all fully inline to prevent dynamic linking dependency)
   bool isGripperDone() const { return gripper_done_.load(); }
   void resetGripperDone()     { gripper_done_ = false; }
@@ -150,6 +156,7 @@ private:
   sva::PTransformd pick_pose_;
   sva::PTransformd place_pose_;
   double           z_min_limit_ = 0.15;
+  double           speed_scale_ = 1.0;
 
   std::atomic<bool> gripper_done_{true};
 

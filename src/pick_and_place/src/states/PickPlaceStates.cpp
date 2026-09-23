@@ -206,9 +206,16 @@ struct CartesianMove : mc_control::fsm::State
     // v_max_ang_ by construction (1.875 = quintic peak/avg factor).
     double pos_delta = (target_.translation() - cur.translation()).norm();
     double ori_delta = sva::rotationError(cur.rotation(), target_.rotation()).norm();
-    effective_duration_ = std::max({duration_,
-                                     1.875 * pos_delta / std::max(v_max_lin_, 1e-6),
-                                     1.875 * ori_delta / std::max(v_max_ang_, 1e-6)});
+    // GLOBAL SPEED KNOB (2026-09-23): `speed_scale` in the YAML, one number
+    // per trial condition instead of editing v_max on every state. Note it
+    // divides `duration` as well as multiplying v_max - `duration` is a FLOOR,
+    // so a leg pinned by it (MoveUpFromPick is, at 15s vs its 14s v_max term)
+    // would otherwise ignore the scale entirely and the cycle would not
+    // actually speed up. Clamped to [0.1, 3.0] by the controller.
+    const double sc_ = ppc(ctl).speedScale();
+    effective_duration_ = std::max({duration_ / sc_,
+                                     1.875 * pos_delta / std::max(v_max_lin_ * sc_, 1e-6),
+                                     1.875 * ori_delta / std::max(v_max_ang_ * sc_, 1e-6)});
 
     // Back off the posture task so the QP respects the Cartesian trajectory.
     if(auto pt = ctl.getPostureTask(ctl.robot().name()))
@@ -518,9 +525,16 @@ struct ComplianceCartesianMove : mc_control::fsm::State
     }
 
     double ori_delta = sva::rotationError(start_pose.rotation(), final_target.rotation()).norm();
-    effective_duration_ = std::max({duration_,
-                                     1.875 * total_chord / std::max(v_max_lin_, 1e-6),
-                                     1.875 * ori_delta / std::max(v_max_ang_, 1e-6)});
+    // GLOBAL SPEED KNOB (2026-09-23): `speed_scale` in the YAML, one number
+    // per trial condition instead of editing v_max on every state. Note it
+    // divides `duration` as well as multiplying v_max - `duration` is a FLOOR,
+    // so a leg pinned by it (MoveUpFromPick is, at 15s vs its 14s v_max term)
+    // would otherwise ignore the scale entirely and the cycle would not
+    // actually speed up. Clamped to [0.1, 3.0] by the controller.
+    const double sc_ = ppc(ctl).speedScale();
+    effective_duration_ = std::max({duration_ / sc_,
+                                     1.875 * total_chord / std::max(v_max_lin_ * sc_, 1e-6),
+                                     1.875 * ori_delta / std::max(v_max_ang_ * sc_, 1e-6)});
 
     seg_duration_.assign(chord.size(), effective_duration_ / std::max<size_t>(1, chord.size()));
     if(total_chord > 1e-6)
@@ -590,11 +604,18 @@ struct ComplianceCartesianMove : mc_control::fsm::State
     ctl.solver().addTask(task_);
 
     mc_rtc::log::info(
-        "[{}] Compliant move started - effective duration {:.2f}s (configured min {:.2f}s), "
+        "[{}] Compliant move started - effective duration {:.2f}s (min {:.2f}s), "
         "v_max_lin={:.3f} m/s, v_max_ang={:.3f} rad/s, path_len={:.4f} m, ori_delta={:.4f} rad, "
-        "{} waypoint(s)",
-        name(), effective_duration_, duration_, v_max_lin_, v_max_ang_, total_chord, ori_delta,
-        pos_waypoints_.size());
+        "{} waypoint(s) | BINDS ON {} | [speed_scale {:.2f}x; configured lin {:.3f} ang {:.3f} "
+        "min {:.2f}s]",
+        name(), effective_duration_, duration_ / sc_, v_max_lin_ * sc_, v_max_ang_ * sc_,
+        total_chord, ori_delta, pos_waypoints_.size(),
+        (1.875 * ori_delta / std::max(v_max_ang_ * sc_, 1e-6) >= effective_duration_ - 1e-9)
+            ? "v_max_ang"
+            : ((1.875 * total_chord / std::max(v_max_lin_ * sc_, 1e-6) >= effective_duration_ - 1e-9)
+                   ? "v_max_lin"
+                   : "duration"),
+        sc_, v_max_lin_, v_max_ang_, duration_);
   }
 
   // Evaluate the moving target pose at trajectory-clock time `t`.
@@ -1095,7 +1116,15 @@ void start(mc_control::fsm::Controller & ctl) override
         max_abs_delta = std::max(max_abs_delta, std::abs(target - current));
       }
     }
-    effective_duration_ = std::max(duration_, 1.875 * max_abs_delta / std::max(v_max_, 1e-6));
+    // GLOBAL SPEED KNOB (2026-09-23): `speed_scale` in the YAML, one number
+    // per trial condition instead of editing v_max on every state. Note it
+    // divides `duration` as well as multiplying v_max - `duration` is a FLOOR,
+    // so a leg pinned by it (MoveUpFromPick is, at 15s vs its 14s v_max term)
+    // would otherwise ignore the scale entirely and the cycle would not
+    // actually speed up. Clamped to [0.1, 3.0] by the controller.
+    const double sc_ = ppc(ctl).speedScale();
+    effective_duration_ = std::max(duration_ / sc_,
+                                   1.875 * max_abs_delta / std::max(v_max_ * sc_, 1e-6));
 
     prev_weight_    = pt->weight();
     prev_stiffness_ = pt->stiffness();
@@ -1121,10 +1150,11 @@ void start(mc_control::fsm::Controller & ctl) override
     }
 
     mc_rtc::log::info(
-        "[{}] Joint-space move started - effective duration {:.2f}s (configured min {:.2f}s), "
-        "v_max={:.4f} rad/s, max |delta|={:.4f} rad -> peak velocity {:.4f} rad/s",
-        name(), effective_duration_, duration_, v_max_, max_abs_delta,
-        1.875 * max_abs_delta / effective_duration_);
+        "[{}] Joint-space move started - effective duration {:.2f}s (min {:.2f}s), "
+        "v_max={:.4f} rad/s, max |delta|={:.4f} rad -> peak velocity {:.4f} rad/s "
+        "[speed_scale {:.2f}x; configured v_max {:.4f}, min {:.2f}s]",
+        name(), effective_duration_, duration_ / sc_, v_max_ * sc_, max_abs_delta,
+        1.875 * max_abs_delta / effective_duration_, sc_, v_max_, duration_);
 
     // CARTESIAN POSE SNAPSHOT (2026-08-26, safe under dry_run - reads
     // realRobot() only, no motion). JointMove has no Cartesian awareness of

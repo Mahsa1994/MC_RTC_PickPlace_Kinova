@@ -42,6 +42,35 @@ place_pose:
   translation: [-0.4984, 0.4515, 0.5492]
   rotation:    [-1.0763, 2.3677, 1.9208]
 
+# ═════════════════════════════════════════════════════════════════════════
+#  speed_scale - THE ONE KNOB TO CHANGE PER TRIAL CONDITION
+# ═════════════════════════════════════════════════════════════════════════
+# Multiplies every motion state's v_max / v_max_lin / v_max_ang AND divides
+# every `duration`, so the whole cycle gets uniformly faster or slower from a
+# single number. 1.0 = the validated baseline below (~4.8 min of motion per
+# cycle); 2.0 = twice as fast (~2.4 min); 0.5 = half speed.
+#
+# `duration` has to scale too, not just v_max: it is a FLOOR, and any leg
+# pinned by it would otherwise ignore the knob completely. MoveUpFromPick is
+# exactly that case today (15.0s floor vs a 14.0s v_max term), so scaling
+# v_max alone would leave it at 15s no matter what and the cycle would not
+# actually speed up.
+#
+# CEILING: clamped to [0.1, 3.0] in PickPlaceController.cpp. Every leg
+# currently peaks near 0.05 rad/s of real joint speed and the bridge's
+# delta_max (0.002 rad @ 100 Hz) caps real tracking at ~0.2 rad/s - about 4x.
+# 3.0 keeps margin under that. Past the ceiling the real arm falls behind the
+# model, the stall guard fires, and the run ends in a held STALLED state.
+#
+# ONLY 1.0 HAS BEEN RUN ON HARDWARE. Validate 2.0 before trying 3.0, and
+# watch the "model-vs-real" figure in the per-state logs as you go up - that
+# is the number that decides whether the arm can still track.
+#
+# Per-leg overrides still work: set a state's own v_max* if one leg needs to
+# differ from the global scale (e.g. keeping the descent slow while the
+# traverse speeds up).
+speed_scale: 1.0
+
 # ─────────────────────────────────────────────────────────────────────────
 #  EXPERIMENT KNOBS (2026-09-07) - what to change per trial condition
 # ─────────────────────────────────────────────────────────────────────────
@@ -49,8 +78,11 @@ place_pose:
 # participant, so both need to be settable per leg without recompiling.
 # Every knob below lives in this file only.
 #
-# SPEED. Each motion state computes
-#     effective_duration = max(duration, 1.875 * distance / v_max)
+# SPEED. Prefer `speed_scale` above for whole-cycle changes; the per-state
+# knobs below are for making ONE leg differ from the rest.
+# Each motion state computes
+#     effective_duration = max(duration / speed_scale,
+#                              1.875 * distance / (v_max * speed_scale))
 # and follows a quintic (minimum-jerk) profile over it, so the ACTUAL speed
 # is whichever of the two limits is slower:
 #   * `duration`  - a MINIMUM time, not the speed. Raising it slows a leg
