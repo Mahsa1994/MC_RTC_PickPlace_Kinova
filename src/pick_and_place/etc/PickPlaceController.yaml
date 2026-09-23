@@ -78,7 +78,7 @@ place_pose:
 # Per-leg overrides still work: set a state's own v_max* if one leg needs to
 # differ from the global scale (e.g. keeping the descent slow while the
 # traverse speeds up).
-speed_scale: 2.0
+speed_scale: 1.0
 
 # ─────────────────────────────────────────────────────────────────────────
 #  EXPERIMENT KNOBS (2026-09-07) - what to change per trial condition
@@ -166,7 +166,34 @@ states:
     # exactly 0.00) but moment ~1.5 Nm. Force-based detection therefore never
     # fired at any threshold; this one does. 0.00 Nm when clear, ~1.5 Nm when
     # blocked, so 0.5 leaves wide margin both ways.
-    contact_moment_threshold: 0.5
+    # RAISED 0.5 -> 2.0 on 2026-09-23, deliberately trading contact
+    # sensitivity for a usable speed range (speed is the studied factor).
+    # What the task actually sees is the POST-deadband estimate, and the
+    # bridge's 1.5 Nm deadband_moment already suppresses the no-contact
+    # baseline completely up to ~speed_scale 2 - which is why 1.0 and 1.5
+    # produced Est. moment 0.00 and never false-triggered. At 2.0 the
+    # baseline grazes the deadband and ~1.26 Nm leaked through, tripping the
+    # old 0.5 threshold. 2.0 clears that leak while a real hand contact
+    # (~1.5 Nm ON TOP of the baseline, so ~2.8 Nm at this speed) still
+    # trips it.
+    # INTERIM VALUE - it rests on one measurement and no payload. Re-measure
+    # with the container attached, see contact_moment_speed_gain below.
+    contact_moment_threshold: 2.0
+    # Speed-tracking term, Nm per rad/s of joint speed (2026-09-23).
+    # The no-contact baseline grows linearly with speed because the bridge's
+    # inverse dynamics has no joint-friction term:
+    #     baseline ~= 0.41 + 11.5 * max|qd|   (measured, R^2 = 0.976)
+    # 11.5 is that measured slope, so the effective threshold stays ~0.5 Nm
+    # above the baseline at EVERY speed. That is what lets speed_scale be
+    # varied as an experimental factor without the compliance behaviour
+    # changing with it - a fixed threshold either false-triggers at high
+    # speed or, if raised enough to avoid that, sits above a real human
+    # contact (1.50 Nm measured) and detects nothing.
+    # RE-MEASURE AFTER ATTACHING THE CONTAINER: the payload shifts the
+    # baseline's intercept (its gravity moment is pose-dependent and the
+    # startup tare only cancels it at the tare pose), and may change this
+    # slope too. Set to 0 for the old fixed-threshold behaviour.
+    contact_moment_speed_gain: 0.0
     # Wrench-independent backstop: pause + resync if the QP model outruns the
     # real arm by this much. 60% of the bridge's model_real_gate (0.05 rad),
     # so it fires before the gate does - past the gate the bridge stops
@@ -350,7 +377,34 @@ states:
     # exactly 0.00) but moment ~1.5 Nm. Force-based detection therefore never
     # fired at any threshold; this one does. 0.00 Nm when clear, ~1.5 Nm when
     # blocked, so 0.5 leaves wide margin both ways.
-    contact_moment_threshold: 0.5
+    # RAISED 0.5 -> 2.0 on 2026-09-23, deliberately trading contact
+    # sensitivity for a usable speed range (speed is the studied factor).
+    # What the task actually sees is the POST-deadband estimate, and the
+    # bridge's 1.5 Nm deadband_moment already suppresses the no-contact
+    # baseline completely up to ~speed_scale 2 - which is why 1.0 and 1.5
+    # produced Est. moment 0.00 and never false-triggered. At 2.0 the
+    # baseline grazes the deadband and ~1.26 Nm leaked through, tripping the
+    # old 0.5 threshold. 2.0 clears that leak while a real hand contact
+    # (~1.5 Nm ON TOP of the baseline, so ~2.8 Nm at this speed) still
+    # trips it.
+    # INTERIM VALUE - it rests on one measurement and no payload. Re-measure
+    # with the container attached, see contact_moment_speed_gain below.
+    contact_moment_threshold: 2.0
+    # Speed-tracking term, Nm per rad/s of joint speed (2026-09-23).
+    # The no-contact baseline grows linearly with speed because the bridge's
+    # inverse dynamics has no joint-friction term:
+    #     baseline ~= 0.41 + 11.5 * max|qd|   (measured, R^2 = 0.976)
+    # 11.5 is that measured slope, so the effective threshold stays ~0.5 Nm
+    # above the baseline at EVERY speed. That is what lets speed_scale be
+    # varied as an experimental factor without the compliance behaviour
+    # changing with it - a fixed threshold either false-triggers at high
+    # speed or, if raised enough to avoid that, sits above a real human
+    # contact (1.50 Nm measured) and detects nothing.
+    # RE-MEASURE AFTER ATTACHING THE CONTAINER: the payload shifts the
+    # baseline's intercept (its gravity moment is pose-dependent and the
+    # startup tare only cancels it at the tare pose), and may change this
+    # slope too. Set to 0 for the old fixed-threshold behaviour.
+    contact_moment_speed_gain: 0.0
     # Wrench-independent backstop: pause + resync if the QP model outruns the
     # real arm by this much. 60% of the bridge's model_real_gate (0.05 rad),
     # so it fires before the gate does - past the gate the bridge stops
@@ -538,7 +592,34 @@ states:
     # exactly 0.00) but moment ~1.5 Nm. Force-based detection therefore never
     # fired at any threshold; this one does. 0.00 Nm when clear, ~1.5 Nm when
     # blocked, so 0.5 leaves wide margin both ways.
-    contact_moment_threshold: 0.5
+    # RAISED 0.5 -> 2.0 on 2026-09-23, deliberately trading contact
+    # sensitivity for a usable speed range (speed is the studied factor).
+    # What the task actually sees is the POST-deadband estimate, and the
+    # bridge's 1.5 Nm deadband_moment already suppresses the no-contact
+    # baseline completely up to ~speed_scale 2 - which is why 1.0 and 1.5
+    # produced Est. moment 0.00 and never false-triggered. At 2.0 the
+    # baseline grazes the deadband and ~1.26 Nm leaked through, tripping the
+    # old 0.5 threshold. 2.0 clears that leak while a real hand contact
+    # (~1.5 Nm ON TOP of the baseline, so ~2.8 Nm at this speed) still
+    # trips it.
+    # INTERIM VALUE - it rests on one measurement and no payload. Re-measure
+    # with the container attached, see contact_moment_speed_gain below.
+    contact_moment_threshold: 2.0
+    # Speed-tracking term, Nm per rad/s of joint speed (2026-09-23).
+    # The no-contact baseline grows linearly with speed because the bridge's
+    # inverse dynamics has no joint-friction term:
+    #     baseline ~= 0.41 + 11.5 * max|qd|   (measured, R^2 = 0.976)
+    # 11.5 is that measured slope, so the effective threshold stays ~0.5 Nm
+    # above the baseline at EVERY speed. That is what lets speed_scale be
+    # varied as an experimental factor without the compliance behaviour
+    # changing with it - a fixed threshold either false-triggers at high
+    # speed or, if raised enough to avoid that, sits above a real human
+    # contact (1.50 Nm measured) and detects nothing.
+    # RE-MEASURE AFTER ATTACHING THE CONTAINER: the payload shifts the
+    # baseline's intercept (its gravity moment is pose-dependent and the
+    # startup tare only cancels it at the tare pose), and may change this
+    # slope too. Set to 0 for the old fixed-threshold behaviour.
+    contact_moment_speed_gain: 0.0
     # Wrench-independent backstop: pause + resync if the QP model outruns the
     # real arm by this much. 60% of the bridge's model_real_gate (0.05 rad),
     # so it fires before the gate does - past the gate the bridge stops

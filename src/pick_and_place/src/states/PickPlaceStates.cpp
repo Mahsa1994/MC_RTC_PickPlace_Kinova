@@ -425,6 +425,30 @@ struct ComplianceCartesianMove : mc_control::fsm::State
   // sense that anything under the deadband reads as exactly zero anyway.
   double contact_moment_threshold_ = 0.5;  // Nm
 
+  // SPEED-TRACKING THRESHOLD (2026-09-23). The wrench estimate's no-contact
+  // baseline grows LINEARLY with joint speed because the bridge's inverse
+  // dynamics models gravity, Coriolis and inertia but NOT joint friction.
+  // Measured on this arm over speed_scale 1.0/1.5/2.0:
+  //     baseline_moment ~= 0.41 + 11.5 * max|qd|   (Nm, R^2 = 0.976)
+  // With a fixed 0.5 Nm threshold that baseline false-triggers from about
+  // speed_scale 2.0, and by 2.2 it exceeds a real human hand contact
+  // (measured 1.50 Nm) - i.e. detection stops being possible at all.
+  //
+  // Raising the constant instead would have to clear 2.02 Nm to survive
+  // speed_scale 3.0, which is ABOVE a real contact: that disables detection
+  // rather than reducing it. Scaling the threshold with speed keeps the
+  // margin to a real contact CONSTANT across the whole speed range, so
+  // speed can be varied as an experimental factor without the compliance
+  // behaviour varying with it.
+  //
+  // Set this to the measured friction slope (Nm per rad/s). 0 = fixed
+  // threshold, the pre-2026-09-23 behaviour.
+  // RE-MEASURE IT WHENEVER THE PAYLOAD CHANGES - a container on the gripper
+  // shifts the INTERCEPT (its gravity moment is pose-dependent and the
+  // startup tare only cancels it at the tare pose); whether it also changes
+  // this SLOPE depends on how much inertia it adds.
+  double contact_moment_speed_gain_ = 0.0;  // Nm per (rad/s)
+
   // Backstop that does not depend on the wrench estimate at all: if the QP
   // model outruns the real arm by this much, treat it as an obstruction,
   // pause, and resync. Exists because the wrench estimate has now twice
@@ -472,6 +496,7 @@ struct ComplianceCartesianMove : mc_control::fsm::State
     if(config.has("contact_force_threshold")) contact_force_threshold_ = config("contact_force_threshold");
     if(config.has("clear_hold_time"))         clear_hold_time_         = config("clear_hold_time");
     if(config.has("contact_moment_threshold")) contact_moment_threshold_ = config("contact_moment_threshold");
+    if(config.has("contact_moment_speed_gain")) contact_moment_speed_gain_ = config("contact_moment_speed_gain");
     if(config.has("divergence_pause"))        divergence_pause_        = config("divergence_pause");
     if(config.has("advance_on_timeout"))      advance_on_timeout_      = config("advance_on_timeout");
     if(config.has("v_max_lin"))               v_max_lin_               = config("v_max_lin");
@@ -664,8 +689,22 @@ struct ComplianceCartesianMove : mc_control::fsm::State
       }
     }
 
+    // Real joint speed drives the friction-induced baseline, so the moment
+    // threshold rides on it (see contact_moment_speed_gain_ above).
+    double max_qd = 0.0;
+    {
+      const auto & ra  = ctl.realRobot().mbc().alpha;
+      const auto & mbs = ctl.realRobot().mb().joints();
+      for(size_t ji = 0; ji < mbs.size(); ++ji)
+      {
+        if(mbs[ji].dof() != 1) continue;
+        max_qd = std::max(max_qd, std::abs(ra[ji][0]));
+      }
+    }
+    const double m_thresh = contact_moment_threshold_ + contact_moment_speed_gain_ * max_qd;
+
     const bool by_force  = f > contact_force_threshold_;
-    const bool by_moment = m > contact_moment_threshold_;
+    const bool by_moment = m > m_thresh;
     const bool by_dev    = divergence_pause_ > 0.0 && dev > divergence_pause_;
 
     const bool was_paused = paused_;
@@ -698,7 +737,7 @@ struct ComplianceCartesianMove : mc_control::fsm::State
         mc_rtc::log::warning(
             "[{}] CLOCK PAUSED  - triggered by {}: force {:.2f}/{:.2f} N, moment {:.2f}/{:.2f} Nm, "
             "model-vs-real {:.4f}/{:.4f} rad. t_elapsed frozen at {:.2f}s of {:.2f}s",
-            name(), pause_cause_, f, contact_force_threshold_, m, contact_moment_threshold_,
+            name(), pause_cause_, f, contact_force_threshold_, m, m_thresh,
             dev, divergence_pause_, t_elapsed_, effective_duration_);
       }
       else
@@ -869,7 +908,7 @@ struct ComplianceCartesianMove : mc_control::fsm::State
             "force {:.2f}/{:.2f} N, moment {:.2f}/{:.2f} Nm",
             name(), pos_err, ori_err, t_elapsed_, effective_duration_,
             paused_ ? " PAUSED - contact" : " running", f, contact_force_threshold_,
-            m, contact_moment_threshold_);
+            m, m_thresh);
 
       // DIAGNOSTIC (2026-08-26): a live MoveToPick stall showed pos_err/
       // ori_err and the SIGN CHECK world_dev completely static (not slowly
