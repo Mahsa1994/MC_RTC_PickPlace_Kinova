@@ -78,7 +78,7 @@ place_pose:
 # Per-leg overrides still work: set a state's own v_max* if one leg needs to
 # differ from the global scale (e.g. keeping the descent slow while the
 # traverse speeds up).
-speed_scale: 1.5
+speed_scale: 2.0
 
 # ─────────────────────────────────────────────────────────────────────────
 #  EXPERIMENT KNOBS (2026-09-07) - what to change per trial condition

@@ -47,17 +47,25 @@ try : mc_control::fsm::Controller(rm, dt, config)
   // real arm saturated near 0.077 rad/s, the 0.023 rad/s shortfall showing
   // up as a divergence ramp that hit the 0.03 stall guard every ~1.5 s.
   // So usable headroom over the validated 0.05 rad/s is ~1.5x, not 4x.
-  // 1.5 is the clamp; going higher needs the BRIDGE fixed first (shorten
-  // time_from_start toward the publish period and/or publish a non-zero
-  // terminal velocity), not a bigger number here.
+  // CLAMP RAISED 1.5 -> 3.0 on 2026-09-23. The ceiling is not fixed: it is
+  // set by the bridge's `delta_max` (how far one command may lead the
+  // measured position), which was 0.002 when 1.5 was measured and is a
+  // launch parameter. Publish rate was verified at a rock-solid 100.000 Hz,
+  // so the loop is NOT the limit.
+  //     usable speed_scale ~= 1.5 * (delta_max / 0.002)
+  // i.e. 0.003 -> ~2.2, 0.004 -> ~3.0. The clamp can therefore no longer
+  // encode the real limit; it is just a sanity bound. THE number that
+  // decides it is `model-vs-real` in the per-state logs: flat and ~0.0002
+  // means there is headroom, a repeated ramp toward 0.03 means the arm is
+  // saturating and the scale is too high for the current delta_max.
   if(config.has("speed_scale"))
   {
     speed_scale_ = config("speed_scale");
-    if(speed_scale_ < 0.1 || speed_scale_ > 1.5)
+    if(speed_scale_ < 0.1 || speed_scale_ > 3.0)
     {
       double req = speed_scale_;
-      speed_scale_ = std::min(1.5, std::max(0.1, speed_scale_));
-      mc_rtc::log::error("[PickPlaceController] speed_scale {:.2f} out of range [0.1, 1.5] - "
+      speed_scale_ = std::min(3.0, std::max(0.1, speed_scale_));
+      mc_rtc::log::error("[PickPlaceController] speed_scale {:.2f} out of range [0.1, 3.0] - "
                          "clamped to {:.2f}. Above ~1.5x the real arm cannot track the model - it "
                          "saturates near 0.077 rad/s because the bridge asks the JTC to reach "
                          "each point in 50 ms with zero terminal velocity.", req, speed_scale_);
