@@ -17,6 +17,7 @@
 // ============================================================
 
 #include "PickPlaceController.h"
+#include <limits>
 
 #include <mc_control/fsm/Controller.h>
 #include <mc_control/fsm/State.h>
@@ -702,10 +703,43 @@ struct ComplianceCartesianMove : mc_control::fsm::State
       }
       else
       {
+        // CLOCK REWIND ON RESUME (2026-09-23).
+        //
+        // While paused we glue the model to the encoders, but the trajectory
+        // clock keeps its old time parameterisation - so targetAt(t_elapsed_)
+        // sits AHEAD of where the arm actually is. On resume the impedance
+        // task closes that gap at whatever its gains allow, with no v_max
+        // bound (the quintic shapes the original path, never a catch-up).
+        // Live, that burst blew past delta_max's tracking limit within 0.18s
+        // and re-tripped the divergence backstop, giving a ~1 Hz
+        // brake-and-go limit cycle: resume -> sprint -> diverge -> pause ->
+        // snap back -> resume, visible as the arm juddering along.
+        //
+        // Rewinding the clock to the point on the path nearest the arm's
+        // actual pose removes the gap entirely, so the resumed motion starts
+        // from zero position error and is speed-bounded by the same quintic
+        // as everything else. The PATH is untouched (waypoints included) -
+        // only the time cursor moves - and it can only ever move BACKWARD,
+        // so a resume can never skip part of the trajectory.
+        const double t_before = t_elapsed_;
+        {
+          const Eigen::Vector3d cur = ctl.robot().frame(ee_frame_).position().translation();
+          const int N = 400;
+          double best_t = t_elapsed_, best_d = std::numeric_limits<double>::max();
+          for(int i = 0; i <= N; ++i)
+          {
+            const double t = effective_duration_ * static_cast<double>(i) / static_cast<double>(N);
+            const double dd = (targetAt(t).translation() - cur).norm();
+            if(dd < best_d) { best_d = dd; best_t = t; }
+          }
+          t_elapsed_ = std::min(t_elapsed_, best_t);
+        }
         mc_rtc::log::warning(
             "[{}] CLOCK RESUMED - clear for {:.2f}s (force {:.2f} N, moment {:.2f} Nm, "
-            "model-vs-real {:.4f} rad). t_elapsed resuming from {:.2f}s of {:.2f}s",
-            name(), clear_hold_time_, f, m, dev, t_elapsed_, effective_duration_);
+            "model-vs-real {:.4f} rad). t_elapsed resuming from {:.2f}s of {:.2f}s "
+            "[rewound {:.2f}s to match the arm's actual pose]",
+            name(), clear_hold_time_, f, m, dev, t_elapsed_, effective_duration_,
+            t_before - t_elapsed_);
       }
     }
 
