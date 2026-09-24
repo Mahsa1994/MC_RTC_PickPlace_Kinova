@@ -205,6 +205,14 @@ private:
   // joint stops, push again. Soft thresholding rejects sub-deadband noise
   // exactly as before (output is still identically zero below `db`) but has
   // no step at the crossing.
+  // The Kortex driver reports continuous joints wrapped to [-pi, pi] while the
+  // mc_rtc model does not wrap, so model and encoder can differ by 2*pi for
+  // the same physical angle. All model-vs-encoder comparisons go through this.
+  static double angleDiff(double a, double b)
+  {
+    return std::remainder(a - b, 2.0 * M_PI);
+  }
+
   static double softDeadband(double v, double db)
   {
     const double n = std::abs(v);
@@ -593,7 +601,7 @@ private:
       {
         auto idx = ctl_robot.jointIndexByName(ref_order[i]);
         double model_q = ctl_robot.mbc().q[idx][0];
-        double dev = std::abs(model_q - last_enc_q_[i]);
+        double dev = std::abs(angleDiff(model_q, last_enc_q_[i]));
         if (dev > model_real_dev)
         {
           model_real_dev = dev;
@@ -643,7 +651,8 @@ private:
         }
 
         // --- First-command sanity check ---
-        if (!first_cmd_checked_ && std::abs(q_cmd - enc_q[k]) > 0.05)
+        const double diff = angleDiff(q_cmd, enc_q[k]);
+        if (!first_cmd_checked_ && std::abs(diff) > 0.05)
         {
           mc_rtc::log::error(
               "[KortexBridge] FIRST CMD MISMATCH joint {} cmd={:.3f} enc={:.3f} - NOT publishing",
@@ -652,7 +661,9 @@ private:
         }
 
         // --- Per-cycle clamp around measured position ---
-        q_cmd = std::clamp(q_cmd, enc_q[k] - delta_max_, enc_q[k] + delta_max_);
+        // Express the command in the encoder's wrapping so the driver/JTC
+        // never sees a 2*pi jump.
+        q_cmd = enc_q[k] + std::clamp(diff, -delta_max_, delta_max_);
 
         pt.positions.push_back(q_cmd);
         pt.velocities.push_back(qd_cmd);

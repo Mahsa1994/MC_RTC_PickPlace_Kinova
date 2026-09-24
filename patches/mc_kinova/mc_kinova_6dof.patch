@@ -1,0 +1,171 @@
+diff --git a/src/kinova.cpp b/src/kinova.cpp
+index d1e270a..3bc9a87 100644
+--- a/src/kinova.cpp
++++ b/src/kinova.cpp
+@@ -12,7 +12,7 @@ namespace fs = std::filesystem;
+ namespace mc_robots
+ {
+ 
+-inline static std::string kinovaVariant(bool callib, bool use_bota, bool use_ds4)
++inline static std::string kinovaVariant(bool callib, bool use_bota, bool use_ds4, bool dof6 = false)
+ {
+   if(callib)
+   {
+@@ -33,6 +33,7 @@ inline static std::string kinovaVariant(bool callib, bool use_bota, bool use_ds4
+     }
+     else
+     {
++      if(dof6) { mc_rtc::log::info("KinovaRobotModule uses the kinova variant: 'kinova_6dof'"); return "kinova_6dof"; }
+       mc_rtc::log::info("KinovaRobotModule uses the kinova variant: 'kinova_default'");
+       return "kinova_default";
+     }
+@@ -41,8 +42,8 @@ inline static std::string kinovaVariant(bool callib, bool use_bota, bool use_ds4
+   return "";
+ }
+ 
+-KinovaRobotModule::KinovaRobotModule(bool callib, bool use_bota, bool use_ds4)
+-: mc_rbdyn::RobotModule(KINOVA_DESCRIPTION_PATH, kinovaVariant(callib, use_bota, use_ds4))
++KinovaRobotModule::KinovaRobotModule(bool callib, bool use_bota, bool use_ds4, bool dof6)
++: mc_rbdyn::RobotModule(KINOVA_DESCRIPTION_PATH, kinovaVariant(callib, use_bota, use_ds4, dof6))
+ {
+   mc_rtc::log::success("KinovaRobotModule loaded with name: {}", name);
+ 
+@@ -52,7 +53,7 @@ KinovaRobotModule::KinovaRobotModule(bool callib, bool use_bota, bool use_ds4)
+   // Makes all the basic initialization that can be done from an URDF file
+   init(rbd::parsers::from_urdf_file(urdf_path, true));
+ 
+-  rsdf_dir = fs::path(KINOVA_RSDF_DIR) / kinovaVariant(callib, use_bota, use_ds4);
++  rsdf_dir = fs::path(KINOVA_RSDF_DIR) / kinovaVariant(callib, use_bota, use_ds4, dof6);
+   mc_rtc::log::success("KinovaRobotModule using path \"{}\" for rsdf", rsdf_dir);
+ 
+   // Override position, velocity and effort bounds
+@@ -71,7 +72,14 @@ KinovaRobotModule::KinovaRobotModule(bool callib, bool use_bota, bool use_ds4)
+     update_joint_limit("joint_4", -2.45, 0.45);
+     update_joint_limit("joint_5", -3.14, 3.14);
+     update_joint_limit("joint_6", -2.0, 2.0);
+-    update_joint_limit("joint_7", -3.14, 3.14);
++    if(!dof6) { update_joint_limit("joint_7", -3.14, 3.14); }
++  }
++  else if(dof6)
++  {
++    // Gen3 6DOF: joint_1, joint_4 and joint_6 are infinite-rotation actuators
++    // (continuous in kinova_6dof.urdf), so keep their unbounded URDF limits.
++    // joint_3 (+-2.57) and joint_5 (+-2.09) already come from the URDF.
++    update_joint_limit("joint_2", -2.15, 2.15);
+   }
+   else
+   {
+@@ -94,7 +102,7 @@ KinovaRobotModule::KinovaRobotModule(bool callib, bool use_bota, bool use_ds4)
+   update_velocity_limit("joint_4", 2.0944);
+   update_velocity_limit("joint_5", 3.049);
+   update_velocity_limit("joint_6", 3.049);
+-  update_velocity_limit("joint_7", 3.049);
++  if(!dof6) { update_velocity_limit("joint_7", 3.049); }
+   auto update_torque_limit = [this](const std::string & name, double limit)
+   {
+     assert(limit > 0);
+@@ -108,7 +116,7 @@ KinovaRobotModule::KinovaRobotModule(bool callib, bool use_bota, bool use_ds4)
+   update_torque_limit("joint_4", 95);
+   update_torque_limit("joint_5", 45);
+   update_torque_limit("joint_6", 45);
+-  update_torque_limit("joint_7", 45);
++  if(!dof6) { update_torque_limit("joint_7", 45); }
+ 
+   auto set_gear_ratio = [this](const std::string & name, double gr)
+   {
+@@ -122,7 +130,7 @@ KinovaRobotModule::KinovaRobotModule(bool callib, bool use_bota, bool use_ds4)
+   set_gear_ratio("joint_4", 100);
+   set_gear_ratio("joint_5", 100);
+   set_gear_ratio("joint_6", 100);
+-  set_gear_ratio("joint_7", 100);
++  if(!dof6) { set_gear_ratio("joint_7", 100); }
+ 
+   auto set_rotor_inertia = [this](const std::string & name, double ir)
+   {
+@@ -137,11 +145,11 @@ KinovaRobotModule::KinovaRobotModule(bool callib, bool use_bota, bool use_ds4)
+   set_rotor_inertia("joint_4", (double)0.40 * power);
+   set_rotor_inertia("joint_5", (double)0.22 * power);
+   set_rotor_inertia("joint_6", (double)0.22 * power);
+-  set_rotor_inertia("joint_7", (double)0.22 * power);
++  if(!dof6) { set_rotor_inertia("joint_7", (double)0.22 * power); }
+ 
+   // Automatically load the convex hulls associated to each body
+-  fs::path convexPath = fs::path(KINOVA_CONVEX_DIR) / "kinova";
+-  mc_rtc::log::success("KinovaRobotModule using path \"{}\" for convex", convexPath);
++  fs::path convexPath = fs::path(KINOVA_CONVEX_DIR) / (dof6 ? "kinova_6dof" : "kinova");
++  mc_rtc::log::success("KinovaRobotModule using path \"{}\" for convex", convexPath.string());
+ 
+   for(const auto & b : mb.bodies())
+   {
+@@ -180,16 +188,20 @@ KinovaRobotModule::KinovaRobotModule(bool callib, bool use_bota, bool use_ds4)
+   // Define a minimal set of self-collisions
+   _minimalSelfCollisions = {{"base_link", "spherical_wrist_1_link", i, s, d},
+                             {"shoulder_link", "spherical_wrist_1_link", i, s, d},
+-                            {"half_arm_1_link", "spherical_wrist_1_link", i, s, d},
+-                            {"half_arm_2_link", "spherical_wrist_1_link", i, s, d},
++                            {dof6 ? "bicep_link" : "half_arm_1_link", "spherical_wrist_1_link", i, s, d},
+                             {"base_link", "spherical_wrist_2_link", i, s, d},
+                             {"shoulder_link", "spherical_wrist_2_link", i, s, d},
+-                            {"half_arm_1_link", "spherical_wrist_2_link", i, s, d},
+-                            {"half_arm_2_link", "spherical_wrist_2_link", i, s, d},
++                            {dof6 ? "bicep_link" : "half_arm_1_link", "spherical_wrist_2_link", i, s, d},
+                             {"base_link", "bracelet_link", i, s, d},
+                             {"shoulder_link", "bracelet_link", i, s, d},
+-                            {"half_arm_1_link", "bracelet_link", i, s, d},
+-                            {"half_arm_2_link", "bracelet_link", i, s, d}};
++                            {dof6 ? "bicep_link" : "half_arm_1_link", "bracelet_link", i, s, d}};
++  if(!dof6)
++  {
++    _minimalSelfCollisions.insert(_minimalSelfCollisions.end(),
++      {{"half_arm_2_link", "spherical_wrist_1_link", i, s, d},
++       {"half_arm_2_link", "spherical_wrist_2_link", i, s, d},
++       {"half_arm_2_link", "bracelet_link", i, s, d}});
++  }
+ 
+   if(use_bota)
+   {
+@@ -221,7 +233,7 @@ KinovaRobotModule::KinovaRobotModule(bool callib, bool use_bota, bool use_ds4)
+   _stance["joint_4"] = {-2.269};
+   _stance["joint_5"] = {0.0};
+   _stance["joint_6"] = {0.959878729};
+-  _stance["joint_7"] = {1.57};
++  if(!dof6) { _stance["joint_7"] = {1.57}; }
+ 
+   mc_rtc::log::success("KinovaRobotModule uses urdf_path {}", urdf_path);
+ }
+diff --git a/src/kinova.h b/src/kinova.h
+index 519fce5..f79345c 100644
+--- a/src/kinova.h
++++ b/src/kinova.h
+@@ -9,7 +9,7 @@ namespace mc_robots
+ 
+ struct MC_ROBOTS_DLLAPI KinovaRobotModule : public mc_rbdyn::RobotModule
+ {
+-  KinovaRobotModule(bool callib, bool use_bota, bool use_ds4 = false);
++  KinovaRobotModule(bool callib, bool use_bota, bool use_ds4 = false, bool dof6 = false);
+ };
+ 
+ } // namespace mc_robots
+diff --git a/src/module.cpp b/src/module.cpp
+index 8570e46..453ccd9 100644
+--- a/src/module.cpp
++++ b/src/module.cpp
+@@ -7,7 +7,7 @@ extern "C"
+ {
+   ROBOT_MODULE_API void MC_RTC_ROBOT_MODULE(std::vector<std::string> & names)
+   {
+-    names = {"Kinova", "KinovaDefault", "KinovaCallib", "KinovaBota", "KinovaBotaDS4"};
++    names = {"Kinova", "KinovaDefault", "KinovaCallib", "KinovaBota", "KinovaBotaDS4", "Kinova6DOF"};
+   }
+   ROBOT_MODULE_API void destroy(mc_rbdyn::RobotModule * ptr)
+   {
+@@ -16,7 +16,8 @@ extern "C"
+   ROBOT_MODULE_API mc_rbdyn::RobotModule * create(const std::string & n)
+   {
+     ROBOT_MODULE_CHECK_VERSION("Kinova")
+-    if(n == "Kinova" || n == "KinovaDefault")
++    if(n == "Kinova6DOF") { return new mc_robots::KinovaRobotModule(false, false, false, true); }
++    else if(n == "Kinova" || n == "KinovaDefault")
+     {
+       return new mc_robots::KinovaRobotModule(false, false);
+     }
