@@ -21,9 +21,13 @@ PATCH_DIR="$WORKSPACE_DIR/patches/mc_kinova"
 PATCH_FILE="$PATCH_DIR/mc_kinova_6dof.patch"
 SHARE_DIR="$PATCH_DIR/share"
 UPSTREAM_PIN="7cf7424"
-# Text unique to the joint-limit fix hunk; presence in kinova.cpp means this
-# source tree already has the patch (see patches/mc_kinova/mc_kinova_6dof.patch).
+# Text unique to the joint-limit fix; presence in kinova.cpp means this
+# source tree already has it (see patches/mc_kinova/mc_kinova_6dof.patch).
 MARKER="infinite-rotation actuators"
+# Text unique to the pre-existing 6DOF scaffolding (dof6 param etc.), which
+# on this image's containers already exists *before* this script ever runs -
+# it predates the joint-limit fix and was not added by this script/patch.
+SCAFFOLD_MARKER="bool dof6"
 
 log()  { echo "[apply_mc_kinova_patch] $*"; }
 err()  { echo "[apply_mc_kinova_patch] ERROR: $*" >&2; }
@@ -35,8 +39,22 @@ fi
 
 # -----------------------------------------------------------------------------
 # 1. Patch the canonical source tree (devel/mc_kinova). Idempotent via MARKER.
+#
+#    Three possible starting states, handled separately because a plain
+#    `git apply` of the bundled patch only works cleanly against a vanilla
+#    upstream checkout (state C below) - most containers built from this
+#    image already have state B, where git apply's context doesn't match
+#    and 3-way merging isn't reliable either:
+#      A. already has the joint-limit fix (MARKER present)      -> skip
+#      B. has the pre-existing 6DOF scaffolding but not the fix
+#         (SCAFFOLD_MARKER present, MARKER absent)              -> targeted
+#                                                                   text
+#                                                                   surgery
+#      C. vanilla upstream mc_kinova, no 6DOF scaffolding at all -> git apply
+#         the full bundled patch (adds scaffolding + the fix together)
 # -----------------------------------------------------------------------------
 DEVEL_SRC="$WORKSPACE_DIR/devel/mc_kinova"
+KINOVA_CPP="$DEVEL_SRC/src/kinova.cpp"
 
 if [[ ! -d "$DEVEL_SRC" ]]; then
   err "$DEVEL_SRC not found - is the mc_rtc superbuild set up (devel/mc_kinova checked out)?"
@@ -45,27 +63,80 @@ fi
 
 git_devel() { git -c safe.directory='*' -C "$DEVEL_SRC" "$@"; }
 
-if grep -q "$MARKER" "$DEVEL_SRC/src/kinova.cpp" 2>/dev/null; then
-  log "devel/mc_kinova already patched, skipping git apply"
-else
-  log "patching devel/mc_kinova ..."
-  if git_devel apply --check "$PATCH_FILE" 2>/dev/null; then
-    git_devel apply "$PATCH_FILE"
-  elif git_devel apply --check -3 "$PATCH_FILE" 2>/dev/null; then
-    # -3way: tolerates a tree that's already partway to the patched state
-    # (e.g. this image's baseline 6DOF scaffolding predates the joint-limit
-    # fix) by merging on the blob level instead of failing outright.
-    git_devel apply -3 "$PATCH_FILE"
+# The exact joint-limit block as it exists before the fix (shared verbatim by
+# the 7DOF and 6DOF variants until this fix teaches it to tell them apart).
+# Must match patches/mc_kinova/mc_kinova_6dof.patch's corresponding hunk.
+ORIG_BLOCK='  else
+  {
+    update_joint_limit("joint_2", -2.15, 2.15);
+    update_joint_limit("joint_4", -2.45, 2.45);
+    update_joint_limit("joint_6", -2.0, 2.0);
+  }'
+FIXED_BLOCK='  else if(dof6)
+  {
+    // Gen3 6DOF: joint_1, joint_4 and joint_6 are infinite-rotation actuators
+    // (continuous in kinova_6dof.urdf), so keep their unbounded URDF limits.
+    // joint_3 (+-2.57) and joint_5 (+-2.09) already come from the URDF.
+    update_joint_limit("joint_2", -2.15, 2.15);
+  }
   else
-    err "patch does not apply to $DEVEL_SRC (expected upstream baseline: $UPSTREAM_PIN)."
-    err "Apply it by hand, see $PATCH_DIR/README.md."
+  {
+    update_joint_limit("joint_2", -2.15, 2.15);
+    update_joint_limit("joint_4", -2.45, 2.45);
+    update_joint_limit("joint_6", -2.0, 2.0);
+  }'
+
+if grep -q "$MARKER" "$KINOVA_CPP" 2>/dev/null; then
+  log "devel/mc_kinova already patched (state A), skipping."
+
+elif grep -q "$SCAFFOLD_MARKER" "$DEVEL_SRC/src/kinova.h" 2>/dev/null; then
+  log "devel/mc_kinova has 6DOF scaffolding but not the joint-limit fix (state B) - applying targeted fix ..."
+  python3 - "$KINOVA_CPP" <<PYEOF
+import sys
+path = sys.argv[1]
+orig = """$ORIG_BLOCK"""
+fixed = """$FIXED_BLOCK"""
+text = open(path).read()
+n = text.count(orig)
+if n != 1:
+    print(f"expected exactly 1 occurrence of the original joint-limit block, found {n}", file=sys.stderr)
+    sys.exit(1)
+open(path, "w").write(text.replace(orig, fixed, 1))
+PYEOF
+  if [[ $? -ne 0 ]]; then
+    err "targeted text substitution failed - $KINOVA_CPP doesn't match the expected pre-fix text."
+    err "Diff it by hand against patches/mc_kinova/mc_kinova_6dof.patch, see $PATCH_DIR/README.md."
     exit 1
   fi
-  if ! grep -q "$MARKER" "$DEVEL_SRC/src/kinova.cpp"; then
-    err "patch applied but marker text still missing - inspect $DEVEL_SRC/src/kinova.cpp"
+  if ! grep -q "$MARKER" "$KINOVA_CPP"; then
+    err "substitution ran but marker text still missing - inspect $KINOVA_CPP"
     exit 1
   fi
-  log "devel/mc_kinova patched."
+  log "devel/mc_kinova patched (targeted)."
+
+else
+  log "devel/mc_kinova looks like a vanilla upstream checkout (state C) - applying full patch ..."
+  patch_err="$(git_devel apply --check "$PATCH_FILE" 2>&1)"
+  if [[ -z "$patch_err" ]]; then
+    git_devel apply "$PATCH_FILE"
+  else
+    log "plain git apply --check failed, trying -3way. (reason: $patch_err)"
+    patch_err3="$(git_devel apply --check -3 "$PATCH_FILE" 2>&1)"
+    if [[ -z "$patch_err3" ]]; then
+      git_devel apply -3 "$PATCH_FILE"
+    else
+      err "patch does not apply to $DEVEL_SRC (expected upstream baseline: $UPSTREAM_PIN)."
+      err "git apply error: $patch_err"
+      err "git apply -3 error: $patch_err3"
+      err "Apply it by hand, see $PATCH_DIR/README.md."
+      exit 1
+    fi
+  fi
+  if ! grep -q "$MARKER" "$KINOVA_CPP"; then
+    err "patch applied but marker text still missing - inspect $KINOVA_CPP"
+    exit 1
+  fi
+  log "devel/mc_kinova patched (full patch)."
 fi
 
 # -----------------------------------------------------------------------------
