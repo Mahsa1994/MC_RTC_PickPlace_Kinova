@@ -10,33 +10,59 @@
 #include <string>
 #include <vector>
 
-// Joint-space admittance, replacing the previous Cartesian AdmittanceTask
-// (referenced at tool_frame). The bridge now publishes a per-joint,
-// gravity/inertia-compensated external torque estimate `tau_ext` (one entry
-// per joint in refJointOrder()) directly to the datastore under
-// "KHG::tau_ext" instead of collapsing it into a single 6D wrench - see
-// kortex_mc_rtc_bridge_admittance.cpp. That collapse was the source of the
-// "off-tool-frame push looks like wrist rotation" problem noted in the prior
-// version of this file; per-joint torque has no such lever-arm ambiguity.
+// Joint-space admittance. The bridge publishes a per-joint, gravity/inertia-
+// compensated external torque estimate under "KHG::tau_ext" (refJointOrder()
+// order). Each tick we turn it into a desired joint velocity and ask the QP
+// to track that velocity: target = q_ctl + qdot*dt AND refVel = qdot. With
+// Tasks' PostureTask law  qddot = K*(q_t - q) + D*(refVel - qdot)  this makes
+// the control robot's velocity converge to qdot with time constant 1/D.
+//
+// The target is anchored to the CONTROL robot (the QP's own state), not the
+// measured one: the real arm is position-controlled and always lags the
+// command by its tracking error, so anchoring to the measured pose meant the
+// target sat ~one tracking-error behind the model and the QP never moved.
 struct HandGuideState : mc_control::fsm::State
 {
+  void configure(const mc_rtc::Configuration & config) override
+  {
+    config("stiffness", stiffness_);
+    config("damping", damping_);
+    config("weight", weight_);
+    config("maxJointVel", maxJointVel_);
+    config("holdTorque", hold_torque_);
+    config("guideTorque", guide_torque_);
+    if(config.has("admittance"))
+    {
+      std::vector<double> a = config("admittance");
+      if(a.size() == 6) { for(int i = 0; i < 6; ++i) { admittance_[i] = a[static_cast<size_t>(i)]; } }
+      else { mc_rtc::log::error("[HandGuideState] admittance must have 6 entries, got {}", a.size()); }
+    }
+  }
+
   void start(mc_control::fsm::Controller & ctl) override
   {
     postureTask_ = std::make_shared<mc_tasks::PostureTask>(
-        ctl.solver(), ctl.robot().robotIndex(), 1.0, 1.0);
+        ctl.solver(), ctl.robot().robotIndex(), stiffness_, weight_);
+    postureTask_->damping(damping_);
     ctl.solver().addTask(postureTask_);
 
     jointNames_ = ctl.robot().refJointOrder();
+    const auto & mb = ctl.robot().mb();
+    nrDof_ = mb.nrDof();
+    dofIdx_.clear();
+    for(const auto & jn : jointNames_)
+    {
+      dofIdx_.push_back(mb.jointPosInDof(static_cast<int>(mb.jointIndexByName(jn))));
+    }
+    qdot_des_ = Eigen::VectorXd::Zero(nrDof_);
+    tau_ = Eigen::VectorXd::Zero(static_cast<int>(jointNames_.size()));
 
-    // Enter HandGuide already holding: the operator is not pushing yet, so the
-    // correct initial behaviour is to keep the pose we arrived at, not to float.
     holding_ = true;
-    hold_q_  = ctl.realRobot().mbc().q;
+    hold_q_  = ctl.robot().mbc().q;
+    postureTask_->posture(hold_q_);
 
     ctl.gui()->addElement({"Control"},
-        mc_rtc::gui::Button("Stop Hand-Guiding", [this]() {
-          stopRequested_ = true;
-        }),
+        mc_rtc::gui::Button("Stop Hand-Guiding", [this]() { stopRequested_ = true; }),
         mc_rtc::gui::Label("Guide state", [this]() {
           return holding_ ? std::string("HOLD (latched)") : std::string("GUIDING");
         }),
@@ -46,28 +72,33 @@ struct HandGuideState : mc_control::fsm::State
             [this]() { return hold_torque_; }, [this](double v) { hold_torque_ = v; }),
         mc_rtc::gui::NumberInput("guide when max|tau| above",
             [this]() { return guide_torque_; }, [this](double v) { guide_torque_ = v; }),
-        mc_rtc::gui::NumberInput("joint admittance (rad/s per Nm)",
-            [this]() { return admittance_; }, [this](double v) { admittance_ = v; }),
+        mc_rtc::gui::ArrayInput("joint admittance (rad/s per Nm)", jointNames_,
+            [this]() -> const Eigen::Matrix<double, 6, 1> & { return admittance_; },
+            [this](const Eigen::Matrix<double, 6, 1> & v) { admittance_ = v; }),
         mc_rtc::gui::NumberInput("max joint vel (rad/s)",
-            [this]() { return maxJointVel_; }, [this](double v) { maxJointVel_ = v; }));
+            [this]() { return maxJointVel_; }, [this](double v) { maxJointVel_ = v; }),
+        mc_rtc::gui::NumberInput("posture stiffness",
+            [this]() { return stiffness_; },
+            [this](double v) { stiffness_ = v; postureTask_->stiffness(v); postureTask_->damping(damping_); }),
+        mc_rtc::gui::NumberInput("posture damping",
+            [this]() { return damping_; },
+            [this](double v) { damping_ = v; postureTask_->damping(v); }));
 
-    mc_rtc::log::success("[HandGuideState] Active — push the arm!");
+    ctl.logger().addLogEntry("HandGuide_tau_ext", this, [this]() -> const Eigen::VectorXd & { return tau_; });
+    ctl.logger().addLogEntry("HandGuide_qdot_des", this, [this]() -> const Eigen::VectorXd & { return qdot_des_; });
+    ctl.logger().addLogEntry("HandGuide_holding", this, [this]() { return holding_; });
+
+    mc_rtc::log::success("[HandGuideState] Active (K={}, D={}, w={}, maxVel={} rad/s) - push the arm!",
+                         stiffness_, damping_, weight_, maxJointVel_);
   }
 
   bool run(mc_control::fsm::Controller & ctl) override
   {
-    // Per-joint external torque estimate from the bridge (already gravity/
-    // inertia-compensated and tared/filtered/deadbanded there). Falls back to
-    // zero if the bridge hasn't populated it yet.
     const Eigen::VectorXd zero = Eigen::VectorXd::Zero(static_cast<int>(jointNames_.size()));
-    const auto & tau_ext = ctl.datastore().get<Eigen::VectorXd>("KHG::tau_ext", zero);
+    tau_ = ctl.datastore().get<Eigen::VectorXd>("KHG::tau_ext", zero);
+    tauNorm_ = tau_.size() > 0 ? tau_.cwiseAbs().maxCoeff() : 0.0;
 
-    tauNorm_ = tau_ext.size() > 0 ? tau_ext.cwiseAbs().maxCoeff() : 0.0;
-
-    // Single global hold/guide switch for the whole arm (matches how Kinova's
-    // own firmware models joint admittance as one mode, not per-joint), with
-    // hysteresis (hold_* below, guide_* above) to avoid chattering at the
-    // boundary - same reasoning as the previous Cartesian version.
+    // Single global hold/guide switch with hysteresis so the boundary doesn't chatter.
     if(holding_)
     {
       if(tauNorm_ > guide_torque_)
@@ -79,34 +110,34 @@ struct HandGuideState : mc_control::fsm::State
     else if(tauNorm_ < hold_torque_)
     {
       holding_ = true;
-      hold_q_  = ctl.realRobot().mbc().q;
+      // Hold the control robot's pose, not the measured one: the arm is
+      // position-controlled and will settle onto the command, whereas
+      // re-targeting the (lagging) measured pose closes a loop through the
+      // hardware that can ring.
+      hold_q_ = ctl.robot().mbc().q;
       mc_rtc::log::info("[HandGuideState] HOLD latched (max|tau|={:.2f} Nm)", tauNorm_);
     }
 
     if(holding_)
     {
+      qdot_des_.setZero();
+      postureTask_->refVel(qdot_des_);
       postureTask_->posture(hold_q_);
     }
     else
     {
-      // Direct admittance law: joint velocity proportional to external
-      // torque, same first-order form (v = gain * error) as the Cartesian
-      // task it replaces. Integrated one step ahead of the MEASURED pose
-      // (not the QP's own model) and given to PostureTask::target(), which
-      // sidesteps needing raw nrDof-vector ordering for refVel(). Re-anchoring
-      // to the measured pose every tick is the same anti-windup reasoning as
-      // before: the position error handed to the PD term is always exactly
-      // one timestep of the admittance-computed velocity, so it cannot wind
-      // up while the operator is pushing.
-      const auto & q_meas = ctl.realRobot().mbc().q;
+      const auto & q_ctl = ctl.robot().mbc().q;
       const double dt = ctl.solver().dt();
       std::map<std::string, std::vector<double>> targets;
       for(size_t i = 0; i < jointNames_.size(); ++i)
       {
+        const int ii = static_cast<int>(i);
+        const double qd = std::clamp(admittance_[ii] * tau_[ii], -maxJointVel_, maxJointVel_);
+        qdot_des_[dofIdx_[i]] = qd;
         auto idx = ctl.robot().jointIndexByName(jointNames_[i]);
-        double qdot = std::clamp(admittance_ * tau_ext[static_cast<int>(i)], -maxJointVel_, maxJointVel_);
-        targets[jointNames_[i]] = {q_meas[idx][0] + qdot * dt};
+        targets[jointNames_[i]] = {q_ctl[idx][0] + qd * dt};
       }
+      postureTask_->refVel(qdot_des_);
       postureTask_->target(targets);
     }
 
@@ -120,6 +151,7 @@ struct HandGuideState : mc_control::fsm::State
 
   void teardown(mc_control::fsm::Controller & ctl) override
   {
+    ctl.logger().removeLogEntries(this);
     ctl.solver().removeTask(postureTask_);
     ctl.gui()->removeCategory({"Control"});
     mc_rtc::log::info("[HandGuideState] Torn down.");
@@ -128,20 +160,24 @@ struct HandGuideState : mc_control::fsm::State
 private:
   std::shared_ptr<mc_tasks::PostureTask> postureTask_;
   std::vector<std::string> jointNames_;
+  std::vector<int> dofIdx_;
+  int nrDof_ = 0;
   bool stopRequested_ = false;
 
   bool holding_ = true;
   std::vector<std::vector<double>> hold_q_;
   double tauNorm_ = 0.0;
+  Eigen::VectorXd tau_;
+  Eigen::VectorXd qdot_des_;
 
-  // First-pass gains, shared across all 6 joints (split per-joint later if a
-  // specific joint needs it - these are starting points, not measured
-  // values). Tune live via the GUI exactly like the Cartesian gains were
-  // tuned before.
-  double admittance_   = 0.01;  // rad/s per Nm of external torque
-  double maxJointVel_  = 0.3;   // rad/s
-  double hold_torque_  = 0.5;   // Nm - enter HOLD below this (max over joints)
-  double guide_torque_ = 1.0;   // Nm - leave HOLD above this
+  // Defaults; override per-controller in KinovaHandGuiding.yaml (HandGuide state block).
+  Eigen::Matrix<double, 6, 1> admittance_ = Eigen::Matrix<double, 6, 1>::Constant(0.05); // rad/s per Nm
+  double maxJointVel_  = 0.5;    // rad/s
+  double hold_torque_  = 0.5;    // Nm - enter HOLD below this (max over joints)
+  double guide_torque_ = 1.0;    // Nm - leave HOLD above this
+  double stiffness_    = 100.0;
+  double damping_      = 20.0;   // velocity tracks refVel with tau = 1/D = 50 ms
+  double weight_       = 100.0;
 };
 
 EXPORT_SINGLE_STATE("KHG::HandGuideState", HandGuideState)

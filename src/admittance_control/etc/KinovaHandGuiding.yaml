@@ -1,8 +1,9 @@
 Name: KinovaHandGuiding
 MainRobot: Kinova6DOF
-# Must match mc_rtc.yaml's global Timestep and the bridge's loop_dt (1kHz) -
-# see that file's comment.
-Timestep: 0.001
+# Informational only: the control period actually comes from the global
+# ~/.config/mc_rtc/mc_rtc.yaml (Timestep: 0.005) and the bridge reads it via
+# gc_->timestep(), so the three can't drift apart.
+Timestep: 0.005
 Managed: false
 StepByStep: false
 
@@ -52,6 +53,15 @@ states:
 
   HandGuide:
     base: KHG::HandGuideState
+    # rad/s per Nm, per joint in refJointOrder (joint_1..joint_6). Wrist joints
+    # see smaller torques for the same hand force, so they get more admittance.
+    admittance: [0.05, 0.05, 0.05, 0.08, 0.08, 0.08]
+    maxJointVel: 0.5
+    holdTorque: 0.5
+    guideTorque: 1.0
+    stiffness: 100.0
+    damping: 20.0
+    weight: 100.0
 
   UpdateHoldTarget:
     base: KHG::UpdateHoldTarget

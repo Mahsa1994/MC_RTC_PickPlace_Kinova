@@ -14,12 +14,15 @@
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <trajectory_msgs/msg/joint_trajectory.hpp>
 #include <geometry_msgs/msg/wrench_stamped.hpp>
+#include <std_msgs/msg/float64_multi_array.hpp>
 #include <mc_control/mc_global_controller.h>
 #include <mc_rtc/logging.h>
 #include <SpaceVecAlg/SpaceVecAlg>
 
 #include <RBDyn/ID.h>
+#include <RBDyn/Jacobian.h>
 
+#include <chrono>
 #include <mutex>
 #include <atomic>
 #include <vector>
@@ -36,9 +39,16 @@ public:
     dry_run_    = this->declare_parameter("dry_run", true);
     delta_max_  = this->declare_parameter("delta_max", 0.05);
     model_real_gate_ = this->declare_parameter("model_real_gate", 0.05); // rad; hard publish gate, see run()
-    pub_decim_  = this->declare_parameter("publish_decimation", 10); // 1kHz/10 = 100Hz
+    publish_rate_ = this->declare_parameter("publish_rate", 200.0); // Hz; capped at the control rate
 
     torque_sign_    = this->declare_parameter("torque_sign", 1.0);   // flip to -1.0 if inverted on real
+
+    // Tool payload not present in the mc_kinova URDF (Robotiq 2F-85 + coupling),
+    // modelled as a point mass at payload_com expressed in bracelet_link. The
+    // flange is at z=-0.0615 in that frame; the gripper COM sits ~6 cm beyond it.
+    payload_mass_ = this->declare_parameter("payload_mass", 0.9);
+    payload_com_  = this->declare_parameter("payload_com", std::vector<double>{0.0, 0.0, -0.12});
+    payload_body_ = this->declare_parameter("payload_body", std::string("bracelet_link"));
 
     // Per-joint torque deadband (Nm). Reusing the old Cartesian moment
     // deadband's value as the starting point for the joint-space version -
@@ -58,6 +68,8 @@ public:
 
     pub_ = this->create_publisher<trajectory_msgs::msg::JointTrajectory>(
         "/joint_trajectory_controller/joint_trajectory", 1);
+    tau_pub_     = this->create_publisher<std_msgs::msg::Float64MultiArray>("/admittance/tau_ext", 10);
+    tau_raw_pub_ = this->create_publisher<std_msgs::msg::Float64MultiArray>("/admittance/tau_ext_raw", 10);
 
     gc_ = std::make_shared<mc_control::MCGlobalController>();
 
@@ -128,7 +140,18 @@ private:
   bool dry_run_{true};
   double delta_max_{0.05};
   double model_real_gate_{0.05};
-  int pub_decim_{10};
+  double publish_rate_{200.0};
+  int pub_decim_{1};
+  double payload_mass_{0.0};
+  std::vector<double> payload_com_;
+  std::string payload_body_;
+  std::unique_ptr<rbd::Jacobian> payload_jac_;
+  Eigen::MatrixXd payload_jac_full_;
+  std::chrono::steady_clock::time_point last_loop_tp_;
+  bool has_last_loop_tp_{false};
+  double loop_period_sum_{0.0};
+  double loop_period_max_{0.0};
+  int loop_period_n_{0};
   std::atomic<int64_t> last_js_stamp_ns_{0};
   std::vector<double> last_enc_q_;
   bool first_cmd_checked_{false};
@@ -268,7 +291,28 @@ private:
     // gc_->run() call regardless of real elapsed time, so any mismatch here
     // makes the internal model race ahead of (or lag behind) real time.
     loop_dt_ = gc_->timestep();
-    mc_rtc::log::info("[KortexBridge] Control loop period set to controller timestep: {} s", loop_dt_);
+    pub_decim_ = std::max(1, static_cast<int>(std::lround(1.0 / (loop_dt_ * publish_rate_))));
+    mc_rtc::log::info("[KortexBridge] Control loop period set to controller timestep: {} s; publishing every {} tick(s) ({:.0f} Hz)",
+                      loop_dt_, pub_decim_, 1.0 / (loop_dt_ * pub_decim_));
+
+    if (payload_mass_ > 0.0)
+    {
+      if (gc_->robot().hasBody(payload_body_) && payload_com_.size() == 3)
+      {
+        payload_jac_ = std::make_unique<rbd::Jacobian>(
+            gc_->robot().mb(), payload_body_,
+            Eigen::Vector3d(payload_com_[0], payload_com_[1], payload_com_[2]));
+        payload_jac_full_ = Eigen::MatrixXd::Zero(6, gc_->robot().mb().nrDof());
+        mc_rtc::log::info("[KortexBridge] Payload compensation: {:.3f} kg at [{:.3f}, {:.3f}, {:.3f}] in {}",
+                          payload_mass_, payload_com_[0], payload_com_[1], payload_com_[2], payload_body_);
+      }
+      else
+      {
+        mc_rtc::log::error("[KortexBridge] payload_body '{}' not in model or payload_com not 3 entries - payload compensation DISABLED",
+                           payload_body_);
+        payload_mass_ = 0.0;
+      }
+    }
 
     initialized_ = true;
     timer_ = this->create_wall_timer(
@@ -282,6 +326,28 @@ private:
   {
     if (!initialized_)
       return;
+
+    // Loop-rate diagnostics: the QP integrates assuming loop_dt_ per call, so
+    // a timer that can't keep up silently slows the internal model down.
+    {
+      const auto now_tp = std::chrono::steady_clock::now();
+      if (has_last_loop_tp_)
+      {
+        const double p = std::chrono::duration<double>(now_tp - last_loop_tp_).count();
+        loop_period_sum_ += p;
+        loop_period_max_ = std::max(loop_period_max_, p);
+        if (++loop_period_n_ >= 1000)
+        {
+          const double mean = loop_period_sum_ / loop_period_n_;
+          if (mean > 1.2 * loop_dt_ || loop_period_max_ > 5.0 * loop_dt_)
+            mc_rtc::log::warning("[KortexBridge] control loop period mean {:.2f} ms / max {:.2f} ms (target {:.2f} ms)",
+                                 1e3 * mean, 1e3 * loop_period_max_, 1e3 * loop_dt_);
+          loop_period_sum_ = 0.0; loop_period_max_ = 0.0; loop_period_n_ = 0;
+        }
+      }
+      last_loop_tp_ = now_tp;
+      has_last_loop_tp_ = true;
+    }
 
     // Watchdog: stale joint states -> zero wrench, no commands
     const int64_t age_ns = this->now().nanoseconds() - last_js_stamp_ns_.load();
@@ -373,6 +439,16 @@ private:
       // Convert joint-space torque to DOF-space torque vector
       if (it != dof_map.end() && !mbc_id.jointTorque[i].empty())
         tau_bias[it->second] = mbc_id.jointTorque[i][0];
+    }
+
+    // Payload gravity: motors must supply J_lin^T * (0, 0, m*g) to hold the
+    // point mass, same sign convention as RBDyn's ID with gravity = (0,0,9.81).
+    if (payload_jac_)
+    {
+      const Eigen::MatrixXd & jac = payload_jac_->jacobian(mb, robot.mbc());
+      payload_jac_->fullJacobian(mb, jac, payload_jac_full_);
+      const Eigen::Vector3d f(0.0, 0.0, payload_mass_ * 9.81);
+      tau_bias += payload_jac_full_.bottomRows<3>().transpose() * f;
     }
 
     ///// 4- Per-joint external torque residual (no Jacobian/Cartesian solve -
@@ -474,6 +550,14 @@ private:
     // for HandGuideState's joint-space admittance law.
     gc_->controller().datastore().assign<Eigen::VectorXd>("KHG::tau_ext", tau_ext);
 
+    {
+      std_msgs::msg::Float64MultiArray m;
+      m.data.assign(tau_ext.data(), tau_ext.data() + tau_ext.size());
+      tau_pub_->publish(m);
+      m.data.assign(raw_tau_ext.data(), raw_tau_ext.data() + raw_tau_ext.size());
+      tau_raw_pub_->publish(m);
+    }
+
     static int log_count = 0;
     if (++log_count % 500 == 0)
     {
@@ -530,7 +614,6 @@ private:
 
     if (gc_->run() && comms_ok)
     {
-      // --- Decimate: mc_rtc runs at 1 kHz, publish at ~100 Hz ---
       if (++pub_count_ % pub_decim_ != 0) return;
 
       static const std::vector<std::string> names =
@@ -577,7 +660,8 @@ private:
       if (!sane) return;               // never publish a jumping first command
       first_cmd_checked_ = true;
 
-      pt.time_from_start = rclcpp::Duration(0, 20'000'000); // 20 ms ~= 2x publish period @100Hz
+      // 2x the publish period so the JTC always has a segment to interpolate into
+      pt.time_from_start = rclcpp::Duration::from_seconds(2.0 * loop_dt_ * pub_decim_);
       traj.points.push_back(pt);
 
       if (dry_run_)
@@ -606,6 +690,8 @@ private:
 
   std::shared_ptr<mc_control::MCGlobalController> gc_;
   rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr pub_;
+  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr tau_pub_;
+  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr tau_raw_pub_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr sub_;
   rclcpp::TimerBase::SharedPtr timer_;
 };
