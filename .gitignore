@@ -29,3 +29,7 @@ venv/
 
 .claude/
 *.pub
+
+admittance_*
+fable_logs/
+git
