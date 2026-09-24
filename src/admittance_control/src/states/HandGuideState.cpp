@@ -3,8 +3,12 @@
 #include <mc_rtc/logging.h>
 #include <mc_tasks/PostureTask.h>
 #include <mc_rtc/gui.h>
+#include <RBDyn/FD.h>
+#include <RBDyn/FK.h>
+#include <RBDyn/FV.h>
 #include <Eigen/Core>
 #include <algorithm>
+#include <memory>
 #include <cmath>
 #include <map>
 #include <string>
@@ -21,6 +25,16 @@
 // measured one: the real arm is position-controlled and always lags the
 // command by its tracking error, so anchoring to the measured pose meant the
 // target sat ~one tracking-error behind the model and the QP never moved.
+//
+// Stability: tau_ext contains whatever inertial/tracking torque the bridge's
+// slow acceleration filter didn't cancel, delayed ~60 ms. Feeding that
+// straight back as velocity is a loop whose gain scales with the joint's
+// reflected inertia H_ii(q) - largest with the arm fully extended, where a
+// 6-7 Hz bang-bang limit cycle on joint_2 was observed. Two mitigations:
+//   * velocityTau: first-order lag on the commanded velocity (a virtual
+//     inertia), rolling the loop gain off above ~1 Hz;
+//   * inertiaScaling: per-joint gain scaled by H_ii(stance)/H_ii(q) so the
+//     loop gain stays roughly constant across the workspace.
 struct HandGuideState : mc_control::fsm::State
 {
   void configure(const mc_rtc::Configuration & config) override
@@ -31,6 +45,10 @@ struct HandGuideState : mc_control::fsm::State
     config("maxJointVel", maxJointVel_);
     config("holdTorque", hold_torque_);
     config("guideTorque", guide_torque_);
+    config("velocityTau", velocityTau_);
+    config("inertiaScaling", inertiaScaling_);
+    config("inertiaScaleMin", inertiaScaleMin_);
+    config("inertiaScaleMax", inertiaScaleMax_);
     if(config.has("admittance"))
     {
       std::vector<double> a = config("admittance");
@@ -56,6 +74,22 @@ struct HandGuideState : mc_control::fsm::State
     }
     qdot_des_ = Eigen::VectorXd::Zero(nrDof_);
     tau_ = Eigen::VectorXd::Zero(static_cast<int>(jointNames_.size()));
+    qdot_f_.setZero();
+    inertiaScale_.setOnes();
+    hDiag_.setZero();
+
+    fd_ = std::make_unique<rbd::ForwardDynamics>(mb);
+    {
+      rbd::MultiBodyConfig mbc = ctl.robot().mbc();
+      for(const auto & [jn, qv] : ctl.robot().module().stance())
+      {
+        if(mb.jointIndexByName().count(jn)) { mbc.q[static_cast<size_t>(mb.jointIndexByName(jn))] = qv; }
+      }
+      rbd::forwardKinematics(mb, mbc);
+      rbd::forwardVelocity(mb, mbc);
+      fd_->computeH(mb, mbc);
+      for(size_t i = 0; i < jointNames_.size(); ++i) { hRef_[static_cast<int>(i)] = fd_->H()(dofIdx_[i], dofIdx_[i]); }
+    }
 
     holding_ = true;
     hold_q_  = ctl.robot().mbc().q;
@@ -77,6 +111,13 @@ struct HandGuideState : mc_control::fsm::State
             [this](const Eigen::Matrix<double, 6, 1> & v) { admittance_ = v; }),
         mc_rtc::gui::NumberInput("max joint vel (rad/s)",
             [this]() { return maxJointVel_; }, [this](double v) { maxJointVel_ = v; }),
+        mc_rtc::gui::NumberInput("velocity lag tau (s)",
+            [this]() { return velocityTau_; }, [this](double v) { velocityTau_ = std::max(0.0, v); }),
+        mc_rtc::gui::Checkbox("inertia scaling", [this]() { return inertiaScaling_; },
+            [this]() { inertiaScaling_ = !inertiaScaling_; }),
+        mc_rtc::gui::ArrayInput("inertia scale (applied)", jointNames_,
+            [this]() -> const Eigen::Matrix<double, 6, 1> & { return inertiaScale_; },
+            [](const Eigen::Matrix<double, 6, 1> &) {}),
         mc_rtc::gui::NumberInput("posture stiffness",
             [this]() { return stiffness_; },
             [this](double v) { stiffness_ = v; postureTask_->stiffness(v); postureTask_->damping(damping_); }),
@@ -87,9 +128,13 @@ struct HandGuideState : mc_control::fsm::State
     ctl.logger().addLogEntry("HandGuide_tau_ext", this, [this]() -> const Eigen::VectorXd & { return tau_; });
     ctl.logger().addLogEntry("HandGuide_qdot_des", this, [this]() -> const Eigen::VectorXd & { return qdot_des_; });
     ctl.logger().addLogEntry("HandGuide_holding", this, [this]() { return holding_; });
+    ctl.logger().addLogEntry("HandGuide_inertia_scale", this, [this]() -> const Eigen::Matrix<double, 6, 1> & { return inertiaScale_; });
+    ctl.logger().addLogEntry("HandGuide_H_diag", this, [this]() -> const Eigen::Matrix<double, 6, 1> & { return hDiag_; });
 
-    mc_rtc::log::success("[HandGuideState] Active (K={}, D={}, w={}, maxVel={} rad/s) - push the arm!",
-                         stiffness_, damping_, weight_, maxJointVel_);
+    mc_rtc::log::success("[HandGuideState] Active (K={}, D={}, w={}, maxVel={} rad/s, velTau={} s, inertiaScaling={}) - push the arm!",
+                         stiffness_, damping_, weight_, maxJointVel_, velocityTau_, inertiaScaling_);
+    mc_rtc::log::info("[HandGuideState] H_ref diag at stance: [{:.3f}, {:.3f}, {:.3f}, {:.3f}, {:.3f}, {:.3f}]",
+                      hRef_[0], hRef_[1], hRef_[2], hRef_[3], hRef_[4], hRef_[5]);
   }
 
   bool run(mc_control::fsm::Controller & ctl) override
@@ -110,36 +155,58 @@ struct HandGuideState : mc_control::fsm::State
     else if(tauNorm_ < hold_torque_)
     {
       holding_ = true;
-      // Hold the control robot's pose, not the measured one: the arm is
-      // position-controlled and will settle onto the command, whereas
-      // re-targeting the (lagging) measured pose closes a loop through the
-      // hardware that can ring.
-      hold_q_ = ctl.robot().mbc().q;
       mc_rtc::log::info("[HandGuideState] HOLD latched (max|tau|={:.2f} Nm)", tauNorm_);
     }
 
-    if(holding_)
+    const auto & mb = ctl.robot().mb();
+    const auto & q_ctl = ctl.robot().mbc().q;
+    const double dt = ctl.solver().dt();
+
+    if(inertiaScaling_)
     {
+      fd_->computeH(mb, ctl.robot().mbc());
+      for(size_t i = 0; i < jointNames_.size(); ++i)
+      {
+        const int ii = static_cast<int>(i);
+        hDiag_[ii] = fd_->H()(dofIdx_[i], dofIdx_[i]);
+        inertiaScale_[ii] = std::clamp(hRef_[ii] / std::max(hDiag_[ii], 1e-6), inertiaScaleMin_, inertiaScaleMax_);
+      }
+    }
+    else { inertiaScale_.setOnes(); }
+
+    // Same law in both modes: HOLD just drives the torque input to zero so the
+    // commanded velocity decays through the lag instead of stopping dead.
+    const double lag = velocityTau_ > 0.0 ? dt / (velocityTau_ + dt) : 1.0;
+    for(size_t i = 0; i < jointNames_.size(); ++i)
+    {
+      const int ii = static_cast<int>(i);
+      const double tau_in = holding_ ? 0.0 : tau_[ii];
+      const double qd_raw = std::clamp(admittance_[ii] * inertiaScale_[ii] * tau_in, -maxJointVel_, maxJointVel_);
+      qdot_f_[ii] += lag * (qd_raw - qdot_f_[ii]);
+      qdot_des_[dofIdx_[i]] = qdot_f_[ii];
+    }
+
+    const bool settled = holding_ && qdot_f_.cwiseAbs().maxCoeff() < 1e-3;
+    if(settled)
+    {
+      if(!wasSettled_) { hold_q_ = q_ctl; }
+      qdot_f_.setZero();
       qdot_des_.setZero();
       postureTask_->refVel(qdot_des_);
       postureTask_->posture(hold_q_);
     }
     else
     {
-      const auto & q_ctl = ctl.robot().mbc().q;
-      const double dt = ctl.solver().dt();
       std::map<std::string, std::vector<double>> targets;
       for(size_t i = 0; i < jointNames_.size(); ++i)
       {
-        const int ii = static_cast<int>(i);
-        const double qd = std::clamp(admittance_[ii] * tau_[ii], -maxJointVel_, maxJointVel_);
-        qdot_des_[dofIdx_[i]] = qd;
         auto idx = ctl.robot().jointIndexByName(jointNames_[i]);
-        targets[jointNames_[i]] = {q_ctl[idx][0] + qd * dt};
+        targets[jointNames_[i]] = {q_ctl[idx][0] + qdot_f_[static_cast<int>(i)] * dt};
       }
       postureTask_->refVel(qdot_des_);
       postureTask_->target(targets);
     }
+    wasSettled_ = settled;
 
     if(stopRequested_)
     {
@@ -165,10 +232,21 @@ private:
   bool stopRequested_ = false;
 
   bool holding_ = true;
+  bool wasSettled_ = false;
   std::vector<std::vector<double>> hold_q_;
   double tauNorm_ = 0.0;
   Eigen::VectorXd tau_;
   Eigen::VectorXd qdot_des_;
+  Eigen::Matrix<double, 6, 1> qdot_f_ = Eigen::Matrix<double, 6, 1>::Zero();
+  Eigen::Matrix<double, 6, 1> inertiaScale_ = Eigen::Matrix<double, 6, 1>::Ones();
+  Eigen::Matrix<double, 6, 1> hDiag_ = Eigen::Matrix<double, 6, 1>::Zero();
+  Eigen::Matrix<double, 6, 1> hRef_ = Eigen::Matrix<double, 6, 1>::Ones();
+  std::unique_ptr<rbd::ForwardDynamics> fd_;
+
+  double velocityTau_     = 0.15;  // s; virtual-inertia lag on commanded velocity
+  bool   inertiaScaling_  = true;
+  double inertiaScaleMin_ = 0.15;
+  double inertiaScaleMax_ = 1.0;
 
   // Defaults; override per-controller in KinovaHandGuiding.yaml (HandGuide state block).
   Eigen::Matrix<double, 6, 1> admittance_ = Eigen::Matrix<double, 6, 1>::Constant(0.05); // rad/s per Nm

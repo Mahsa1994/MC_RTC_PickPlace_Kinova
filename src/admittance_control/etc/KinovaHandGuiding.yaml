@@ -62,6 +62,13 @@ states:
     stiffness: 100.0
     damping: 20.0
     weight: 100.0
+    # Stability vs. arm extension (see HandGuideState.cpp header):
+    # first-order lag on the commanded velocity, and per-joint gain scaled by
+    # H_ii(stance)/H_ii(q) clamped to [inertiaScaleMin, inertiaScaleMax].
+    velocityTau: 0.15
+    inertiaScaling: true
+    inertiaScaleMin: 0.15
+    inertiaScaleMax: 1.0
 
   UpdateHoldTarget:
     base: KHG::UpdateHoldTarget
