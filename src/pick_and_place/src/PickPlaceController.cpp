@@ -75,6 +75,42 @@ try : mc_control::fsm::Controller(rm, dt, config)
     mc_rtc::log::warning("[PickPlaceController] speed_scale = {:.2f}x - every motion state's "
                          "v_max* is multiplied and its `duration` divided by this.", speed_scale_);
 
+  // ── Trial profiles (2026-09-30) ──────────────────────────────────────────
+  // Named presets that override speed_scale and per-state waypoints, so a
+  // trial condition can be selected at runtime over /trial_config without
+  // restarting the driver, the bridge, or re-taring the wrench estimate.
+  // Anything a profile does not set is left at the state's own YAML value.
+  if(config.has("trials"))
+  {
+    auto trials = config("trials");
+    for(const auto & name : trials.keys())
+    {
+      TrialProfile tp;
+      tp.speed_scale = speed_scale_;                 // default: the global one
+      auto t = trials(name);
+      if(t.has("speed_scale")) tp.speed_scale = t("speed_scale");
+      if(t.has("waypoints"))
+      {
+        auto wps = t("waypoints");
+        for(const auto & st : wps.keys())
+        {
+          std::vector<std::vector<double>> pts = wps(st);
+          std::vector<Eigen::Vector3d> v;
+          for(const auto & p : pts)
+            if(p.size() >= 3) v.emplace_back(p[0], p[1], p[2]);
+          tp.waypoints[st] = v;
+        }
+      }
+      trials_[name] = tp;
+    }
+    std::string names;
+    for(const auto & kv : trials_) names += (names.empty() ? "" : ", ") + kv.first;
+    mc_rtc::log::success("[PickPlaceController] {} trial profile(s) loaded: {}",
+                         trials_.size(), names);
+    mc_rtc::log::info("[PickPlaceController] select one at runtime with:  "
+                      "ros2 topic pub --once /trial_config std_msgs/msg/String \\"data: '<name>'\\"");
+  }
+
   // Clamp Z of reference poses to the safety floor
   auto clampZ = [&](sva::PTransformd & p) {
     Eigen::Vector3d t = p.translation();
@@ -93,6 +129,22 @@ try : mc_control::fsm::Controller(rm, dt, config)
     //    nh_, "/robotiq_gripper_controller/gripper_cmd");
     gripper_action_client_ = rclcpp_action::create_client<control_msgs::action::ParallelGripperCommand>(
         nh_, "/robotiq_gripper_controller/gripper_cmd");
+
+    // Trial selection. The callback runs on mc_rtc's ROS executor thread, so
+    // it only records the request; Idle applies it on the control thread
+    // between cycles (see consumePendingTrial).
+    trial_sub_ = nh_->create_subscription<std_msgs::msg::String>(
+        "/trial_config", 1,
+        [this](const std_msgs::msg::String::SharedPtr msg)
+        {
+          {
+            std::lock_guard<std::mutex> lock(trial_mutex_);
+            pending_trial_ = msg->data;
+            trial_pending_ = true;
+          }
+          mc_rtc::log::info("[PickPlace] trial '{}' requested - will start from Idle", msg->data);
+        });
+    mc_rtc::log::info("[PickPlace] listening on /trial_config for trial selection");
     mc_rtc::log::info("[PickPlaceController] ROS 2 Node handle acquired, Action Client initialized.");
   }
   else

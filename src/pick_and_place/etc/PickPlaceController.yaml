@@ -43,6 +43,57 @@ place_pose:
   rotation:    [-1.0763, 2.3677, 1.9208]
 
 # ═════════════════════════════════════════════════════════════════════════
+#  TRIAL PROFILES - selectable at runtime, no restart (2026-09-30)
+# ═════════════════════════════════════════════════════════════════════════
+# Each entry overrides `speed_scale` and, optionally, the via-points of any
+# Cartesian leg. Anything a profile omits keeps the value the state already
+# has, so a profile only lists what it actually changes.
+#
+# Select one while everything is running:
+#     ros2 topic pub --once /trial_config std_msgs/msg/String "data: 'fast_near'"
+#
+# The controller parks in Idle at the end of each cycle and starts the
+# requested trial from MoveToSafe. Driver, bridge, wrench tare and the arm's
+# live state all persist between trials - that is what makes back-to-back
+# runs possible and keeps conditions comparable.
+#
+# Waypoints are world-frame [x, y, z] the leg passes through; they inherit
+# the target's orientation. HoverToPlace is the participant-facing traverse,
+# so it is the one whose path shape matters for a distance manipulation.
+# Its endpoints are tool [-0.4109, +0.0037, +0.4006] -> [-0.2360, +0.3378,
+# +0.4003], so a via-point near y ~ +0.17 sits mid-traverse; push it to
+# larger |x| to bow the path away from a person standing at +y, smaller to
+# bring it closer.
+#
+# THE WAYPOINTS BELOW ARE PLACEHOLDERS - they have never been run. Dry-run
+# any new via-point and watch it in RViz before a live trial; an arbitrary
+# via-point can drive the arm somewhere neither endpoint suggests.
+trials:
+  slow:
+    speed_scale: 0.5
+  baseline:
+    speed_scale: 1.0
+  fast:
+    speed_scale: 2.5
+  # distance x velocity cells - via-points NOT yet validated
+  slow_near:
+    speed_scale: 0.5
+    waypoints:
+      HoverToPlace: [[-0.29, 0.17, 0.40]]
+  fast_near:
+    speed_scale: 2.5
+    waypoints:
+      HoverToPlace: [[-0.29, 0.17, 0.40]]
+  slow_far:
+    speed_scale: 0.5
+    waypoints:
+      HoverToPlace: [[-0.39, 0.17, 0.42]]
+  fast_far:
+    speed_scale: 2.5
+    waypoints:
+      HoverToPlace: [[-0.39, 0.17, 0.42]]
+
+# ═════════════════════════════════════════════════════════════════════════
 #  speed_scale - THE ONE KNOB TO CHANGE PER TRIAL CONDITION
 # ═════════════════════════════════════════════════════════════════════════
 # Multiplies every motion state's v_max / v_max_lin / v_max_ang AND divides
@@ -679,6 +730,13 @@ states:
   # sequence as specified. Re-running the loop from this state would try to
   # pick again while already holding; add an OpenGripper (and optionally
   # ReturnToZero) before Idle if the cycle should repeat.
+  # Trial gate: holds here between trials, re-enters at MoveToSafe when a
+  # trial name arrives on /trial_config. Remove `next:` to make Idle a dead
+  # end again (the old behaviour).
+  Idle:
+    base: Idle
+    next: MoveToSafe
+
   ReturnToPickPose:
     base: JointMove
     stiffness: 2.0
@@ -764,6 +822,7 @@ transitions:
   - [HoverToPlace,     UnloadObj,        UnloadObj,        Auto]
   - [UnloadObj,        ReturnToPickPose, ReturnToPickPose, Auto]
   - [ReturnToPickPose, Idle,             Idle,             Auto]
+  - [Idle,             MoveToSafe,       MoveToSafe,       Auto]  # trial gate loop-back
   - [ReturnToZero,    Idle,            Idle,            Auto]
 constraints:
   - type: kinematics

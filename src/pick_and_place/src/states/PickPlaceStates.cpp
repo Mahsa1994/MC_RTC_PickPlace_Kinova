@@ -534,9 +534,19 @@ struct ComplianceCartesianMove : mc_control::fsm::State
     // Build the waypoint chain: start -> intermediate waypoints -> final
     // target. Intermediate waypoints inherit the final target's orientation
     // (same convention as CartesianMove's waypoints).
+    // A trial profile may replace this leg's via-points (see `trials:` in the
+    // YAML). Falls through to the state's own `waypoints:` when the active
+    // trial says nothing about this state, so profiles only need to list the
+    // legs they actually change.
+    const std::vector<Eigen::Vector3d> * wp_override = ppc(ctl).waypointsFor(name());
+    const std::vector<Eigen::Vector3d> & wps_in = wp_override ? *wp_override : pos_waypoints_;
+    if(wp_override)
+      mc_rtc::log::info("[{}] trial '{}' overrides waypoints: {} via-point(s)",
+                        name(), ppc(ctl).activeTrial(), wps_in.size());
+
     waypts_.clear();
     waypts_.push_back(start_pose);
-    for(const auto & wp : pos_waypoints_)
+    for(const auto & wp : wps_in)
       waypts_.push_back(sva::PTransformd(final_target.rotation(), wp));
     waypts_.push_back(final_target);
 
@@ -635,7 +645,7 @@ struct ComplianceCartesianMove : mc_control::fsm::State
         "{} waypoint(s) | BINDS ON {} | [speed_scale {:.2f}x; configured lin {:.3f} ang {:.3f} "
         "min {:.2f}s]",
         name(), effective_duration_, duration_ / sc_, v_max_lin_ * sc_, v_max_ang_ * sc_,
-        total_chord, ori_delta, pos_waypoints_.size(),
+        total_chord, ori_delta, wps_in.size(),
         (1.875 * ori_delta / std::max(v_max_ang_ * sc_, 1e-6) >= effective_duration_ - 1e-9)
             ? "v_max_ang"
             : ((1.875 * total_chord / std::max(v_max_lin_ * sc_, 1e-6) >= effective_duration_ - 1e-9)
@@ -1508,13 +1518,53 @@ struct Gripper : mc_control::fsm::State
 // ════════════════════════════════════════════════════════════════════════════
 //  Idle — terminal state
 // ════════════════════════════════════════════════════════════════════════════
+// TRIAL GATE (2026-09-30). Idle used to be a permanent dead end; it is now
+// where the controller parks between experimental trials. It holds position
+// until a trial name arrives on /trial_config, applies that profile
+// (speed_scale + waypoint overrides), and re-enters the cycle at MoveToSafe.
+//
+// Applying the profile HERE, on the control thread and between cycles, is
+// deliberate: changing speed mid-leg would discontinuously retime a
+// trajectory already in flight, and every motion state reads speedScale()
+// in its own start(), so a change made here is picked up cleanly by every
+// leg of the next cycle.
+//
+// Nothing restarts between trials - driver, bridge, wrench tare and the
+// arm's live state all persist, which is the whole point.
 struct Idle : mc_control::fsm::State
 {
-  void start(mc_control::fsm::Controller &) override
+  std::string next_state_;
+  bool announced_ = false;
+
+  void configure(const mc_rtc::Configuration & config) override
   {
-    mc_rtc::log::success("[Idle] Pick-and-place complete.");
+    if(config.has("next")) next_state_ = static_cast<std::string>(config("next"));
   }
-  bool run(mc_control::fsm::Controller &) override { return false; }
+
+  void start(mc_control::fsm::Controller & ctl) override
+  {
+    announced_ = false;
+    mc_rtc::log::success("[Idle] Cycle complete (trial '{}'). Waiting for the next trial on "
+                         "/trial_config - the arm holds here, nothing needs restarting.",
+                         ppc(ctl).activeTrial());
+  }
+
+  bool run(mc_control::fsm::Controller & ctl) override
+  {
+    if(next_state_.empty()) return false;          // no trial gate configured
+    if(ppc(ctl).consumePendingTrial())
+    {
+      output(next_state_);
+      return true;
+    }
+    if(!announced_)
+    {
+      announced_ = true;
+      mc_rtc::log::info("[Idle] idle - publish a trial name to /trial_config to run one");
+    }
+    return false;
+  }
+
   void teardown(mc_control::fsm::Controller &) override {}
 };
 

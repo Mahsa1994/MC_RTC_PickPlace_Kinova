@@ -8,6 +8,9 @@
 
 #include <atomic>
 #include <string>
+#include <map>
+#include <mutex>
+#include <vector>
 
 // Include ROS 2 integration if supported
 #ifdef MC_RTC_HAS_ROS_SUPPORT
@@ -16,6 +19,7 @@
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <control_msgs/action/parallel_gripper_command.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
+#include <std_msgs/msg/string.hpp>
 //#include <control_msgs/action/gripper_command.hpp>
 #endif
 
@@ -39,7 +43,63 @@ public:
   // motion state multiplies its v_max* by this and divides its `duration`
   // by it, so one number makes the whole cycle uniformly faster or slower
   // for a trial condition.
+  // NOT const-fixed any more: a trial profile can replace it at runtime (see
+  // below). States read it in start(), so a change takes effect from the
+  // next leg onward without restarting anything.
   double                   speedScale() const { return speed_scale_; }
+
+  // ── Runtime trial selection (2026-09-30) ────────────────────────────────
+  // A "trial" is a named profile in the YAML's `trials:` block overriding
+  // speed_scale and per-state waypoints. Selecting one publishes its name on
+  // /trial_config; Idle picks it up, applies it, and re-enters the cycle at
+  // MoveToSafe. Nothing restarts - the driver, the bridge, the wrench tare
+  // and the arm's live state all persist across trials, which is what makes
+  // back-to-back experimental runs possible.
+  struct TrialProfile
+  {
+    double speed_scale = 1.0;
+    // state name -> via-points for that state's Cartesian leg
+    std::map<std::string, std::vector<Eigen::Vector3d>> waypoints;
+  };
+
+  /// Waypoint override for `state`, or nullptr if this trial does not set one
+  /// (in which case the state keeps whatever its own YAML `waypoints:` says).
+  const std::vector<Eigen::Vector3d> * waypointsFor(const std::string & state) const
+  {
+    auto t = trials_.find(active_trial_);
+    if(t == trials_.end()) return nullptr;
+    auto w = t->second.waypoints.find(state);
+    return w == t->second.waypoints.end() ? nullptr : &w->second;
+  }
+
+  const std::string & activeTrial() const { return active_trial_; }
+
+  /// Called from Idle on the control thread. If a trial was requested over
+  /// ROS, make it active (applying its speed_scale) and return true.
+  /// Applying HERE rather than in the subscriber callback keeps the change
+  /// off the ROS thread and guarantees it lands between cycles, never
+  /// mid-leg where it would discontinuously retime a trajectory in flight.
+  bool consumePendingTrial()
+  {
+    std::string name;
+    {
+      std::lock_guard<std::mutex> lock(trial_mutex_);
+      if(!trial_pending_) return false;
+      name = pending_trial_;
+      trial_pending_ = false;
+    }
+    auto it = trials_.find(name);
+    if(it == trials_.end())
+    {
+      mc_rtc::log::error("[PickPlace] trial '{}' is not defined - staying idle", name);
+      return false;
+    }
+    active_trial_ = name;
+    speed_scale_  = it->second.speed_scale;
+    mc_rtc::log::success("[PickPlace] TRIAL '{}' starting - speed_scale {:.2f}, {} waypoint override(s)",
+                         active_trial_, speed_scale_, it->second.waypoints.size());
+    return true;
+  }
 
   // Gripper interface (all fully inline to prevent dynamic linking dependency)
   bool isGripperDone() const { return gripper_done_.load(); }
@@ -158,6 +218,12 @@ private:
   double           z_min_limit_ = 0.15;
   double           speed_scale_ = 1.0;
 
+  std::map<std::string, TrialProfile> trials_;
+  std::string        active_trial_ = "(none)";
+  std::string        pending_trial_;
+  bool               trial_pending_ = false;
+  mutable std::mutex trial_mutex_;   // guards pending_trial_/trial_pending_
+
   std::atomic<bool> gripper_done_{true};
 
 #ifdef MC_RTC_HAS_ROS_SUPPORT
@@ -169,6 +235,7 @@ private:
   using GripperCommand    = control_msgs::action::ParallelGripperCommand;
   using GoalHandleGripper = rclcpp_action::ClientGoalHandle<GripperCommand>;
   rclcpp_action::Client<GripperCommand>::SharedPtr gripper_action_client_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr trial_sub_;
 
 
 #endif
