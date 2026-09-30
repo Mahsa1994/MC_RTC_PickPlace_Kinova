@@ -107,8 +107,8 @@ try : mc_control::fsm::Controller(rm, dt, config)
     for(const auto & kv : trials_) names += (names.empty() ? "" : ", ") + kv.first;
     mc_rtc::log::success("[PickPlaceController] {} trial profile(s) loaded: {}",
                          trials_.size(), names);
-    mc_rtc::log::info("[PickPlaceController] select one at runtime with:  "
-                      "ros2 topic pub --once /trial_config std_msgs/msg/String \\"data: '<name>'\\"");
+    mc_rtc::log::info("[PickPlaceController] select one at runtime by publishing its name "
+                      "on /trial_config (std_msgs/msg/String) - see the trials: block in the YAML");
   }
 
   // Clamp Z of reference poses to the safety floor
