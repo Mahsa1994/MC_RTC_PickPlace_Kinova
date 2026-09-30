@@ -1159,7 +1159,7 @@ void start(mc_control::fsm::Controller & ctl) override
     // a different wrap than the YAML value (e.g. +263° → −97°).
     // Reads realRobot() directly (rather than relying on the resync above)
     // so this stays correct even if the resync call is ever reordered.
-      const auto & q   = (ppc(ctl).dryRunValidation() ? ctl.robot() : ctl.realRobot()).mbc().q;
+    const auto & q   = ctl.realRobot().mbc().q;
     const auto & mbs = ctl.robot().mb().joints();
     for(size_t ji = 0; ji < mbs.size(); ++ji)
     {
@@ -1349,9 +1349,12 @@ void start(mc_control::fsm::Controller & ctl) override
     // Convergence judged against the REAL arm (realRobot()), not
     // pt->eval() (the posture task's own ctl.robot()-internal error) -
     // same reasoning as CartesianMove/ComplianceCartesianMove above.
+    // EXCEPT under dry_run_validation, where nothing is published so
+    // realRobot() can never move and this would never converge - there the
+    // model is compared instead so the chain walks through in RViz.
     double err = 0.0;
     {
-      const auto & q   = ctl.realRobot().mbc().q;
+      const auto & q   = (ppc(ctl).dryRunValidation() ? ctl.robot() : ctl.realRobot()).mbc().q;
       const auto & mbs = ctl.robot().mb().joints();
       for(size_t ji = 0; ji < mbs.size(); ++ji)
       {
