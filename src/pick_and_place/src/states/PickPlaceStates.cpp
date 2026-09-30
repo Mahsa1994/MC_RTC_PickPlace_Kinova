@@ -715,7 +715,8 @@ struct ComplianceCartesianMove : mc_control::fsm::State
 
     const bool by_force  = f > contact_force_threshold_;
     const bool by_moment = m > m_thresh;
-    const bool by_dev    = divergence_pause_ > 0.0 && dev > divergence_pause_;
+    const bool by_dev    = divergence_pause_ > 0.0 && dev > divergence_pause_
+                           && !ppc(ctl).dryRunValidation();
 
     const bool was_paused = paused_;
     if(by_force || by_moment || by_dev)
@@ -1300,7 +1301,8 @@ void start(mc_control::fsm::Controller & ctl) override
         if(d > dev) { dev = d; devjoint = mbs[ji].name(); }
       }
     }
-    const bool stalled = divergence_pause_ > 0.0 && dev > divergence_pause_;
+    const bool stalled = divergence_pause_ > 0.0 && dev > divergence_pause_
+                         && !ppc(ctl).dryRunValidation();
     if(stalled)
     {
       resyncControlToReal(ctl);

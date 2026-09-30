@@ -58,6 +58,12 @@ try : mc_control::fsm::Controller(rm, dt, config)
   // decides it is `model-vs-real` in the per-state logs: flat and ~0.0002
   // means there is headroom, a repeated ramp toward 0.03 means the arm is
   // saturating and the scale is too high for the current delta_max.
+  if(config.has("dry_run_validation")) dry_run_validation_ = config("dry_run_validation");
+  if(dry_run_validation_)
+    mc_rtc::log::warning("[PickPlaceController] dry_run_validation = TRUE - the model-vs-real "
+                         "stall guard is DISABLED so the model can run the full path with the "
+                         "bridge in dry_run. Set this back to false before any live run.");
+
   if(config.has("speed_scale"))
   {
     speed_scale_ = config("speed_scale");

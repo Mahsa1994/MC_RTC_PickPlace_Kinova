@@ -48,6 +48,17 @@ public:
   // next leg onward without restarting anything.
   double                   speedScale() const { return speed_scale_; }
 
+  /// True while validating trajectories with the bridge in dry_run.
+  /// In dry_run nothing is published, so realRobot() never moves and
+  /// model-vs-real divergence grows without bound by construction. The stall
+  /// guard then fires and resyncs the model back onto the stationary arm,
+  /// undoing its progress - the model creeps a millimetre and looks frozen
+  /// in RViz. Set `dry_run_validation: true` alongside the bridge's
+  /// dry_run to suppress the guard so the model runs the full path.
+  /// NEVER leave this true for a live run: it disables the protection that
+  /// stops the model outrunning the arm into a model_real_gate deadlock.
+  bool                     dryRunValidation() const { return dry_run_validation_; }
+
   // ── Runtime trial selection (2026-09-30) ────────────────────────────────
   // A "trial" is a named profile in the YAML's `trials:` block overriding
   // speed_scale and per-state waypoints. Selecting one publishes its name on
@@ -231,6 +242,7 @@ private:
   sva::PTransformd place_pose_;
   double           z_min_limit_ = 0.15;
   double           speed_scale_ = 1.0;
+  bool             dry_run_validation_ = false;
 
   std::map<std::string, TrialProfile> trials_;
   std::string        active_trial_ = "(none)";

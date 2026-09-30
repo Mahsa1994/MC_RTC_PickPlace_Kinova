@@ -129,6 +129,16 @@ trials:
 # Per-leg overrides still work: set a state's own v_max* if one leg needs to
 # differ from the global scale (e.g. keeping the descent slow while the
 # traverse speeds up).
+# Set TRUE together with the bridge's dry_run to validate trajectories in
+# RViz. In dry_run nothing is published, so realRobot() never moves and
+# model-vs-real divergence grows by construction - the stall guard then
+# resyncs the model back onto the stationary arm every time it trips, making
+# the model creep ~1 mm and look frozen. This suppresses that guard so the
+# model runs the whole path.
+# MUST be false for any live run - it disables the protection that stops the
+# model outrunning the real arm into a model_real_gate deadlock.
+dry_run_validation: false
+
 speed_scale: 2.5
 # ─────────────────────────────────────────────────────────────────────────
 #  EXPERIMENT KNOBS (2026-09-07) - what to change per trial condition
