@@ -1518,10 +1518,13 @@ struct Gripper : mc_control::fsm::State
 // ════════════════════════════════════════════════════════════════════════════
 //  Idle — terminal state
 // ════════════════════════════════════════════════════════════════════════════
-// TRIAL GATE (2026-09-30). Idle used to be a permanent dead end; it is now
-// where the controller parks between experimental trials. It holds position
+// TRIAL GATE (2026-09-30, gate moved after MoveToSafe on the same day).
+// Idle used to be a permanent dead end. It is now where the controller parks
+// BEFORE each trial, immediately after MoveToSafe: on launch the arm goes to
+// the safe pose and waits rather than running a cycle unprompted, and at the
+// end of every task it returns there and waits again. It holds position
 // until a trial name arrives on /trial_config, applies that profile
-// (speed_scale + waypoint overrides), and re-enters the cycle at MoveToSafe.
+// (speed_scale + waypoint overrides), and releases into MoveToPick.
 //
 // Applying the profile HERE, on the control thread and between cycles, is
 // deliberate: changing speed mid-leg would discontinuously retime a
@@ -1549,8 +1552,9 @@ struct Idle : mc_control::fsm::State
     // latched - a couple of seconds of `ros2 topic pub` (no --once) used to
     // queue a second request and silently run the whole cycle twice.
     ppc(ctl).setAtGate(true);
-    mc_rtc::log::success("[Idle] Cycle complete (trial '{}'). Waiting for the next trial on "
-                         "/trial_config - the arm holds here, nothing needs restarting.",
+    mc_rtc::log::success("[TrialGate] Parked at the safe pose (last trial: '{}'). Waiting for a "
+                         "trial on /trial_config - the arm holds here and nothing needs "
+                         "restarting between trials.",
                          ppc(ctl).activeTrial());
   }
 
@@ -1565,7 +1569,7 @@ struct Idle : mc_control::fsm::State
     if(!announced_)
     {
       announced_ = true;
-      mc_rtc::log::info("[Idle] idle - publish a trial name to /trial_config to run one");
+      mc_rtc::log::info("[TrialGate] waiting - publish a trial name to /trial_config to run one");
     }
     return false;
   }
