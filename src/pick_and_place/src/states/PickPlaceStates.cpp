@@ -971,7 +971,11 @@ struct ComplianceCartesianMove : mc_control::fsm::State
       // next state is harmless if the target was missed. Do NOT set it where
       // the next state grips, releases, tips, or otherwise commits to
       // something physical.
-      if(advance_on_timeout_)
+      // dry_run_validation also advances: the whole point of that mode is to
+      // walk the entire chain in RViz, and nothing is published so a
+      // not-quite-converged leg commits nothing. Holding here would mean
+      // validating one leg per run.
+      if(advance_on_timeout_ || ppc(ctl).dryRunValidation())
       {
         mc_rtc::log::error(
             "[{}] FORCED ADVANCE -> {}: NOT converged after {:.2f}s extra "
