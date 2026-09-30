@@ -95,6 +95,28 @@ try : mc_control::fsm::Controller(rm, dt, config)
       tp.speed_scale = speed_scale_;                 // default: the global one
       auto t = trials(name);
       if(t.has("speed_scale")) tp.speed_scale = t("speed_scale");
+      if(t.has("targets"))          // Cartesian endpoint overrides
+      {
+        auto tg = t("targets");
+        for(const auto & st : tg.keys())
+        {
+          std::vector<double> v = tg(st);
+          if(v.size() >= 3) tp.translations[st] = Eigen::Vector3d(v[0], v[1], v[2]);
+          else mc_rtc::log::error("[PickPlaceController] trial '{}' target for '{}' needs 3 "
+                                  "values, got {} - ignored", name, st, v.size());
+        }
+      }
+      if(t.has("joint_targets"))    // JointMove target overrides
+      {
+        auto jt = t("joint_targets");
+        for(const auto & st : jt.keys())
+        {
+          std::vector<double> v = jt(st);
+          if(v.size() == 6) tp.joint_targets[st] = v;
+          else mc_rtc::log::error("[PickPlaceController] trial '{}' joint_targets for '{}' needs 6 "
+                                  "values, got {} - ignored", name, st, v.size());
+        }
+      }
       if(t.has("waypoints"))
       {
         auto wps = t("waypoints");

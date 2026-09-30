@@ -71,6 +71,20 @@ public:
     double speed_scale = 1.0;
     // state name -> via-points for that state's Cartesian leg
     std::map<std::string, std::vector<Eigen::Vector3d>> waypoints;
+    // state name -> replacement ENDPOINT translation for a Cartesian leg.
+    // Preferred over `waypoints` for a distance manipulation: targetAt()
+    // applies its quintic PER SEGMENT, and a quintic has zero velocity at
+    // both ends, so every via-point makes the arm come to a full STOP
+    // mid-path. That turns a distance manipulation into a distance +
+    // smoothness manipulation, which is a confound. Moving the endpoint
+    // keeps the leg single-segment and continuous.
+    // Rotation is deliberately NOT overridden - the captured orientation was
+    // physically validated and the same one remains valid nearby.
+    std::map<std::string, Eigen::Vector3d> translations;
+    // state name -> replacement joint target for a JointMove leg, so a
+    // profile can keep a following joint-space state consistent with a moved
+    // Cartesian endpoint (e.g. UnloadObj after HoverToPlace).
+    std::map<std::string, std::vector<double>> joint_targets;
   };
 
   /// Waypoint override for `state`, or nullptr if this trial does not set one
@@ -81,6 +95,25 @@ public:
     if(t == trials_.end()) return nullptr;
     auto w = t->second.waypoints.find(state);
     return w == t->second.waypoints.end() ? nullptr : &w->second;
+  }
+
+  /// Endpoint translation override for `state`, or nullptr if this trial does
+  /// not move it (the state then keeps its own YAML target).
+  const Eigen::Vector3d * translationFor(const std::string & state) const
+  {
+    auto t = trials_.find(active_trial_);
+    if(t == trials_.end()) return nullptr;
+    auto w = t->second.translations.find(state);
+    return w == t->second.translations.end() ? nullptr : &w->second;
+  }
+
+  /// Joint-target override for `state`, or nullptr if this trial does not set one.
+  const std::vector<double> * jointTargetFor(const std::string & state) const
+  {
+    auto t = trials_.find(active_trial_);
+    if(t == trials_.end()) return nullptr;
+    auto w = t->second.joint_targets.find(state);
+    return w == t->second.joint_targets.end() ? nullptr : &w->second;
   }
 
   const std::string & activeTrial() const { return active_trial_; }

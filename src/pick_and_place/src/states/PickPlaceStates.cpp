@@ -529,6 +529,19 @@ struct ComplianceCartesianMove : mc_control::fsm::State
 
     resyncControlToReal(ctl);
     sva::PTransformd final_target = resolveTarget(ctl, target_cfg_, ee_frame_);
+    // A trial profile may MOVE this leg's endpoint (see `targets:` in the
+    // YAML). Preferred over `waypoints` for a distance manipulation: a
+    // via-point makes targetAt()'s per-segment quintic stop the arm dead at
+    // that point, so bowing the path also changes motion smoothness. Moving
+    // the endpoint keeps the leg single-segment and continuous. Orientation
+    // is left as captured.
+    if(const Eigen::Vector3d * tr = ppc(ctl).translationFor(name()))
+    {
+      mc_rtc::log::info("[{}] trial '{}' moves endpoint {:.4f} m -> [{:+.4f}, {:+.4f}, {:+.4f}]",
+                        name(), ppc(ctl).activeTrial(),
+                        (*tr - final_target.translation()).norm(), (*tr)(0), (*tr)(1), (*tr)(2));
+      final_target = sva::PTransformd(final_target.rotation(), *tr);
+    }
     sva::PTransformd start_pose   = ctl.robot().frame(ee_frame_).position();
 
     // Build the waypoint chain: start -> intermediate waypoints -> final
@@ -1011,6 +1024,7 @@ struct ComplianceCartesianMove : mc_control::fsm::State
 struct JointMove : mc_control::fsm::State
 {
   std::map<std::string, std::vector<double>> target_joints_;
+  std::map<std::string, std::vector<double>> target_joints_yaml_;  // un-wrapped baseline
   double duration_   = 3.0;   // MINIMUM duration - see effective_duration_/v_max_ below
   double stiffness_  = 2.0;   // now a pure TRACKING gain (how tightly the posture task follows
                                // the moving reference below), not a speed control - see note in start()
@@ -1087,6 +1101,11 @@ struct JointMove : mc_control::fsm::State
       {
         target_joints_["joint_" + std::to_string(i + 1)] = {vals[i]};
       }
+      // Baseline kept separately: start() WRAPS target_joints_ in place to the
+      // nearest equivalent angle, and a trial profile may replace it
+      // entirely. Without this, a wrap or an override from one trial would
+      // leak into the next.
+      target_joints_yaml_ = target_joints_;
     }
   }
 
@@ -1117,6 +1136,17 @@ struct JointMove : mc_control::fsm::State
     for(const auto & j : ctl.robot().mb().joints())
     {
       mc_rtc::log::info("[{}]   '{}' (dof={})", name(), j.name(), j.dof());
+    }
+
+    // Restore the YAML baseline, then let the active trial replace it. Done
+    // here (not in configure) because the profile can change between trials
+    // and start() wraps target_joints_ in place.
+    if(!target_joints_yaml_.empty()) target_joints_ = target_joints_yaml_;
+    if(const std::vector<double> * jt = ppc(ctl).jointTargetFor(name()))
+    {
+      for(size_t i = 0; i < jt->size(); ++i)
+        target_joints_["joint_" + std::to_string(i + 1)] = {(*jt)[i]};
+      mc_rtc::log::info("[{}] trial '{}' overrides joint target", name(), ppc(ctl).activeTrial());
     }
 
 // ── DEBUG: print what WE are commanding ──────────────────────────

@@ -75,23 +75,48 @@ trials:
     speed_scale: 1.0
   fast:
     speed_scale: 2.5
-  # distance x velocity cells - via-points NOT yet validated
+  # ── distance x velocity cells ────────────────────────────────────────────
+  # These use `targets:` (move the traverse ENDPOINT) rather than `waypoints:`
+  # (bow the mid-path). Reason, found live on 2026-09-30: targetAt() applies
+  # its quintic PER SEGMENT and a quintic has zero velocity at both ends, so
+  # every via-point brings the arm to a full STOP mid-traverse. The fast_far
+  # test showed exactly that - visible move/stop intervals. A stop is a
+  # salient motion cue, so bowing the path would have confounded distance
+  # with smoothness. Moving the endpoint keeps the leg single-segment and
+  # continuous.
+  #
+  # Offsets are along the traverse's horizontal normal n = [-0.886, +0.464, 0]
+  # from the captured endpoint [-0.2360, +0.3378, +0.4003]:
+  #   -5 cm -> [-0.192, +0.315, 0.400]   traverse 0.3804 m
+  #   +5 cm -> [-0.280, +0.361, 0.400]   traverse 0.3804 m
+  # Traverse length is nearly identical either way (0.3804 vs 0.3771
+  # straight), so duration barely changes - distance and speed stay
+  # independent, which is the point.
+  #
+  # NOTE: UnloadObj is a JointMove to FIXED joints, so after a moved endpoint
+  # the arm is pulled back to the same tip configuration. The traverse (what
+  # the participant sees) differs; the unload site does not. Add a matching
+  # `joint_targets: {UnloadObj: [...]}` here if the tip should move too.
+  #
+  # PLACEHOLDER LABELS: +/-n is lateral to the traverse, NOT verified against
+  # where a participant actually stands. Give me their x,y and the two
+  # closest-approach distances you want and these become real numbers.
   slow_near:
     speed_scale: 0.5
-    waypoints:
-      HoverToPlace: [[-0.29, 0.17, 0.40]]
+    targets:
+      HoverToPlace: [-0.192, 0.315, 0.400]
   fast_near:
     speed_scale: 2.5
-    waypoints:
-      HoverToPlace: [[-0.29, 0.17, 0.40]]
+    targets:
+      HoverToPlace: [-0.192, 0.315, 0.400]
   slow_far:
     speed_scale: 0.5
-    waypoints:
-      HoverToPlace: [[-0.39, 0.17, 0.42]]
+    targets:
+      HoverToPlace: [-0.280, 0.361, 0.400]
   fast_far:
     speed_scale: 2.5
-    waypoints:
-      HoverToPlace: [[-0.39, 0.17, 0.42]]
+    targets:
+      HoverToPlace: [-0.280, 0.361, 0.400]
 
 # ═════════════════════════════════════════════════════════════════════════
 #  speed_scale - THE ONE KNOB TO CHANGE PER TRIAL CONDITION
