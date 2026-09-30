@@ -859,7 +859,14 @@ struct ComplianceCartesianMove : mc_control::fsm::State
     // (unchanged from before this review) - MoveHome's equivalent no
     // longer does this, see the note there; flagged for a decision on
     // whether MoveToPick/MoveToPlace should match.
-    auto cur = ctl.realRobot().frame(ee_frame_).position();
+    // DRY-RUN VALIDATION (2026-09-30): judge convergence against the MODEL
+    // rather than the encoders. In dry_run nothing is published, so
+    // realRobot() can never reach the target and the state would hold
+    // forever - only one leg per run could be inspected. Comparing the model
+    // lets the whole chain walk through in RViz. Live, this is always
+    // realRobot(): the only thing that proves the ARM got there.
+    const auto & conv_robot = ppc(ctl).dryRunValidation() ? ctl.robot() : ctl.realRobot();
+    auto cur = conv_robot.frame(ee_frame_).position();
     double pos_err = (cur.translation() - waypts_.back().translation()).norm();
     double ori_err = sva::rotationError(cur.rotation(), waypts_.back().rotation()).norm();
 
@@ -911,8 +918,10 @@ struct ComplianceCartesianMove : mc_control::fsm::State
             name(), t_elapsed_ - effective_duration_ - settle_timeout_, pos_err, ori_err,
             next_state_, t_elapsed_, effective_duration_,
             paused_ ? " PAUSED - contact" : " running", f, maxdev, devjoint,
-            maxdev > 0.05 ? "  <<< EXCEEDS model_real_gate - bridge is NOT publishing, arm cannot"
-                            " recover on its own; restart the state/controller" : "");
+            ppc(ctl).dryRunValidation()
+                ? "  (dry_run_validation: model-vs-real is meaningless here - nothing is published)"
+                : (maxdev > 0.05 ? "  <<< EXCEEDS model_real_gate - bridge is NOT publishing, arm"
+                                   " cannot recover on its own; restart the state/controller" : ""));
       else
         mc_rtc::log::warning(
             "[{}] Settling: pos_err={:.4f} m, ori_err={:.4f} rad | clock {:.2f}/{:.2f}s{} | "
@@ -1150,7 +1159,7 @@ void start(mc_control::fsm::Controller & ctl) override
     // a different wrap than the YAML value (e.g. +263° → −97°).
     // Reads realRobot() directly (rather than relying on the resync above)
     // so this stays correct even if the resync call is ever reordered.
-    const auto & q   = ctl.realRobot().mbc().q;
+      const auto & q   = (ppc(ctl).dryRunValidation() ? ctl.robot() : ctl.realRobot()).mbc().q;
     const auto & mbs = ctl.robot().mb().joints();
     for(size_t ji = 0; ji < mbs.size(); ++ji)
     {

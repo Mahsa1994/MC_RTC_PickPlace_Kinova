@@ -137,7 +137,7 @@ trials:
 # model runs the whole path.
 # MUST be false for any live run - it disables the protection that stops the
 # model outrunning the real arm into a model_real_gate deadlock.
-dry_run_validation: false
+dry_run_validation: true
 
 speed_scale: 2.5
 # ─────────────────────────────────────────────────────────────────────────
