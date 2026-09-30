@@ -1544,6 +1544,11 @@ struct Idle : mc_control::fsm::State
   void start(mc_control::fsm::Controller & ctl) override
   {
     announced_ = false;
+    // Open the gate: trial requests are accepted ONLY while parked here.
+    // Anything published mid-cycle is rejected with a warning rather than
+    // latched - a couple of seconds of `ros2 topic pub` (no --once) used to
+    // queue a second request and silently run the whole cycle twice.
+    ppc(ctl).setAtGate(true);
     mc_rtc::log::success("[Idle] Cycle complete (trial '{}'). Waiting for the next trial on "
                          "/trial_config - the arm holds here, nothing needs restarting.",
                          ppc(ctl).activeTrial());
@@ -1565,7 +1570,7 @@ struct Idle : mc_control::fsm::State
     return false;
   }
 
-  void teardown(mc_control::fsm::Controller &) override {}
+  void teardown(mc_control::fsm::Controller & ctl) override { ppc(ctl).setAtGate(false); }
 };
 
 // ════════════════════════════════════════════════════════════════════════════

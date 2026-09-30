@@ -140,12 +140,21 @@ try : mc_control::fsm::Controller(rm, dt, config)
         "/trial_config", 1,
         [this](const std_msgs::msg::String::SharedPtr msg)
         {
+          bool accepted = false;
           {
             std::lock_guard<std::mutex> lock(trial_mutex_);
-            pending_trial_ = msg->data;
-            trial_pending_ = true;
+            if(at_gate_ && !trial_pending_)
+            {
+              pending_trial_ = msg->data;
+              trial_pending_ = true;
+              accepted = true;
+            }
           }
-          mc_rtc::log::info("[PickPlace] trial '{}' requested - will start from Idle", msg->data);
+          if(accepted)
+            mc_rtc::log::info("[PickPlace] trial '{}' accepted - starting", msg->data);
+          else
+            mc_rtc::log::warning("[PickPlace] trial '{}' IGNORED - a cycle is already running. "
+                                 "Wait for TrialGate and publish again.", msg->data);
         });
     mc_rtc::log::info("[PickPlace] listening on /trial_config for trial selection");
     mc_rtc::log::info("[PickPlaceController] ROS 2 Node handle acquired, Action Client initialized.");

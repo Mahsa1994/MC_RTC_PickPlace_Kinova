@@ -79,6 +79,15 @@ public:
   /// Applying HERE rather than in the subscriber callback keeps the change
   /// off the ROS thread and guarantees it lands between cycles, never
   /// mid-leg where it would discontinuously retime a trajectory in flight.
+  /// TrialGate marks itself here so requests are only accepted while the arm
+  /// is actually parked, never mid-cycle.
+  void setAtGate(bool v)
+  {
+    std::lock_guard<std::mutex> lock(trial_mutex_);
+    at_gate_ = v;
+    if(!v) trial_pending_ = false;   // drop anything latched on the way out
+  }
+
   bool consumePendingTrial()
   {
     std::string name;
@@ -87,6 +96,11 @@ public:
       if(!trial_pending_) return false;
       name = pending_trial_;
       trial_pending_ = false;
+      // Close the window immediately: without this, messages arriving between
+      // here and TrialGate::teardown would latch and silently trigger a
+      // SECOND cycle. That is exactly what a couple of seconds of
+      // `ros2 topic pub` (no --once) produced - one publish, two runs.
+      at_gate_ = false;
     }
     auto it = trials_.find(name);
     if(it == trials_.end())
@@ -222,6 +236,7 @@ private:
   std::string        active_trial_ = "(none)";
   std::string        pending_trial_;
   bool               trial_pending_ = false;
+  bool               at_gate_ = false;   // true only while parked in TrialGate
   mutable std::mutex trial_mutex_;   // guards pending_trial_/trial_pending_
 
   std::atomic<bool> gripper_done_{true};
