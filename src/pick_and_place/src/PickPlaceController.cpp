@@ -130,10 +130,13 @@ try : mc_control::fsm::Controller(rm, dt, config)
     gripper_action_client_ = rclcpp_action::create_client<control_msgs::action::ParallelGripperCommand>(
         nh_, "/robotiq_gripper_controller/gripper_cmd");
 
-    // Trial selection. The callback runs on mc_rtc's ROS executor thread, so
-    // it only records the request; Idle applies it on the control thread
-    // between cycles (see consumePendingTrial).
-    trial_sub_ = nh_->create_subscription<std_msgs::msg::String>(
+    // Trial selection on OUR OWN node - see the note in the header. mc_rtc's
+    // node is never spun, so a subscription there is visible to `ros2 topic
+    // info` but its callback never fires. This node is spun from run().
+    // The callback only records the request; Idle applies it between cycles
+    // (see consumePendingTrial).
+    trial_node_ = std::make_shared<rclcpp::Node>("pick_place_trial");
+    trial_sub_ = trial_node_->create_subscription<std_msgs::msg::String>(
         "/trial_config", 1,
         [this](const std_msgs::msg::String::SharedPtr msg)
         {
@@ -176,6 +179,14 @@ catch(const std::exception & e)
 
 bool PickPlaceController::run()
 {
+  // Service the trial-selection node. Throttled to ~10 Hz: at dt=0.001 this
+  // would otherwise run 1000x/s for a message that arrives between trials,
+  // and spin_some does a wait-set check even when idle. 10 Hz is far more
+  // than enough to pick up a trial request while parked in TrialGate.
+  if(trial_node_ && (++trial_spin_tick_ % 100) == 0)
+  {
+    rclcpp::spin_some(trial_node_);
+  }
   return mc_control::fsm::Controller::run();
 }
 

@@ -235,7 +235,17 @@ private:
   using GripperCommand    = control_msgs::action::ParallelGripperCommand;
   using GoalHandleGripper = rclcpp_action::ClientGoalHandle<GripperCommand>;
   rclcpp_action::Client<GripperCommand>::SharedPtr gripper_action_client_;
+  // OWN node for trial selection (2026-09-30), deliberately NOT mc_rtc's.
+  // mc_rtc's ROSBridge node exists to PUBLISH (TF, robot state), which needs
+  // no executor - so a subscription created on it is registered and visible
+  // to `ros2 topic info` but its callback is never dispatched. That is also
+  // the most likely reason the gripper action client on that same node only
+  // ever produced "Gripper timeout, proceeding" and never "Goal accepted":
+  // action clients need spinning too.
+  // This node is spun explicitly from run(), so its callbacks do fire.
+  rclcpp::Node::SharedPtr trial_node_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr trial_sub_;
+  int trial_spin_tick_ = 0;
 
 
 #endif
