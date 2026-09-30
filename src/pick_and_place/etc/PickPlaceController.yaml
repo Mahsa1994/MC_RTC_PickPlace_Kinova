@@ -87,11 +87,18 @@ trials:
   #
   # Offsets are along the traverse's horizontal normal n = [-0.886, +0.464, 0]
   # from the captured endpoint [-0.2360, +0.3378, +0.4003]:
-  #   -5 cm -> [-0.192, +0.315, 0.400]   traverse 0.3804 m
-  #   +5 cm -> [-0.280, +0.361, 0.400]   traverse 0.3804 m
-  # Traverse length is nearly identical either way (0.3804 vs 0.3771
-  # straight), so duration barely changes - distance and speed stay
-  # independent, which is the point.
+  #    -5 cm -> [-0.192, +0.315, 0.400]   traverse 0.3804 m
+  #   +10 cm -> [-0.325, +0.384, 0.400]   traverse 0.3901 m
+  #   +15 cm -> [-0.369, +0.407, 0.400]   traverse 0.4058 m
+  #   +20 cm -> [-0.413, +0.431, 0.400]   traverse 0.4269 m   <- far uses this
+  #   +30 cm -> [-0.502, +0.477, 0.400]   traverse 0.4819 m
+  # DURATION IS IDENTICAL AT EVERY OFFSET. The leg is angular-limited
+  # (0.968 rad of reorientation needs 14.5 s at speed_scale 2.5, while even a
+  # 0.48 m traverse needs only 7.2 s), and moving the endpoint does not change
+  # the orientation delta because the captured rotation is kept. So distance
+  # and speed are genuinely independent factors - neither leaks into the
+  # other. All offsets to +30 cm solve cleanly with comfortable joint-limit
+  # margins (worst: joint_5, +0.75 rad at +30 cm).
   #
   # NOTE: UnloadObj is a JointMove to FIXED joints, so after a moved endpoint
   # the arm is pulled back to the same tip configuration. The traverse (what
@@ -112,11 +119,11 @@ trials:
   slow_far:
     speed_scale: 0.5
     targets:
-      HoverToPlace: [-0.280, 0.361, 0.400]
+      HoverToPlace: [-0.413, 0.431, 0.400]
   fast_far:
     speed_scale: 2.5
     targets:
-      HoverToPlace: [-0.280, 0.361, 0.400]
+      HoverToPlace: [-0.413, 0.431, 0.400]
 
 # ═════════════════════════════════════════════════════════════════════════
 #  speed_scale - THE ONE KNOB TO CHANGE PER TRIAL CONDITION
