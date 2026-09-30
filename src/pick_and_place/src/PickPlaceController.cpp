@@ -1,4 +1,5 @@
 #include "PickPlaceController.h"
+#include <algorithm>
 
 #include <mc_control/mc_controller.h>
 #include <mc_rtc/logging.h>
@@ -25,6 +26,97 @@ try : mc_control::fsm::Controller(rm, dt, config)
   place_pose_  = poseFromConfig(config("place_pose"));
   if(config.has("z_min_limit")) z_min_limit_ = config("z_min_limit");
 
+  // GLOBAL SPEED KNOB (2026-09-23) - one number per trial condition instead
+  // of editing v_max on eight states. Motion states multiply their v_max*
+  // by this and divide `duration` by it; `duration` has to scale too or the
+  // duration-floored legs (MoveUpFromPick is one) would simply ignore the
+  // change and the cycle would not actually get faster.
+  // CEILING CORRECTED 2026-09-23 after a live speed_scale=2.0 run.
+  //
+  // The first estimate here (~0.2 rad/s, "about 4x") was wrong twice over:
+  // it used the admittance bridge's delta_max (0.002) rather than this one's
+  // (0.01), and more importantly delta_max is not what limits tracking at
+  // all. The bridge publishes a new single-point trajectory every 10 ms but
+  // asks the JTC to reach it in 50 ms WITH ZERO TERMINAL VELOCITY
+  // (time_from_start = 50'000'000 ns, pt.velocities = 0), so the arm is
+  // permanently decelerating toward a point that is replaced before it
+  // arrives. That caps real joint speed far below the delta_max figure and
+  // is also what the operator perceives as the arm "braking and moving".
+  //
+  // Measured at speed_scale 2.0 on MoveToSafe: commanded peak 0.100 rad/s,
+  // real arm saturated near 0.077 rad/s, the 0.023 rad/s shortfall showing
+  // up as a divergence ramp that hit the 0.03 stall guard every ~1.5 s.
+  // So usable headroom over the validated 0.05 rad/s is ~1.5x, not 4x.
+  // CLAMP RAISED 1.5 -> 3.0 on 2026-09-23. The ceiling is not fixed: it is
+  // set by the bridge's `delta_max` (how far one command may lead the
+  // measured position), which was 0.002 when 1.5 was measured and is a
+  // launch parameter. Publish rate was verified at a rock-solid 100.000 Hz,
+  // so the loop is NOT the limit.
+  //     usable speed_scale ~= 1.5 * (delta_max / 0.002)
+  // i.e. 0.003 -> ~2.2, 0.004 -> ~3.0. The clamp can therefore no longer
+  // encode the real limit; it is just a sanity bound. THE number that
+  // decides it is `model-vs-real` in the per-state logs: flat and ~0.0002
+  // means there is headroom, a repeated ramp toward 0.03 means the arm is
+  // saturating and the scale is too high for the current delta_max.
+  if(config.has("dry_run_validation")) dry_run_validation_ = config("dry_run_validation");
+  if(dry_run_validation_)
+    mc_rtc::log::warning("[PickPlaceController] dry_run_validation = TRUE - the model-vs-real "
+                         "stall guard is DISABLED so the model can run the full path with the "
+                         "bridge in dry_run. Set this back to false before any live run.");
+
+  if(config.has("speed_scale"))
+  {
+    speed_scale_ = config("speed_scale");
+    if(speed_scale_ < 0.1 || speed_scale_ > 3.0)
+    {
+      double req = speed_scale_;
+      speed_scale_ = std::min(3.0, std::max(0.1, speed_scale_));
+      mc_rtc::log::error("[PickPlaceController] speed_scale {:.2f} out of range [0.1, 3.0] - "
+                         "clamped to {:.2f}. Above ~1.5x the real arm cannot track the model - it "
+                         "saturates near 0.077 rad/s because the bridge asks the JTC to reach "
+                         "each point in 50 ms with zero terminal velocity.", req, speed_scale_);
+    }
+  }
+  if(speed_scale_ != 1.0)
+    mc_rtc::log::warning("[PickPlaceController] speed_scale = {:.2f}x - every motion state's "
+                         "v_max* is multiplied and its `duration` divided by this.", speed_scale_);
+
+  // ── Trial profiles (2026-09-30) ──────────────────────────────────────────
+  // Named presets that override speed_scale and per-state waypoints, so a
+  // trial condition can be selected at runtime over /trial_config without
+  // restarting the driver, the bridge, or re-taring the wrench estimate.
+  // Anything a profile does not set is left at the state's own YAML value.
+  if(config.has("trials"))
+  {
+    auto trials = config("trials");
+    for(const auto & name : trials.keys())
+    {
+      TrialProfile tp;
+      tp.speed_scale = speed_scale_;                 // default: the global one
+      auto t = trials(name);
+      if(t.has("speed_scale")) tp.speed_scale = t("speed_scale");
+      if(t.has("waypoints"))
+      {
+        auto wps = t("waypoints");
+        for(const auto & st : wps.keys())
+        {
+          std::vector<std::vector<double>> pts = wps(st);
+          std::vector<Eigen::Vector3d> v;
+          for(const auto & p : pts)
+            if(p.size() >= 3) v.emplace_back(p[0], p[1], p[2]);
+          tp.waypoints[st] = v;
+        }
+      }
+      trials_[name] = tp;
+    }
+    std::string names;
+    for(const auto & kv : trials_) names += (names.empty() ? "" : ", ") + kv.first;
+    mc_rtc::log::success("[PickPlaceController] {} trial profile(s) loaded: {}",
+                         trials_.size(), names);
+    mc_rtc::log::info("[PickPlaceController] select one at runtime by publishing its name "
+                      "on /trial_config (std_msgs/msg/String) - see the trials: block in the YAML");
+  }
+
   // Clamp Z of reference poses to the safety floor
   auto clampZ = [&](sva::PTransformd & p) {
     Eigen::Vector3d t = p.translation();
@@ -43,6 +135,34 @@ try : mc_control::fsm::Controller(rm, dt, config)
     //    nh_, "/robotiq_gripper_controller/gripper_cmd");
     gripper_action_client_ = rclcpp_action::create_client<control_msgs::action::ParallelGripperCommand>(
         nh_, "/robotiq_gripper_controller/gripper_cmd");
+
+    // Trial selection on OUR OWN node - see the note in the header. mc_rtc's
+    // node is never spun, so a subscription there is visible to `ros2 topic
+    // info` but its callback never fires. This node is spun from run().
+    // The callback only records the request; Idle applies it between cycles
+    // (see consumePendingTrial).
+    trial_node_ = std::make_shared<rclcpp::Node>("pick_place_trial");
+    trial_sub_ = trial_node_->create_subscription<std_msgs::msg::String>(
+        "/trial_config", 1,
+        [this](const std_msgs::msg::String::SharedPtr msg)
+        {
+          bool accepted = false;
+          {
+            std::lock_guard<std::mutex> lock(trial_mutex_);
+            if(at_gate_ && !trial_pending_)
+            {
+              pending_trial_ = msg->data;
+              trial_pending_ = true;
+              accepted = true;
+            }
+          }
+          if(accepted)
+            mc_rtc::log::info("[PickPlace] trial '{}' accepted - starting", msg->data);
+          else
+            mc_rtc::log::warning("[PickPlace] trial '{}' IGNORED - a cycle is already running. "
+                                 "Wait for TrialGate and publish again.", msg->data);
+        });
+    mc_rtc::log::info("[PickPlace] listening on /trial_config for trial selection");
     mc_rtc::log::info("[PickPlaceController] ROS 2 Node handle acquired, Action Client initialized.");
   }
   else
@@ -74,6 +194,14 @@ catch(const std::exception & e)
 
 bool PickPlaceController::run()
 {
+  // Service the trial-selection node. Throttled to ~10 Hz: at dt=0.001 this
+  // would otherwise run 1000x/s for a message that arrives between trials,
+  // and spin_some does a wait-set check even when idle. 10 Hz is far more
+  // than enough to pick up a trial request while parked in TrialGate.
+  if(trial_node_ && (++trial_spin_tick_ % 100) == 0)
+  {
+    rclcpp::spin_some(trial_node_);
+  }
   return mc_control::fsm::Controller::run();
 }
 
