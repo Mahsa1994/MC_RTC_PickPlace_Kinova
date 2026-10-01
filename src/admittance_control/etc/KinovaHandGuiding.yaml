@@ -69,6 +69,18 @@ states:
     inertiaScaling: true
     inertiaScaleMin: 0.15
     inertiaScaleMax: 1.0
+    # Grip-induced 1-2 Hz oscillation (worst at low poses, see
+    # HandGuideState.cpp header): per joint, scale admittance down when the
+    # 0.8-3 Hz band RMS of its commanded velocity exceeds oscOnset and has
+    # reversed sign twice within oscWindow, reaching oscMinScale at oscFull;
+    # recover over oscRelease seconds.
+    oscDamping: true
+    oscOnset: 0.025
+    oscFull: 0.05
+    oscMinScale: 0.25
+    oscRelease: 2.0
+    oscReversalBand: 0.015
+    oscWindow: 1.5
 
   UpdateHoldTarget:
     base: KHG::UpdateHoldTarget

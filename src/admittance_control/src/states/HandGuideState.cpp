@@ -35,6 +35,22 @@
 //     inertia), rolling the loop gain off above ~1 Hz;
 //   * inertiaScaling: per-joint gain scaled by H_ii(stance)/H_ii(q) so the
 //     loop gain stays roughly constant across the workspace.
+//
+// A second, slower mode (1-2 Hz on joint_2/3/5, seen at low arm poses) comes
+// from the operator's grip, not the arm: a hand holding the end effector is a
+// spring K, so tau_ext ~ -K*q and the admittance integrates it back into
+// motion. With the lags above (~0.15 s + 0.05 s torque filter + ~40 ms
+// command latency) that loop goes unstable once admittance*scale*K exceeds
+// ~13 1/s; in logged episodes K reached 250-1300 Nm/rad (loop gain 10-40 1/s),
+// largest at low poses where the grip has the longest lever arm about the
+// shoulder/elbow. Grip stiffness is unknowable in advance, so:
+//   * oscDamping: per joint, watch the 0.8-3 Hz band of the commanded
+//     velocity; when it exceeds oscOnset AND that band signal has reversed
+//     sign at least twice within oscWindow (a real oscillation, not the
+//     single lobe a push or wrist twist produces), scale that joint's
+//     admittance down (to oscMinScale at oscFull). Per joint so a shoulder/
+//     elbow oscillation doesn't make the wrist heavy. Reduction is immediate;
+//     recovery is a first-order rise (oscRelease).
 struct HandGuideState : mc_control::fsm::State
 {
   void configure(const mc_rtc::Configuration & config) override
@@ -49,6 +65,13 @@ struct HandGuideState : mc_control::fsm::State
     config("inertiaScaling", inertiaScaling_);
     config("inertiaScaleMin", inertiaScaleMin_);
     config("inertiaScaleMax", inertiaScaleMax_);
+    config("oscDamping", oscDamping_);
+    config("oscOnset", oscOnset_);
+    config("oscFull", oscFull_);
+    config("oscMinScale", oscMinScale_);
+    config("oscRelease", oscRelease_);
+    config("oscReversalBand", oscReversalBand_);
+    config("oscWindow", oscWindow_);
     if(config.has("admittance"))
     {
       std::vector<double> a = config("admittance");
@@ -77,6 +100,14 @@ struct HandGuideState : mc_control::fsm::State
     qdot_f_.setZero();
     inertiaScale_.setOnes();
     hDiag_.setZero();
+    oscBp_.setZero();
+    oscLo_.setZero();
+    oscPow_.setZero();
+    oscLevel_.setZero();
+    oscScale_.setOnes();
+    oscSign_.setZero();
+    oscCross_.setConstant(-1e9);
+    elapsed_ = 0.0;
 
     fd_ = std::make_unique<rbd::ForwardDynamics>(mb);
     {
@@ -118,6 +149,14 @@ struct HandGuideState : mc_control::fsm::State
         mc_rtc::gui::ArrayInput("inertia scale (applied)", jointNames_,
             [this]() -> const Eigen::Matrix<double, 6, 1> & { return inertiaScale_; },
             [](const Eigen::Matrix<double, 6, 1> &) {}),
+        mc_rtc::gui::Checkbox("oscillation damping", [this]() { return oscDamping_; },
+            [this]() { oscDamping_ = !oscDamping_; }),
+        mc_rtc::gui::ArrayInput("osc level (rad/s, 0.8-3 Hz)", jointNames_,
+            [this]() -> const Eigen::Matrix<double, 6, 1> & { return oscLevel_; },
+            [](const Eigen::Matrix<double, 6, 1> &) {}),
+        mc_rtc::gui::ArrayInput("osc admittance scale (applied)", jointNames_,
+            [this]() -> const Eigen::Matrix<double, 6, 1> & { return oscScale_; },
+            [](const Eigen::Matrix<double, 6, 1> &) {}),
         mc_rtc::gui::NumberInput("posture stiffness",
             [this]() { return stiffness_; },
             [this](double v) { stiffness_ = v; postureTask_->stiffness(v); postureTask_->damping(damping_); }),
@@ -130,9 +169,11 @@ struct HandGuideState : mc_control::fsm::State
     ctl.logger().addLogEntry("HandGuide_holding", this, [this]() { return holding_; });
     ctl.logger().addLogEntry("HandGuide_inertia_scale", this, [this]() -> const Eigen::Matrix<double, 6, 1> & { return inertiaScale_; });
     ctl.logger().addLogEntry("HandGuide_H_diag", this, [this]() -> const Eigen::Matrix<double, 6, 1> & { return hDiag_; });
+    ctl.logger().addLogEntry("HandGuide_osc_level", this, [this]() -> const Eigen::Matrix<double, 6, 1> & { return oscLevel_; });
+    ctl.logger().addLogEntry("HandGuide_osc_scale", this, [this]() -> const Eigen::Matrix<double, 6, 1> & { return oscScale_; });
 
-    mc_rtc::log::success("[HandGuideState] Active (K={}, D={}, w={}, maxVel={} rad/s, velTau={} s, inertiaScaling={}) - push the arm!",
-                         stiffness_, damping_, weight_, maxJointVel_, velocityTau_, inertiaScaling_);
+    mc_rtc::log::success("[HandGuideState] Active (K={}, D={}, w={}, maxVel={} rad/s, velTau={} s, inertiaScaling={}, oscDamping={}) - push the arm!",
+                         stiffness_, damping_, weight_, maxJointVel_, velocityTau_, inertiaScaling_, oscDamping_);
     mc_rtc::log::info("[HandGuideState] H_ref diag at stance: [{:.3f}, {:.3f}, {:.3f}, {:.3f}, {:.3f}, {:.3f}]",
                       hRef_[0], hRef_[1], hRef_[2], hRef_[3], hRef_[4], hRef_[5]);
   }
@@ -174,6 +215,42 @@ struct HandGuideState : mc_control::fsm::State
     }
     else { inertiaScale_.setOnes(); }
 
+    // Oscillation detector on last tick's commanded velocity, per joint:
+    // band-pass ~0.8-3 Hz (LP 0.05 s minus LP 0.3 s), mean power over
+    // ~0.5 s. Calm guiding stays below ~0.02 rad/s; grip-induced oscillation
+    // runs 0.04-0.11 rad/s. The start of a push also crosses the threshold
+    // but only as one lobe, so a joint only counts as oscillating once its
+    // band signal has flipped sign (outside +-oscReversalBand) twice within
+    // oscWindow.
+    {
+      elapsed_ += dt;
+      const double aFast = dt / (0.05 + dt), aSlow = dt / (0.3 + dt), aPow = dt / (0.5 + dt);
+      oscBp_ += aFast * (qdot_f_ - oscBp_);
+      oscLo_ += aSlow * (qdot_f_ - oscLo_);
+      const Eigen::Matrix<double, 6, 1> band = oscBp_ - oscLo_;
+      oscPow_ += aPow * (band.cwiseAbs2() - oscPow_);
+      oscLevel_ = oscPow_.cwiseSqrt();
+      const double rel = dt / (std::max(oscRelease_, dt) + dt);
+      for(int j = 0; j < 6; ++j)
+      {
+        const int s = band[j] > oscReversalBand_ ? 1 : (band[j] < -oscReversalBand_ ? -1 : 0);
+        if(s != 0 && s != oscSign_[j])
+        {
+          if(oscSign_[j] != 0) { oscCross_(j, 0) = oscCross_(j, 1); oscCross_(j, 1) = elapsed_; }
+          oscSign_[j] = s;
+        }
+        const bool oscillating = elapsed_ - oscCross_(j, 0) < oscWindow_;
+        double target = 1.0;
+        if(oscDamping_ && oscillating && oscFull_ > oscOnset_)
+        {
+          const double x = std::clamp((oscLevel_[j] - oscOnset_) / (oscFull_ - oscOnset_), 0.0, 1.0);
+          target = 1.0 - x * (1.0 - oscMinScale_);
+        }
+        if(target < oscScale_[j]) { oscScale_[j] = target; }
+        else { oscScale_[j] += rel * (target - oscScale_[j]); }
+      }
+    }
+
     // Same law in both modes: HOLD just drives the torque input to zero so the
     // commanded velocity decays through the lag instead of stopping dead.
     const double lag = velocityTau_ > 0.0 ? dt / (velocityTau_ + dt) : 1.0;
@@ -181,7 +258,7 @@ struct HandGuideState : mc_control::fsm::State
     {
       const int ii = static_cast<int>(i);
       const double tau_in = holding_ ? 0.0 : tau_[ii];
-      const double qd_raw = std::clamp(admittance_[ii] * inertiaScale_[ii] * tau_in, -maxJointVel_, maxJointVel_);
+      const double qd_raw = std::clamp(admittance_[ii] * inertiaScale_[ii] * oscScale_[ii] * tau_in, -maxJointVel_, maxJointVel_);
       qdot_f_[ii] += lag * (qd_raw - qdot_f_[ii]);
       qdot_des_[dofIdx_[i]] = qdot_f_[ii];
     }
@@ -247,6 +324,22 @@ private:
   bool   inertiaScaling_  = true;
   double inertiaScaleMin_ = 0.15;
   double inertiaScaleMax_ = 1.0;
+
+  bool   oscDamping_  = true;
+  double oscOnset_    = 0.025; // rad/s band RMS where admittance starts dropping
+  double oscFull_     = 0.05;  // rad/s band RMS where it reaches oscMinScale
+  double oscMinScale_ = 0.25;
+  double oscRelease_  = 2.0;   // s; recovery time constant back to full admittance
+  double oscReversalBand_ = 0.015; // rad/s; band signal must leave +-this to count a sign flip
+  double oscWindow_   = 1.5;   // s; two sign flips within this = oscillating
+  double elapsed_     = 0.0;
+  Eigen::Matrix<double, 6, 1> oscLevel_ = Eigen::Matrix<double, 6, 1>::Zero();
+  Eigen::Matrix<double, 6, 1> oscScale_ = Eigen::Matrix<double, 6, 1>::Ones();
+  Eigen::Matrix<double, 6, 1> oscSign_  = Eigen::Matrix<double, 6, 1>::Zero();
+  Eigen::Matrix<double, 6, 2> oscCross_ = Eigen::Matrix<double, 6, 2>::Constant(-1e9); // last two flip times
+  Eigen::Matrix<double, 6, 1> oscBp_  = Eigen::Matrix<double, 6, 1>::Zero();
+  Eigen::Matrix<double, 6, 1> oscLo_  = Eigen::Matrix<double, 6, 1>::Zero();
+  Eigen::Matrix<double, 6, 1> oscPow_ = Eigen::Matrix<double, 6, 1>::Zero();
 
   // Defaults; override per-controller in KinovaHandGuiding.yaml (HandGuide state block).
   Eigen::Matrix<double, 6, 1> admittance_ = Eigen::Matrix<double, 6, 1>::Constant(0.05); // rad/s per Nm
