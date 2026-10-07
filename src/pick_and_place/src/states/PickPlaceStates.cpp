@@ -466,6 +466,19 @@ struct ComplianceCartesianMove : mc_control::fsm::State
   // decision site in run() for why the default flipped on 2026-09-07.
   bool advance_on_timeout_ = false;
 
+  // RETURN-TO-HOLD-POINT (2026-10-07). On release, drive the arm back to the
+  // pose it was heading for when contact began, THEN restart the clock -
+  // instead of rewinding the clock to wherever the push left the arm.
+  // What the person sees: arm stops -> they move it -> they let go -> it
+  // returns to where it was -> it carries on. The rewind alternative
+  // silently accepts the displacement and resumes from the new spot, which
+  // quietly abandons part of the original path.
+  // Set false to restore the rewind behaviour (see the note at the resume
+  // edge in run()).
+  bool   return_to_hold_point_ = true;
+  bool   returning_   = false;   // in the return phase (clock still frozen)
+  double return_time_ = 0.0;     // seconds spent returning, for the timeout
+
   // Saved posture-task gains, restored in teardown() - see the back-off in
   // start() and the root-cause note there.
   double prev_posture_weight_    = 1.0;
@@ -499,6 +512,7 @@ struct ComplianceCartesianMove : mc_control::fsm::State
     if(config.has("contact_moment_speed_gain")) contact_moment_speed_gain_ = config("contact_moment_speed_gain");
     if(config.has("divergence_pause"))        divergence_pause_        = config("divergence_pause");
     if(config.has("advance_on_timeout"))      advance_on_timeout_      = config("advance_on_timeout");
+    if(config.has("return_to_hold_point"))    return_to_hold_point_    = config("return_to_hold_point");
     if(config.has("v_max_lin"))               v_max_lin_               = config("v_max_lin");
     if(config.has("v_max_ang"))               v_max_ang_               = config("v_max_ang");
 
@@ -525,6 +539,8 @@ struct ComplianceCartesianMove : mc_control::fsm::State
     t_elapsed_   = 0.0;
     clear_timer_ = 0.0;
     paused_      = false;
+    returning_   = false;
+    return_time_ = 0.0;
     tick_        = 0;
 
     resyncControlToReal(ctl);
@@ -784,25 +800,53 @@ struct ComplianceCartesianMove : mc_control::fsm::State
         // as everything else. The PATH is untouched (waypoints included) -
         // only the time cursor moves - and it can only ever move BACKWARD,
         // so a resume can never skip part of the trajectory.
-        const double t_before = t_elapsed_;
+        if(return_to_hold_point_)
         {
-          const Eigen::Vector3d cur = ctl.robot().frame(ee_frame_).position().translation();
-          const int N = 400;
-          double best_t = t_elapsed_, best_d = std::numeric_limits<double>::max();
-          for(int i = 0; i <= N; ++i)
-          {
-            const double t = effective_duration_ * static_cast<double>(i) / static_cast<double>(N);
-            const double dd = (targetAt(t).translation() - cur).norm();
-            if(dd < best_d) { best_d = dd; best_t = t; }
-          }
-          t_elapsed_ = std::min(t_elapsed_, best_t);
+          // Contact cleared: do NOT restart the clock yet. Enter the return
+          // phase - the trajectory target stays frozen at targetAt(t_elapsed_),
+          // which is exactly the pose the arm was heading for when the push
+          // started, and the impedance task pulls the arm back to it. The
+          // clock restarts only once the arm is actually back (see below).
+          // The return speed is not shaped by the quintic, but it IS bounded
+          // by the bridge's delta_max clamp, and the displacement is only as
+          // large as the person made it - so this is not the unbounded
+          // catch-up that caused the 2026-09-23 judder, which came from the
+          // target having advanced far downstream while the arm stood still.
+          returning_   = true;
+          return_time_ = 0.0;
+          const double back = (ctl.robot().frame(ee_frame_).position().translation()
+                               - targetAt(t_elapsed_).translation()).norm();
+          mc_rtc::log::warning(
+              "[{}] CONTACT CLEARED - returning {:.3f} m to the hold point before resuming. "
+              "Clock stays frozen at {:.2f}s of {:.2f}s",
+              name(), back, t_elapsed_, effective_duration_);
         }
-        mc_rtc::log::warning(
-            "[{}] CLOCK RESUMED - clear for {:.2f}s (force {:.2f} N, moment {:.2f} Nm, "
-            "model-vs-real {:.4f} rad). t_elapsed resuming from {:.2f}s of {:.2f}s "
-            "[rewound {:.2f}s to match the arm's actual pose]",
-            name(), clear_hold_time_, f, m, dev, t_elapsed_, effective_duration_,
-            t_before - t_elapsed_);
+        else
+        {
+          // REWIND alternative (2026-09-23): accept the displacement and
+          // resume from the nearest point on the path. Cheaper and smoother,
+          // but it abandons the part of the path between the hold point and
+          // wherever the push left the arm.
+          const double t_before = t_elapsed_;
+          {
+            const Eigen::Vector3d cur = ctl.robot().frame(ee_frame_).position().translation();
+            const int N = 400;
+            double best_t = t_elapsed_, best_d = std::numeric_limits<double>::max();
+            for(int i = 0; i <= N; ++i)
+            {
+              const double t = effective_duration_ * static_cast<double>(i) / static_cast<double>(N);
+              const double dd = (targetAt(t).translation() - cur).norm();
+              if(dd < best_d) { best_d = dd; best_t = t; }
+            }
+            t_elapsed_ = std::min(t_elapsed_, best_t);
+          }
+          mc_rtc::log::warning(
+              "[{}] CLOCK RESUMED - clear for {:.2f}s (force {:.2f} N, moment {:.2f} Nm, "
+              "model-vs-real {:.4f} rad). t_elapsed resuming from {:.2f}s of {:.2f}s "
+              "[rewound {:.2f}s to match the arm's actual pose]",
+              name(), clear_hold_time_, f, m, dev, t_elapsed_, effective_duration_,
+              t_before - t_elapsed_);
+        }
       }
     }
 
@@ -826,9 +870,54 @@ struct ComplianceCartesianMove : mc_control::fsm::State
     // within a tick of the encoders (the bridge's delta_max clamp then has
     // nothing to fight), and on release the model resumes from where the
     // arm actually is rather than from a fiction.
-    if(paused_) resyncControlToReal(ctl);
+    if(paused_) { resyncControlToReal(ctl); returning_ = false; }
 
-    if(!paused_) t_elapsed_ += dt_;
+    // RETURN PHASE (2026-10-07). Contact has cleared but the clock is still
+    // frozen: the target sits at targetAt(t_elapsed_) - the pose the arm was
+    // heading for when the push began - and the impedance task pulls the arm
+    // back to it. Deliberately NOT resyncing here: during the pause the
+    // resync keeps the model on the encoders so divergence cannot build, but
+    // during the return the task must be allowed to drive the model away
+    // from the (displaced) arm, otherwise it would simply sit where the
+    // person left it.
+    // Judged against realRobot(): the point is that the ARM comes back, not
+    // the model.
+    if(returning_ && !paused_)
+    {
+      return_time_ += dt_;
+      const double back = (ctl.realRobot().frame(ee_frame_).position().translation()
+                           - targetAt(t_elapsed_).translation()).norm();
+      if(back < pos_threshold_)
+      {
+        returning_ = false;
+        mc_rtc::log::success("[{}] Back at the hold point ({:.4f} m) after {:.1f}s - CLOCK RESUMED "
+                             "from {:.2f}s of {:.2f}s", name(), back, return_time_,
+                             t_elapsed_, effective_duration_);
+      }
+      else if(return_time_ > settle_timeout_)
+      {
+        // Could not get back - the arm is still obstructed, or the person is
+        // holding it below the contact threshold. Degrade to the rewind
+        // rather than hanging: accept the displacement and carry on from the
+        // nearest point on the path.
+        const Eigen::Vector3d cur = ctl.robot().frame(ee_frame_).position().translation();
+        double best_t = t_elapsed_, best_d = std::numeric_limits<double>::max();
+        for(int i = 0; i <= 400; ++i)
+        {
+          const double t = effective_duration_ * static_cast<double>(i) / 400.0;
+          const double dd = (targetAt(t).translation() - cur).norm();
+          if(dd < best_d) { best_d = dd; best_t = t; }
+        }
+        t_elapsed_ = std::min(t_elapsed_, best_t);
+        returning_ = false;
+        mc_rtc::log::error("[{}] Could NOT return to the hold point ({:.4f} m still off after "
+                           "{:.1f}s) - falling back to rewinding the clock to {:.2f}s and "
+                           "resuming. The arm may still be obstructed.",
+                           name(), back, return_time_, t_elapsed_);
+      }
+    }
+
+    if(!paused_ && !returning_) t_elapsed_ += dt_;
 
     task_->targetPose(targetAt(std::min(t_elapsed_, effective_duration_)));
 
@@ -930,7 +1019,8 @@ struct ComplianceCartesianMove : mc_control::fsm::State
             "clock {:.2f}/{:.2f}s{} | force {:.2f} N | model-vs-real {:.4f} rad on '{}'{}",
             name(), t_elapsed_ - effective_duration_ - settle_timeout_, pos_err, ori_err,
             next_state_, t_elapsed_, effective_duration_,
-            paused_ ? " PAUSED - contact" : " running", f, maxdev, devjoint,
+            (paused_ ? " PAUSED - contact" : (returning_ ? " RETURNING" : " running")),
+            f, maxdev, devjoint,
             ppc(ctl).dryRunValidation()
                 ? "  (dry_run_validation: model-vs-real is meaningless here - nothing is published)"
                 : (maxdev > 0.05 ? "  <<< EXCEEDS model_real_gate - bridge is NOT publishing, arm"
@@ -940,8 +1030,8 @@ struct ComplianceCartesianMove : mc_control::fsm::State
             "[{}] Settling: pos_err={:.4f} m, ori_err={:.4f} rad | clock {:.2f}/{:.2f}s{} | "
             "force {:.2f}/{:.2f} N, moment {:.2f}/{:.2f} Nm",
             name(), pos_err, ori_err, t_elapsed_, effective_duration_,
-            paused_ ? " PAUSED - contact" : " running", f, contact_force_threshold_,
-            m, m_thresh);
+            (paused_ ? " PAUSED - contact" : (returning_ ? " RETURNING to hold point" : " running")),
+            f, contact_force_threshold_, m, m_thresh);
 
       // DIAGNOSTIC (2026-08-26): a live MoveToPick stall showed pos_err/
       // ori_err and the SIGN CHECK world_dev completely static (not slowly
