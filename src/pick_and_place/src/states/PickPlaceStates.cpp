@@ -17,6 +17,7 @@
 // ============================================================
 
 #include "PickPlaceController.h"
+#include <limits>
 
 #include <mc_control/fsm/Controller.h>
 #include <mc_control/fsm/State.h>
@@ -71,7 +72,7 @@ static sva::PTransformd resolveTarget(mc_control::fsm::Controller & ctl,
   if(ref == "home")       base = ppc(ctl).homePose();
   else if(ref == "pick")  base = ppc(ctl).pickPose();
   else if(ref == "place") base = ppc(ctl).placePose();
-  else if(ref == "current") base = ctl.robot().frame(ee_frame).position();
+  else if(ref == "current") base = ctl.realRobot().frame(ee_frame).position();
   else throw std::runtime_error("[resolveTarget] Unknown reference: " + ref);
 
   Eigen::Vector3d t = base.translation();
@@ -85,7 +86,7 @@ static sva::PTransformd resolveTarget(mc_control::fsm::Controller & ctl,
   if(cfg.has("inherit_orientation"))
   {
     bool inherit = cfg("inherit_orientation");
-    if(inherit) R = ctl.robot().frame(ee_frame).position().rotation();
+    if(inherit) R = ctl.realRobot().frame(ee_frame).position().rotation();
   }
 
   // Safety: clamp Z
@@ -94,13 +95,31 @@ static sva::PTransformd resolveTarget(mc_control::fsm::Controller & ctl,
   return sva::PTransformd(R, t);
 }
 
+// Resync the QP-controlled robot's configuration to the real,
+// encoder-observed one before planning a new trajectory. Without this,
+// ctl.robot() can carry over drift accumulated during a previous state
+// (dry_run, or the bridge's model-vs-real safety gate blocking publishing
+// for a while) - so a freshly-built trajectory, and any `ref: current`
+// target, would be planned from wherever the internal model drifted to
+// rather than from the arm's actual physical pose. Suspected root cause of
+// the 2026-08-19 "unexpected direction" MoveHome incident: the arm was
+// physically at Home, but if ctl.robot() had already drifted elsewhere,
+// the trajectory built in start() would path from that fictional point.
+static void resyncControlToReal(mc_control::fsm::Controller & ctl)
+{
+  ctl.robot().mbc().q     = ctl.realRobot().mbc().q;
+  ctl.robot().mbc().alpha = ctl.realRobot().mbc().alpha;
+  ctl.robot().forwardKinematics();
+  ctl.robot().forwardVelocity();
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 //  CartesianMove — time-parameterized 6-DoF end-effector motion
 // ════════════════════════════════════════════════════════════════════════════
 struct CartesianMove : mc_control::fsm::State
 {
   // Config (all overridable from YAML)
-  double duration_      = 3.0;
+  double duration_      = 3.0;   // MINIMUM duration - see effective_duration_/v_max_* below
   double stiffness_     = 10.0;
   double weight_        = 1000.0;
   double pos_threshold_ = 0.02;   // 2 cm
@@ -109,14 +128,22 @@ struct CartesianMove : mc_control::fsm::State
   std::string ee_frame_  = "tool_frame";
   std::string next_state_;
 
+  // Hard caps on peak Cartesian velocity, enforced by construction via
+  // effective_duration_ below - same reasoning/derivation as JointMove's
+  // v_max_ (2026-08-26). Defaults chosen with the same ~4x margin under the
+  // bridge's delta_max-implied real-tracking ceiling.
+  double v_max_lin_ = 0.05;   // m/s
+  double v_max_ang_ = 0.05;   // rad/s
+
   mc_rtc::Configuration target_cfg_;
   std::vector<Eigen::Vector3d> pos_waypoints_;
 
   // Runtime
   std::shared_ptr<mc_tasks::BSplineTrajectoryTask> traj_;
   sva::PTransformd target_;
-  double t_elapsed_ = 0.0;
-  double dt_        = 0.01; //0.005;
+  double t_elapsed_          = 0.0;
+  double dt_                 = 0.01; //0.005;
+  double effective_duration_ = 3.0;  // = max(duration_, time needed so peak vel <= v_max_*)
 
   // Posture task backup (we temporarily lower its priority so it
   // doesn't fight the Cartesian trajectory).
@@ -135,6 +162,8 @@ struct CartesianMove : mc_control::fsm::State
     if(config.has("settle_timeout")) settle_timeout_ = config("settle_timeout");
     if(config.has("ee_frame"))       ee_frame_       = static_cast<std::string>(config("ee_frame"));
     if(config.has("next"))           next_state_     = static_cast<std::string>(config("next"));
+    if(config.has("v_max_lin"))      v_max_lin_      = config("v_max_lin");
+    if(config.has("v_max_ang"))      v_max_ang_      = config("v_max_ang");
 
     target_cfg_ = config("target");
 
@@ -156,7 +185,38 @@ struct CartesianMove : mc_control::fsm::State
     dt_        = ctl.solver().dt();
     t_elapsed_ = 0.0;
     tick_      = 0;
+
+    resyncControlToReal(ctl);
     target_    = resolveTarget(ctl, target_cfg_, ee_frame_);
+
+    auto cur = ctl.robot().frame(ee_frame_).position();
+
+    // BUG FOUND 2026-08-26: CartesianMove had the same missing-speed-bound
+    // gap that caused MoveHome's 2026-08-24 stall (see JointMove's
+    // v_max_/effective_duration_ note) - MoveHome was fixed by moving to
+    // JointMove, but ReturnHome (also CartesianMove, never migrated) hit the
+    // identical failure mode live: after MoveToPick's incomplete
+    // convergence left the arm farther from home than usual, ReturnHome's
+    // fixed-duration BSplineTrajectoryTask requested a peak velocity past
+    // what the bridge's delta_max lets the real arm track, tripped
+    // model_real_gate almost immediately, and then stalled forever - since
+    // nothing resyncs ctl.robot() mid-run, the internal model just finished
+    // its pre-planned spline in simulation while the real arm sat frozen.
+    // Fixed the same way as JointMove: duration_ is now a MINIMUM, stretched
+    // (effective_duration_) so peak velocity stays under v_max_lin_/
+    // v_max_ang_ by construction (1.875 = quintic peak/avg factor).
+    double pos_delta = (target_.translation() - cur.translation()).norm();
+    double ori_delta = sva::rotationError(cur.rotation(), target_.rotation()).norm();
+    // GLOBAL SPEED KNOB (2026-09-23): `speed_scale` in the YAML, one number
+    // per trial condition instead of editing v_max on every state. Note it
+    // divides `duration` as well as multiplying v_max - `duration` is a FLOOR,
+    // so a leg pinned by it (MoveUpFromPick is, at 15s vs its 14s v_max term)
+    // would otherwise ignore the scale entirely and the cycle would not
+    // actually speed up. Clamped to [0.1, 3.0] by the controller.
+    const double sc_ = ppc(ctl).speedScale();
+    effective_duration_ = std::max({duration_ / sc_,
+                                     1.875 * pos_delta / std::max(v_max_lin_ * sc_, 1e-6),
+                                     1.875 * ori_delta / std::max(v_max_ang_ * sc_, 1e-6)});
 
     // Back off the posture task so the QP respects the Cartesian trajectory.
     if(auto pt = ctl.getPostureTask(ctl.robot().name()))
@@ -169,7 +229,7 @@ struct CartesianMove : mc_control::fsm::State
 
     traj_ = std::make_shared<mc_tasks::BSplineTrajectoryTask>(
         ctl.robot().frame(ee_frame_),
-        duration_,
+        effective_duration_,
         stiffness_,
         weight_,
         target_,
@@ -177,15 +237,58 @@ struct CartesianMove : mc_control::fsm::State
 
     ctl.solver().addTask(traj_);
 
-    auto cur = ctl.robot().frame(ee_frame_).position();
-    mc_rtc::log::info("[{}] Cartesian move started (duration={:.2f}s, stiffness={:.1f})",
-                      name(), duration_, stiffness_);
+    mc_rtc::log::info(
+        "[{}] Cartesian move started - effective duration {:.2f}s (configured min {:.2f}s), "
+        "v_max_lin={:.3f} m/s, v_max_ang={:.3f} rad/s, pos_delta={:.4f} m, ori_delta={:.4f} rad, "
+        "stiffness={:.1f}",
+        name(), effective_duration_, duration_, v_max_lin_, v_max_ang_, pos_delta, ori_delta, stiffness_);
     mc_rtc::log::info("[{}]   from: [{:+.3f}, {:+.3f}, {:+.3f}]",
                       name(), cur.translation().x(), cur.translation().y(), cur.translation().z());
     mc_rtc::log::info("[{}]   to:   [{:+.3f}, {:+.3f}, {:+.3f}]",
                       name(), target_.translation().x(), target_.translation().y(), target_.translation().z());
     if(!pos_waypoints_.empty())
       mc_rtc::log::info("[{}]   via {} waypoint(s)", name(), pos_waypoints_.size());
+
+    // ROTATION VERIFICATION (2026-08-19, safe under dry_run - no motion
+    // involved, this only reads state). eulerAngles(2,1,0) decomposes as
+    // Rz(a)*Ry(b)*Rx(c), the SAME composition poseFromConfig() uses for
+    // YAML `rotation: [roll, pitch, yaw]` - so [c,b,a] here is directly
+    // comparable to that field, in degrees for comparison against Kinova's
+    // web-app thetaX/thetaY/thetaZ. Use this to confirm the config's
+    // rotation matches physical reality BEFORE ever trusting a Cartesian
+    // target live - see the home_pose incident in the README/YAML.
+    {
+      const double r2d = 180.0 / M_PI;
+      Eigen::Vector3d cur_ea = cur.rotation().eulerAngles(2, 1, 0);
+      Eigen::Vector3d tgt_ea = target_.rotation().eulerAngles(2, 1, 0);
+      mc_rtc::log::info(
+          "[{}]   from rotation [roll,pitch,yaw] (deg): [{:+.2f}, {:+.2f}, {:+.2f}]",
+          name(), cur_ea.z() * r2d, cur_ea.y() * r2d, cur_ea.x() * r2d);
+      mc_rtc::log::info(
+          "[{}]   to   rotation [roll,pitch,yaw] (deg): [{:+.2f}, {:+.2f}, {:+.2f}]",
+          name(), tgt_ea.z() * r2d, tgt_ea.y() * r2d, tgt_ea.x() * r2d);
+    }
+
+    // JOINT SNAPSHOT (2026-08-24, safe under dry_run - reads realRobot()
+    // only, no motion). Gives an unambiguous joint-space ground truth for
+    // "where is the arm right now", independent of the Cartesian
+    // rotation/IK-feasibility questions above. If this state is started
+    // with the arm physically at Kinova's web-app Home, this is exactly
+    // Home's true joint configuration - compare against the target this
+    // state resolved to (translation/rotation above), and against any
+    // joint's URDF limit, without going through IK at all.
+    {
+      const double r2d = 180.0 / M_PI;
+      const auto & q   = ctl.realRobot().mbc().q;
+      const auto & mbs = ctl.realRobot().mb().joints();
+      mc_rtc::log::info("[{}]   real joints now:", name());
+      for(size_t ji = 0; ji < mbs.size(); ++ji)
+      {
+        if(mbs[ji].dof() != 1) continue;
+        mc_rtc::log::info("[{}]     '{}' = {:+.4f} rad ({:+.1f} deg)",
+                          name(), mbs[ji].name(), q[ji][0], q[ji][0] * r2d);
+      }
+    }
   }
 
   bool run(mc_control::fsm::Controller & ctl) override
@@ -193,10 +296,15 @@ struct CartesianMove : mc_control::fsm::State
     t_elapsed_ += dt_;
 
     // During the scheduled trajectory time, just let it run.
-    if(t_elapsed_ < duration_) return false;
+    if(t_elapsed_ < effective_duration_) return false;
 
-    // After the trajectory has been "played out", check convergence.
-    auto cur = ctl.robot().frame(ee_frame_).position();
+    // After the trajectory has been "played out", check convergence -
+    // against the REAL arm (realRobot()), not the QP-internal model
+    // (ctl.robot()), which the task drives toward target_ regardless of
+    // whether the real arm actually gets there. See resyncControlToReal()
+    // above for why these two can diverge, and the 2026-08-19 incidents
+    // this caused.
+    auto cur = ctl.realRobot().frame(ee_frame_).position();
     double pos_err = (cur.translation() - target_.translation()).norm();
     double ori_err = sva::rotationError(cur.rotation(), target_.rotation()).norm();
 
@@ -208,24 +316,31 @@ struct CartesianMove : mc_control::fsm::State
       return true;
     }
 
-    // Periodic progress log while settling
-//    static int tick = 0;
+    // Periodic progress log while settling. Past settle_timeout_ this does
+    // NOT force a transition (see note below) - only the message escalates,
+    // so a stuck arm is loud, not silent.
+    bool past_deadline = t_elapsed_ > effective_duration_ + settle_timeout_;
     if((tick_++ % 200) == 0)
     {
-      mc_rtc::log::warning("[{}] Settling: pos_err={:.4f} m, ori_err={:.4f} rad",
-                           name(), pos_err, ori_err);
+      if(past_deadline)
+        mc_rtc::log::error(
+            "[{}] NOT converged {:.2f}s past schedule (pos_err={:.4f} m, ori_err={:.4f} rad) - "
+            "holding here, will NOT advance until the real arm actually reaches the target.",
+            name(), t_elapsed_ - effective_duration_ - settle_timeout_, pos_err, ori_err);
+      else
+        mc_rtc::log::warning("[{}] Settling: pos_err={:.4f} m, ori_err={:.4f} rad",
+                             name(), pos_err, ori_err);
     }
 
-    // Bail out gracefully if we've been settling too long
-    if(t_elapsed_ > duration_ + settle_timeout_)
-    {
-      mc_rtc::log::error(
-          "[{}] Settle timeout after {:.2f}s extra (pos_err={:.4f}, ori_err={:.4f}). Advancing anyway.",
-          name(), settle_timeout_, pos_err, ori_err);
-      output(next_state_);
-      return true;
-    }
-
+    // NOTE (2026-08-19): this used to force-advance to next_state_ after
+    // settle_timeout_ ("advancing anyway"). CartesianMove is what MoveHome
+    // uses, and the whole point of MoveHome is guaranteeing the arm is
+    // actually at a known pose before the rest of the pipeline runs from it
+    // (MoveToPick/etc., and any `ref: current` target, trust that). A
+    // silent forced-advance defeats that guarantee exactly when it matters
+    // most - unreachable target, real hardware fault. Hold instead; this
+    // requires operator attention (loud error above) rather than composing
+    // further motion on top of an unverified pose.
     return false;
   }
 
@@ -258,7 +373,7 @@ struct CartesianMove : mc_control::fsm::State
 struct ComplianceCartesianMove : mc_control::fsm::State
 {
   // Trajectory config (mirrors CartesianMove)
-  double duration_       = 3.0;
+  double duration_       = 3.0;   // MINIMUM duration - see effective_duration_/v_max_* below
   double pos_threshold_  = 0.02;
   double ori_threshold_  = 0.10;
   double settle_timeout_ = 2.0;
@@ -266,6 +381,17 @@ struct ComplianceCartesianMove : mc_control::fsm::State
   std::string next_state_;
   mc_rtc::Configuration target_cfg_;
   std::vector<Eigen::Vector3d> pos_waypoints_;
+
+  // Hard caps on peak Cartesian velocity - same fix/reasoning applied to
+  // CartesianMove above (2026-08-26): the live MoveToPick test showed real
+  // joint_5 chronically lagging the model (up to 0.04 rad, never closing)
+  // because the moving target here had no speed bound either, so it could
+  // ask for more velocity than the bridge's delta_max lets the real arm
+  // track. effective_duration_ stretches duration_ (a MINIMUM) so the
+  // planned path's peak velocity stays under v_max_lin_/v_max_ang_.
+  double v_max_lin_       = 0.05;   // m/s
+  double v_max_ang_       = 0.05;   // rad/s
+  double effective_duration_ = 3.0;
 
   // Kinematic tracking gains (how fast the compliant pose chases its target)
   double task_stiffness_ = 20.0;
@@ -282,6 +408,81 @@ struct ComplianceCartesianMove : mc_control::fsm::State
   // wrench - see kortex_mc_rtc_bridge_impedance.cpp.
   double contact_force_threshold_ = 8.0;  // N
   double clear_hold_time_         = 0.3;  // s of sustained clear force before resuming
+
+  // ADDED 2026-09-18: contact detection on the MOMENT channel.
+  // A live HoverToPlace test (hand placed in the arm's path) showed the
+  // contact registering ONLY here - the estimator reported
+  //   RAW  force (0.069, 0.773, 0.367) N   moment (-0.879, 0.959, -1.065) Nm
+  //   Est. force (0.00, 0.00, 0.00) N      moment (-0.83, 0.80, -0.97) Nm
+  // i.e. raw force norm ~0.86 N, which is BELOW the bridge's 1.0 N
+  // deadband_force and is therefore zeroed before the task ever sees it.
+  // Force-based detection was structurally dead: no value of
+  // contact_force_threshold_ could ever have fired, and the arm ran on
+  // through the obstruction until model-vs-real tripped the safety gate.
+  // The moment channel by contrast is close to binary here - ~1.5 Nm norm
+  // while blocked, exactly 0.00 otherwise - so 0.5 Nm sits with wide margin
+  // on both sides. Keep this ABOVE the bridge's deadband_moment only in the
+  // sense that anything under the deadband reads as exactly zero anyway.
+  double contact_moment_threshold_ = 0.5;  // Nm
+
+  // SPEED-TRACKING THRESHOLD (2026-09-23). The wrench estimate's no-contact
+  // baseline grows LINEARLY with joint speed because the bridge's inverse
+  // dynamics models gravity, Coriolis and inertia but NOT joint friction.
+  // Measured on this arm over speed_scale 1.0/1.5/2.0:
+  //     baseline_moment ~= 0.41 + 11.5 * max|qd|   (Nm, R^2 = 0.976)
+  // With a fixed 0.5 Nm threshold that baseline false-triggers from about
+  // speed_scale 2.0, and by 2.2 it exceeds a real human hand contact
+  // (measured 1.50 Nm) - i.e. detection stops being possible at all.
+  //
+  // Raising the constant instead would have to clear 2.02 Nm to survive
+  // speed_scale 3.0, which is ABOVE a real contact: that disables detection
+  // rather than reducing it. Scaling the threshold with speed keeps the
+  // margin to a real contact CONSTANT across the whole speed range, so
+  // speed can be varied as an experimental factor without the compliance
+  // behaviour varying with it.
+  //
+  // Set this to the measured friction slope (Nm per rad/s). 0 = fixed
+  // threshold, the pre-2026-09-23 behaviour.
+  // RE-MEASURE IT WHENEVER THE PAYLOAD CHANGES - a container on the gripper
+  // shifts the INTERCEPT (its gravity moment is pose-dependent and the
+  // startup tare only cancels it at the tare pose); whether it also changes
+  // this SLOPE depends on how much inertia it adds.
+  double contact_moment_speed_gain_ = 0.0;  // Nm per (rad/s)
+
+  // Backstop that does not depend on the wrench estimate at all: if the QP
+  // model outruns the real arm by this much, treat it as an obstruction,
+  // pause, and resync. Exists because the wrench estimate has now twice
+  // failed to notice a real contact, and the consequence is not a missed
+  // pause but a permanent deadlock - once divergence passes the bridge's
+  // model_real_gate (0.05 rad) publishing stops and nothing recovers it.
+  // Set at 60% of that gate so this fires first, with the gate left intact
+  // as the last line of defence. 0 disables.
+  double divergence_pause_ = 0.03;  // rad
+  const char * pause_cause_ = "";   // which test latched the current pause
+
+  // What to do if the real arm still hasn't reached the target
+  // settle_timeout_ seconds past schedule. false (default) = HOLD and keep
+  // logging loudly; true = advance anyway. See the long note at the
+  // decision site in run() for why the default flipped on 2026-09-07.
+  bool advance_on_timeout_ = false;
+
+  // RETURN-TO-HOLD-POINT (2026-10-07). On release, drive the arm back to the
+  // pose it was heading for when contact began, THEN restart the clock -
+  // instead of rewinding the clock to wherever the push left the arm.
+  // What the person sees: arm stops -> they move it -> they let go -> it
+  // returns to where it was -> it carries on. The rewind alternative
+  // silently accepts the displacement and resumes from the new spot, which
+  // quietly abandons part of the original path.
+  // Set false to restore the rewind behaviour (see the note at the resume
+  // edge in run()).
+  bool   return_to_hold_point_ = true;
+  bool   returning_   = false;   // in the return phase (clock still frozen)
+  double return_time_ = 0.0;     // seconds spent returning, for the timeout
+
+  // Saved posture-task gains, restored in teardown() - see the back-off in
+  // start() and the root-cause note there.
+  double prev_posture_weight_    = 1.0;
+  double prev_posture_stiffness_ = 1.0;
 
   // Runtime
   std::shared_ptr<mc_tasks::force::ImpedanceTask> task_;
@@ -307,6 +508,13 @@ struct ComplianceCartesianMove : mc_control::fsm::State
     if(config.has("gains"))          gains_config_   = config("gains");
     if(config.has("contact_force_threshold")) contact_force_threshold_ = config("contact_force_threshold");
     if(config.has("clear_hold_time"))         clear_hold_time_         = config("clear_hold_time");
+    if(config.has("contact_moment_threshold")) contact_moment_threshold_ = config("contact_moment_threshold");
+    if(config.has("contact_moment_speed_gain")) contact_moment_speed_gain_ = config("contact_moment_speed_gain");
+    if(config.has("divergence_pause"))        divergence_pause_        = config("divergence_pause");
+    if(config.has("advance_on_timeout"))      advance_on_timeout_      = config("advance_on_timeout");
+    if(config.has("return_to_hold_point"))    return_to_hold_point_    = config("return_to_hold_point");
+    if(config.has("v_max_lin"))               v_max_lin_               = config("v_max_lin");
+    if(config.has("v_max_ang"))               v_max_ang_               = config("v_max_ang");
 
     target_cfg_ = config("target");
 
@@ -331,17 +539,43 @@ struct ComplianceCartesianMove : mc_control::fsm::State
     t_elapsed_   = 0.0;
     clear_timer_ = 0.0;
     paused_      = false;
+    returning_   = false;
+    return_time_ = 0.0;
     tick_        = 0;
 
+    resyncControlToReal(ctl);
     sva::PTransformd final_target = resolveTarget(ctl, target_cfg_, ee_frame_);
+    // A trial profile may MOVE this leg's endpoint (see `targets:` in the
+    // YAML). Preferred over `waypoints` for a distance manipulation: a
+    // via-point makes targetAt()'s per-segment quintic stop the arm dead at
+    // that point, so bowing the path also changes motion smoothness. Moving
+    // the endpoint keeps the leg single-segment and continuous. Orientation
+    // is left as captured.
+    if(const Eigen::Vector3d * tr = ppc(ctl).translationFor(name()))
+    {
+      mc_rtc::log::info("[{}] trial '{}' moves endpoint {:.4f} m -> [{:+.4f}, {:+.4f}, {:+.4f}]",
+                        name(), ppc(ctl).activeTrial(),
+                        (*tr - final_target.translation()).norm(), (*tr)(0), (*tr)(1), (*tr)(2));
+      final_target = sva::PTransformd(final_target.rotation(), *tr);
+    }
     sva::PTransformd start_pose   = ctl.robot().frame(ee_frame_).position();
 
     // Build the waypoint chain: start -> intermediate waypoints -> final
     // target. Intermediate waypoints inherit the final target's orientation
     // (same convention as CartesianMove's waypoints).
+    // A trial profile may replace this leg's via-points (see `trials:` in the
+    // YAML). Falls through to the state's own `waypoints:` when the active
+    // trial says nothing about this state, so profiles only need to list the
+    // legs they actually change.
+    const std::vector<Eigen::Vector3d> * wp_override = ppc(ctl).waypointsFor(name());
+    const std::vector<Eigen::Vector3d> & wps_in = wp_override ? *wp_override : pos_waypoints_;
+    if(wp_override)
+      mc_rtc::log::info("[{}] trial '{}' overrides waypoints: {} via-point(s)",
+                        name(), ppc(ctl).activeTrial(), wps_in.size());
+
     waypts_.clear();
     waypts_.push_back(start_pose);
-    for(const auto & wp : pos_waypoints_)
+    for(const auto & wp : wps_in)
       waypts_.push_back(sva::PTransformd(final_target.rotation(), wp));
     waypts_.push_back(final_target);
 
@@ -354,10 +588,58 @@ struct ComplianceCartesianMove : mc_control::fsm::State
       chord[i] = (waypts_[i + 1].translation() - waypts_[i].translation()).norm();
       total_chord += chord[i];
     }
-    seg_duration_.assign(chord.size(), duration_ / std::max<size_t>(1, chord.size()));
+
+    double ori_delta = sva::rotationError(start_pose.rotation(), final_target.rotation()).norm();
+    // GLOBAL SPEED KNOB (2026-09-23): `speed_scale` in the YAML, one number
+    // per trial condition instead of editing v_max on every state. Note it
+    // divides `duration` as well as multiplying v_max - `duration` is a FLOOR,
+    // so a leg pinned by it (MoveUpFromPick is, at 15s vs its 14s v_max term)
+    // would otherwise ignore the scale entirely and the cycle would not
+    // actually speed up. Clamped to [0.1, 3.0] by the controller.
+    const double sc_ = ppc(ctl).speedScale();
+    effective_duration_ = std::max({duration_ / sc_,
+                                     1.875 * total_chord / std::max(v_max_lin_ * sc_, 1e-6),
+                                     1.875 * ori_delta / std::max(v_max_ang_ * sc_, 1e-6)});
+
+    seg_duration_.assign(chord.size(), effective_duration_ / std::max<size_t>(1, chord.size()));
     if(total_chord > 1e-6)
       for(size_t i = 0; i < chord.size(); ++i)
-        seg_duration_[i] = duration_ * (chord[i] / total_chord);
+        seg_duration_[i] = effective_duration_ * (chord[i] / total_chord);
+
+    // ROOT CAUSE FIX 2026-09-07 - back off the posture task, exactly as
+    // CartesianMove has always done.
+    //
+    // This state never did, and that is why it has NEVER converged: the FSM
+    // posture task stays active with its target left at whatever the
+    // preceding JointMove drove it to (e.g. MoveToSafe's joint
+    // configuration) and, at the default weight, competes on equal terms
+    // with the ImpedanceTask below (also weight 100). The QP settles at an
+    // equilibrium partway between the two - which is exactly what every
+    // failure of this state has looked like: the arm stops ~0.24-0.29 m
+    // short of target, perfectly static, with zero measured wrench, no
+    // joint anywhere near a limit, and model-vs-real agreement of 0.0001
+    // rad (the model is not being asked to move, rather than failing to).
+    //
+    // Diagnosed 2026-09-07 after ruling out the alternatives on live data:
+    // not a joint limit (joint_3 at 1.16 rad, 1.41 rad of margin), not a
+    // singularity (the stuck pose is BETTER conditioned than the healthy
+    // start pose - condition number 26.9 vs 75.3, manipulability 0.014 vs
+    // 0.0045 - and the remaining direction needs only 0.023 rad/s on
+    // joint_3), and not the contact-pause clock (logged as running, force
+    // 0.00 N, 45 s past the end of the trajectory).
+    //
+    // The tell was that CartesianMove converges cleanly on the same robot
+    // (ReturnHome reached pos_err 0.0004 m) and differs in exactly this.
+    // NOTE this bug was masked for weeks by the old force-advance-on-timeout
+    // default: MoveToPick never actually reached its target, it just got
+    // close and the FSM moved on regardless.
+    if(auto pt = ctl.getPostureTask(ctl.robot().name()))
+    {
+      prev_posture_weight_    = pt->weight();
+      prev_posture_stiffness_ = pt->stiffness();
+      pt->weight(1.0);
+      pt->stiffness(1.0);
+    }
 
     task_ = std::make_shared<mc_tasks::force::ImpedanceTask>(
         ctl.robot().frame(ee_frame_), task_stiffness_, task_weight_);
@@ -386,8 +668,19 @@ struct ComplianceCartesianMove : mc_control::fsm::State
 
     ctl.solver().addTask(task_);
 
-    mc_rtc::log::info("[{}] Compliant move started (duration={:.2f}s, {} waypoint(s))",
-                      name(), duration_, pos_waypoints_.size());
+    mc_rtc::log::info(
+        "[{}] Compliant move started - effective duration {:.2f}s (min {:.2f}s), "
+        "v_max_lin={:.3f} m/s, v_max_ang={:.3f} rad/s, path_len={:.4f} m, ori_delta={:.4f} rad, "
+        "{} waypoint(s) | BINDS ON {} | [speed_scale {:.2f}x; configured lin {:.3f} ang {:.3f} "
+        "min {:.2f}s]",
+        name(), effective_duration_, duration_ / sc_, v_max_lin_ * sc_, v_max_ang_ * sc_,
+        total_chord, ori_delta, wps_in.size(),
+        (1.875 * ori_delta / std::max(v_max_ang_ * sc_, 1e-6) >= effective_duration_ - 1e-9)
+            ? "v_max_ang"
+            : ((1.875 * total_chord / std::max(v_max_lin_ * sc_, 1e-6) >= effective_duration_ - 1e-9)
+                   ? "v_max_lin"
+                   : "duration"),
+        sc_, v_max_lin_, v_max_ang_, duration_);
   }
 
   // Evaluate the moving target pose at trajectory-clock time `t`.
@@ -419,11 +712,49 @@ struct ComplianceCartesianMove : mc_control::fsm::State
     // Contact gate: pause the trajectory clock while the measured wrench
     // says the arm is in contact, resume only after it's been clear for
     // clear_hold_time_ (avoids chattering pause/resume at the threshold).
-    double f = task_->measuredWrench().force().norm();
-    if(f > contact_force_threshold_)
+    const double f = task_->measuredWrench().force().norm();
+    const double m = task_->measuredWrench().couple().norm();
+
+    // Model-vs-real divergence, same quantity the bridge gates on.
+    double dev = 0.0;
+    {
+      const auto & mq  = ctl.robot().mbc().q;
+      const auto & rq  = ctl.realRobot().mbc().q;
+      const auto & mbs = ctl.robot().mb().joints();
+      for(size_t ji = 0; ji < mbs.size(); ++ji)
+      {
+        if(mbs[ji].dof() != 1) continue;
+        dev = std::max(dev, std::abs(mq[ji][0] - rq[ji][0]));
+      }
+    }
+
+    // Real joint speed drives the friction-induced baseline, so the moment
+    // threshold rides on it (see contact_moment_speed_gain_ above).
+    double max_qd = 0.0;
+    {
+      const auto & ra  = ctl.realRobot().mbc().alpha;
+      const auto & mbs = ctl.realRobot().mb().joints();
+      for(size_t ji = 0; ji < mbs.size(); ++ji)
+      {
+        if(mbs[ji].dof() != 1) continue;
+        max_qd = std::max(max_qd, std::abs(ra[ji][0]));
+      }
+    }
+    const double m_thresh = contact_moment_threshold_ + contact_moment_speed_gain_ * max_qd;
+
+    const bool by_force  = f > contact_force_threshold_;
+    const bool by_moment = m > m_thresh;
+    const bool by_dev    = divergence_pause_ > 0.0 && dev > divergence_pause_
+                           && !ppc(ctl).dryRunValidation();
+
+    const bool was_paused = paused_;
+    if(by_force || by_moment || by_dev)
     {
       paused_      = true;
       clear_timer_ = 0.0;
+      if(by_force)       pause_cause_ = "force";
+      else if(by_moment) pause_cause_ = "moment";
+      else               pause_cause_ = "model-vs-real divergence";
     }
     else if(paused_)
     {
@@ -431,9 +762,164 @@ struct ComplianceCartesianMove : mc_control::fsm::State
       if(clear_timer_ >= clear_hold_time_) paused_ = false;
     }
 
-    if(!paused_) t_elapsed_ += dt_;
+    // CLOCK DIAGNOSTIC (2026-09-07): edge-triggered, so it prints once per
+    // pause and once per resume rather than every tick. Added after a live
+    // HoverToPlace test where the arm was held, stopped, resumed on release,
+    // but then never reconverged and FORCED ADVANCE fired mid-traverse -
+    // the question being whether the trajectory clock genuinely froze and
+    // restarted, or whether something else stalled it. t_elapsed_ is the
+    // clock itself, so comparing its value across the pause/resume pair
+    // answers that directly: it must be identical at PAUSE and RESUME.
+    if(paused_ != was_paused)
+    {
+      if(paused_)
+      {
+        mc_rtc::log::warning(
+            "[{}] CLOCK PAUSED  - triggered by {}: force {:.2f}/{:.2f} N, moment {:.2f}/{:.2f} Nm, "
+            "model-vs-real {:.4f}/{:.4f} rad. t_elapsed frozen at {:.2f}s of {:.2f}s",
+            name(), pause_cause_, f, contact_force_threshold_, m, m_thresh,
+            dev, divergence_pause_, t_elapsed_, effective_duration_);
+      }
+      else
+      {
+        // CLOCK REWIND ON RESUME (2026-09-23).
+        //
+        // While paused we glue the model to the encoders, but the trajectory
+        // clock keeps its old time parameterisation - so targetAt(t_elapsed_)
+        // sits AHEAD of where the arm actually is. On resume the impedance
+        // task closes that gap at whatever its gains allow, with no v_max
+        // bound (the quintic shapes the original path, never a catch-up).
+        // Live, that burst blew past delta_max's tracking limit within 0.18s
+        // and re-tripped the divergence backstop, giving a ~1 Hz
+        // brake-and-go limit cycle: resume -> sprint -> diverge -> pause ->
+        // snap back -> resume, visible as the arm juddering along.
+        //
+        // Rewinding the clock to the point on the path nearest the arm's
+        // actual pose removes the gap entirely, so the resumed motion starts
+        // from zero position error and is speed-bounded by the same quintic
+        // as everything else. The PATH is untouched (waypoints included) -
+        // only the time cursor moves - and it can only ever move BACKWARD,
+        // so a resume can never skip part of the trajectory.
+        if(return_to_hold_point_)
+        {
+          // Contact cleared: do NOT restart the clock yet. Enter the return
+          // phase - the trajectory target stays frozen at targetAt(t_elapsed_),
+          // which is exactly the pose the arm was heading for when the push
+          // started, and the impedance task pulls the arm back to it. The
+          // clock restarts only once the arm is actually back (see below).
+          // The return speed is not shaped by the quintic, but it IS bounded
+          // by the bridge's delta_max clamp, and the displacement is only as
+          // large as the person made it - so this is not the unbounded
+          // catch-up that caused the 2026-09-23 judder, which came from the
+          // target having advanced far downstream while the arm stood still.
+          returning_   = true;
+          return_time_ = 0.0;
+          const double back = (ctl.robot().frame(ee_frame_).position().translation()
+                               - targetAt(t_elapsed_).translation()).norm();
+          mc_rtc::log::warning(
+              "[{}] CONTACT CLEARED - returning {:.3f} m to the hold point before resuming. "
+              "Clock stays frozen at {:.2f}s of {:.2f}s",
+              name(), back, t_elapsed_, effective_duration_);
+        }
+        else
+        {
+          // REWIND alternative (2026-09-23): accept the displacement and
+          // resume from the nearest point on the path. Cheaper and smoother,
+          // but it abandons the part of the path between the hold point and
+          // wherever the push left the arm.
+          const double t_before = t_elapsed_;
+          {
+            const Eigen::Vector3d cur = ctl.robot().frame(ee_frame_).position().translation();
+            const int N = 400;
+            double best_t = t_elapsed_, best_d = std::numeric_limits<double>::max();
+            for(int i = 0; i <= N; ++i)
+            {
+              const double t = effective_duration_ * static_cast<double>(i) / static_cast<double>(N);
+              const double dd = (targetAt(t).translation() - cur).norm();
+              if(dd < best_d) { best_d = dd; best_t = t; }
+            }
+            t_elapsed_ = std::min(t_elapsed_, best_t);
+          }
+          mc_rtc::log::warning(
+              "[{}] CLOCK RESUMED - clear for {:.2f}s (force {:.2f} N, moment {:.2f} Nm, "
+              "model-vs-real {:.4f} rad). t_elapsed resuming from {:.2f}s of {:.2f}s "
+              "[rewound {:.2f}s to match the arm's actual pose]",
+              name(), clear_hold_time_, f, m, dev, t_elapsed_, effective_duration_,
+              t_before - t_elapsed_);
+        }
+      }
+    }
 
-    task_->targetPose(targetAt(std::min(t_elapsed_, duration_)));
+    // DEADLOCK FIX 2026-09-07: while a human is holding the arm, glue the
+    // QP's internal model to the real arm.
+    //
+    // Pausing the clock freezes the trajectory TARGET, but it never stopped
+    // the control robot from converging to that frozen target. ctl.robot()
+    // integrates open-loop and (before this) was resynced only at state
+    // start - so during a hold the model walked to the target while the
+    // real arm was physically restrained, model-vs-real divergence grew
+    // past the bridge's model_real_gate (0.05 rad), the bridge refused to
+    // publish, and because nothing resyncs mid-run the arm could then NEVER
+    // catch up. Live HoverToPlace test: model joint_1 = 0.9713 rad vs real
+    // 0.2171 rad, gate tripped, permanent deadlock - the state kept
+    // reporting "HOLDING" while the bridge had already stopped publishing
+    // for an unrelated reason.
+    //
+    // Resyncing every tick while paused keeps the model on top of reality,
+    // so the divergence never accumulates: the published command stays
+    // within a tick of the encoders (the bridge's delta_max clamp then has
+    // nothing to fight), and on release the model resumes from where the
+    // arm actually is rather than from a fiction.
+    if(paused_) { resyncControlToReal(ctl); returning_ = false; }
+
+    // RETURN PHASE (2026-10-07). Contact has cleared but the clock is still
+    // frozen: the target sits at targetAt(t_elapsed_) - the pose the arm was
+    // heading for when the push began - and the impedance task pulls the arm
+    // back to it. Deliberately NOT resyncing here: during the pause the
+    // resync keeps the model on the encoders so divergence cannot build, but
+    // during the return the task must be allowed to drive the model away
+    // from the (displaced) arm, otherwise it would simply sit where the
+    // person left it.
+    // Judged against realRobot(): the point is that the ARM comes back, not
+    // the model.
+    if(returning_ && !paused_)
+    {
+      return_time_ += dt_;
+      const double back = (ctl.realRobot().frame(ee_frame_).position().translation()
+                           - targetAt(t_elapsed_).translation()).norm();
+      if(back < pos_threshold_)
+      {
+        returning_ = false;
+        mc_rtc::log::success("[{}] Back at the hold point ({:.4f} m) after {:.1f}s - CLOCK RESUMED "
+                             "from {:.2f}s of {:.2f}s", name(), back, return_time_,
+                             t_elapsed_, effective_duration_);
+      }
+      else if(return_time_ > settle_timeout_)
+      {
+        // Could not get back - the arm is still obstructed, or the person is
+        // holding it below the contact threshold. Degrade to the rewind
+        // rather than hanging: accept the displacement and carry on from the
+        // nearest point on the path.
+        const Eigen::Vector3d cur = ctl.robot().frame(ee_frame_).position().translation();
+        double best_t = t_elapsed_, best_d = std::numeric_limits<double>::max();
+        for(int i = 0; i <= 400; ++i)
+        {
+          const double t = effective_duration_ * static_cast<double>(i) / 400.0;
+          const double dd = (targetAt(t).translation() - cur).norm();
+          if(dd < best_d) { best_d = dd; best_t = t; }
+        }
+        t_elapsed_ = std::min(t_elapsed_, best_t);
+        returning_ = false;
+        mc_rtc::log::error("[{}] Could NOT return to the hold point ({:.4f} m still off after "
+                           "{:.1f}s) - falling back to rewinding the clock to {:.2f}s and "
+                           "resuming. The arm may still be obstructed.",
+                           name(), back, return_time_, t_elapsed_);
+      }
+    }
+
+    if(!paused_ && !returning_) t_elapsed_ += dt_;
+
+    task_->targetPose(targetAt(std::min(t_elapsed_, effective_duration_)));
 
     // SIGN CHECK (safe under dry_run - no hardware command involved).
     // task_->compliancePose() is the ImpedanceTask's own internal target:
@@ -467,9 +953,22 @@ struct ComplianceCartesianMove : mc_control::fsm::State
         name(), world_dev.x(), world_dev.y(), world_dev.z());
     }
 
-    if(t_elapsed_ < duration_) { tick_++; return false; }
+    if(t_elapsed_ < effective_duration_) { tick_++; return false; }
 
-    auto cur = ctl.robot().frame(ee_frame_).position();
+    // Convergence judged against the REAL arm, not the QP-internal model -
+    // see resyncControlToReal() and CartesianMove::run() above. NOTE: the
+    // settle-timeout below still force-advances on non-convergence
+    // (unchanged from before this review) - MoveHome's equivalent no
+    // longer does this, see the note there; flagged for a decision on
+    // whether MoveToPick/MoveToPlace should match.
+    // DRY-RUN VALIDATION (2026-09-30): judge convergence against the MODEL
+    // rather than the encoders. In dry_run nothing is published, so
+    // realRobot() can never reach the target and the state would hold
+    // forever - only one leg per run could be inspected. Comparing the model
+    // lets the whole chain walk through in RViz. Live, this is always
+    // realRobot(): the only thing that proves the ARM got there.
+    const auto & conv_robot = ppc(ctl).dryRunValidation() ? ctl.robot() : ctl.realRobot();
+    auto cur = conv_robot.frame(ee_frame_).position();
     double pos_err = (cur.translation() - waypts_.back().translation()).norm();
     double ori_err = sva::rotationError(cur.rotation(), waypts_.back().rotation()).norm();
 
@@ -483,16 +982,114 @@ struct ComplianceCartesianMove : mc_control::fsm::State
 
     if((tick_++ % 200) == 0)
     {
-      mc_rtc::log::warning("[{}] Settling: pos_err={:.4f} m, ori_err={:.4f} rad{}",
-                           name(), pos_err, ori_err, paused_ ? " (paused - contact)" : "");
+      // Clock + contact state added 2026-09-07 alongside the edge-triggered
+      // CLOCK PAUSED/RESUMED lines above: during a live HoverToPlace stall
+      // the only thing this line said was that pos_err was static, which
+      // could not distinguish "still paused on contact" from "resumed but
+      // not converging". Now it states the clock position, whether the
+      // clock is running, and the live force, every time it prints.
+      // Escalates to an error past the deadline (mirrors CartesianMove), so
+      // an arm that is holding rather than advancing is impossible to miss.
+      // Model-vs-real divergence, computed here rather than only in the
+      // bridge (2026-09-07). The bridge's model_real_gate blocks publishing
+      // once this exceeds its threshold, but the STATE could not see that -
+      // during a live deadlock this line kept reporting "HOLDING, will not
+      // advance" while the real reason nothing moved was that the bridge had
+      // silently stopped publishing 28 s earlier. Surfacing it here makes
+      // the two failure modes distinguishable in one log line.
+      double maxdev = 0.0;
+      std::string devjoint;
+      {
+        const auto & mq  = ctl.robot().mbc().q;
+        const auto & rq  = ctl.realRobot().mbc().q;
+        const auto & mbs = ctl.robot().mb().joints();
+        for(size_t ji = 0; ji < mbs.size(); ++ji)
+        {
+          if(mbs[ji].dof() != 1) continue;
+          double d = std::abs(mq[ji][0] - rq[ji][0]);
+          if(d > maxdev) { maxdev = d; devjoint = mbs[ji].name(); }
+        }
+      }
+
+      const bool past_deadline = t_elapsed_ > effective_duration_ + settle_timeout_;
+      if(past_deadline && !advance_on_timeout_)
+        mc_rtc::log::error(
+            "[{}] NOT converged {:.2f}s past schedule (pos_err={:.4f} m, ori_err={:.4f} rad) - "
+            "HOLDING here, will NOT advance to {} until the real arm reaches the target. "
+            "clock {:.2f}/{:.2f}s{} | force {:.2f} N | model-vs-real {:.4f} rad on '{}'{}",
+            name(), t_elapsed_ - effective_duration_ - settle_timeout_, pos_err, ori_err,
+            next_state_, t_elapsed_, effective_duration_,
+            (paused_ ? " PAUSED - contact" : (returning_ ? " RETURNING" : " running")),
+            f, maxdev, devjoint,
+            ppc(ctl).dryRunValidation()
+                ? "  (dry_run_validation: model-vs-real is meaningless here - nothing is published)"
+                : (maxdev > 0.05 ? "  <<< EXCEEDS model_real_gate - bridge is NOT publishing, arm"
+                                   " cannot recover on its own; restart the state/controller" : ""));
+      else
+        mc_rtc::log::warning(
+            "[{}] Settling: pos_err={:.4f} m, ori_err={:.4f} rad | clock {:.2f}/{:.2f}s{} | "
+            "force {:.2f}/{:.2f} N, moment {:.2f}/{:.2f} Nm",
+            name(), pos_err, ori_err, t_elapsed_, effective_duration_,
+            (paused_ ? " PAUSED - contact" : (returning_ ? " RETURNING to hold point" : " running")),
+            f, contact_force_threshold_, m, m_thresh);
+
+      // DIAGNOSTIC (2026-08-26): a live MoveToPick stall showed pos_err/
+      // ori_err and the SIGN CHECK world_dev completely static (not slowly
+      // converging) while measured wrench was zero the whole time - i.e.
+      // an equilibrium, not a timing problem (the effective_duration_ fix
+      // above had no effect on this failure). Real joints snapshot added
+      // here to check directly whether a joint is pegged at/near its
+      // kinematic limit (a hard QP constraint no amount of extra time can
+      // overcome) - e.g. ReturnHome's post-mortem snapshot showed the real
+      // arm left at joint_3=-2.4840 rad, only 0.086 rad from its -2.57 rad
+      // limit.
+      const double r2d = 180.0 / M_PI;
+      const auto & rq   = ctl.realRobot().mbc().q;
+      const auto & mbs  = ctl.realRobot().mb().joints();
+      for(size_t ji = 0; ji < mbs.size(); ++ji)
+      {
+        if(mbs[ji].dof() != 1) continue;
+        mc_rtc::log::info("[{}]   real '{}' = {:+.4f} rad ({:+.1f} deg)",
+                          name(), mbs[ji].name(), rq[ji][0], rq[ji][0] * r2d);
+      }
     }
 
-    if(t_elapsed_ > duration_ + settle_timeout_)
+    if(t_elapsed_ > effective_duration_ + settle_timeout_)
     {
-      mc_rtc::log::error("[{}] Settle timeout after {:.2f}s extra (pos_err={:.4f}, ori_err={:.4f}). Advancing anyway.",
-                         name(), settle_timeout_, pos_err, ori_err);
-      output(next_state_);
-      return true;
+      // DEFAULT CHANGED 2026-09-07: advance -> hold.
+      //
+      // This used to force-advance unconditionally (added 2026-08-24) on the
+      // reasoning that a stuck compliant move shouldn't hang an experiment
+      // session mid-trial. A live HoverToPlace test showed the cost of that:
+      // the operator held the arm, released it, it failed to reconverge, and
+      // this timeout advanced the FSM into UnloadObj - which tipped the
+      // carried container 0.77 rad short of the unload site, i.e. dumped the
+      // payload in the wrong place, mid-traverse. "Don't hang the session"
+      // is not worth an irreversible physical action at an unintended
+      // location, and CartesianMove already made exactly this change on
+      // 2026-08-19 (it holds and escalates its log instead) - the two are
+      // now consistent.
+      //
+      // Set `advance_on_timeout: true` per-state to opt back in where the
+      // next state is harmless if the target was missed. Do NOT set it where
+      // the next state grips, releases, tips, or otherwise commits to
+      // something physical.
+      // dry_run_validation also advances: the whole point of that mode is to
+      // walk the entire chain in RViz, and nothing is published so a
+      // not-quite-converged leg commits nothing. Holding here would mean
+      // validating one leg per run.
+      if(advance_on_timeout_ || ppc(ctl).dryRunValidation())
+      {
+        mc_rtc::log::error(
+            "[{}] FORCED ADVANCE -> {}: NOT converged after {:.2f}s extra "
+            "(pos_err={:.4f} m, ori_err={:.4f} rad) - target may not have been "
+            "reached; treat this trial/cycle as suspect.",
+            name(), next_state_, settle_timeout_, pos_err, ori_err);
+        output(next_state_);
+        return true;
+      }
+      // Holding: the periodic log above escalates to the "NOT converged ...
+      // holding here" error, so this is loud rather than silent.
     }
 
     return false;
@@ -501,6 +1098,13 @@ struct ComplianceCartesianMove : mc_control::fsm::State
   void teardown(mc_control::fsm::Controller & ctl) override
   {
     if(task_) ctl.solver().removeTask(task_);
+
+    // Restore the posture task gains backed off in start().
+    if(auto pt = ctl.getPostureTask(ctl.robot().name()))
+    {
+      pt->weight(prev_posture_weight_);
+      pt->stiffness(prev_posture_stiffness_);
+    }
   }
 };
 
@@ -510,16 +1114,61 @@ struct ComplianceCartesianMove : mc_control::fsm::State
 struct JointMove : mc_control::fsm::State
 {
   std::map<std::string, std::vector<double>> target_joints_;
-  double duration_   = 3.0;
-  double stiffness_  = 2.0;
+  std::map<std::string, std::vector<double>> target_joints_yaml_;  // un-wrapped baseline
+  double duration_   = 3.0;   // MINIMUM duration - see effective_duration_/v_max_ below
+  double stiffness_  = 2.0;   // now a pure TRACKING gain (how tightly the posture task follows
+                               // the moving reference below), not a speed control - see note in start()
   double weight_     = 100.0;
   double threshold_  = 0.15;
+  // Hard cap (rad/s) on any joint's PEAK commanded velocity, enforced by
+  // construction via the quintic time-scaling below - see start(). Default
+  // chosen with a 4x margin under the bridge's default delta_max-implied
+  // real-tracking ceiling (~0.2 rad/s @ delta_max=0.002, 100Hz publish);
+  // override in YAML per-launch-config if delta_max changes.
+  double v_max_      = 0.05;
+  // ADDED 2026-09-07: if every joint is already within this many rad of
+  // `target` when the state starts, skip the move entirely and advance
+  // immediately instead of holding a no-op reference for the full
+  // effective_duration_. Motivating case: the pick-and-place loop's first
+  // step is "check if at Zero, go there if not" - without this, starting a
+  // cycle from Zero burns the full `duration` (15s by default) doing
+  // literally nothing, since convergence is only ever tested AFTER
+  // t_elapsed_ >= effective_duration_ (see run()). 0 = disabled, which is
+  // the default, so every state that doesn't opt in keeps its old behavior
+  // exactly. The startup pose-capture logs still print before the skip
+  // decision, so the "jog the arm, read the log" workflow used to derive
+  // every pose in the YAML is unaffected.
+  double skip_if_within_ = 0.0;
+
+  // ADDED 2026-09-23: same wrench-independent backstop ComplianceCartesianMove
+  // got on 2026-09-18, ported here after a live UnloadObj failure.
+  //
+  // JointMove is rigid by design - no compliance, no contact detection - but
+  // that only governs how it RESPONDS to an obstruction, not what happens to
+  // the model when the real arm physically cannot follow. UnloadObj commands
+  // joint_5 from 0.8323 to 0.0143 rad (a 46.9 deg wrist tip to empty the
+  // container); live, the real joint stalled dead at 0.4095 rad - 52% through
+  // - while the model marched on to 0.2688. Divergence passed the bridge's
+  // model_real_gate (0.05 rad), publishing stopped, and nothing recovers from
+  // that without a restart. Every other joint had reached target, so the
+  // reported err=0.3952 was exactly |0.4095 - 0.0143|, i.e. joint_5 alone.
+  //
+  // Freezing the interpolation clock and resyncing the model to the encoders
+  // keeps divergence at roughly one tick's worth, so the gate never latches:
+  // a blocked joint now HOLDS loudly instead of deadlocking the session.
+  // 0 disables.
+  double divergence_pause_ = 0.03;  // rad
   std::string next_state_;
 
   double t_elapsed_           = 0.0;
   double dt_                  = 0.01; //0.005;
   double prev_weight_         = 1.0;
   double prev_stiffness_      = 1.0;
+  double effective_duration_  = 3.0;  // = max(duration_, time needed so peak velocity <= v_max_)
+  bool   skipped_             = false;
+  bool   stalled_             = false;
+  double stall_time_          = 0.0;
+  std::map<std::string, double> q_start_;
 
   int tick_ = 0;
 
@@ -529,6 +1178,9 @@ struct JointMove : mc_control::fsm::State
     if(config.has("stiffness")) stiffness_ = config("stiffness");
     if(config.has("weight"))    weight_    = config("weight");
     if(config.has("threshold")) threshold_ = config("threshold");
+    if(config.has("v_max"))     v_max_     = config("v_max");
+    if(config.has("skip_if_within")) skip_if_within_ = config("skip_if_within");
+    if(config.has("divergence_pause")) divergence_pause_ = config("divergence_pause");
     if(config.has("next"))      next_state_ = static_cast<std::string>(config("next"));
 
     // target: [v1, v2, ... v6]  (array form only — simplest and most common)
@@ -539,7 +1191,20 @@ struct JointMove : mc_control::fsm::State
       {
         target_joints_["joint_" + std::to_string(i + 1)] = {vals[i]};
       }
+      // Baseline kept separately: start() WRAPS target_joints_ in place to the
+      // nearest equivalent angle, and a trial profile may replace it
+      // entirely. Without this, a wrap or an override from one trial would
+      // leak into the next.
+      target_joints_yaml_ = target_joints_;
     }
+  }
+
+  // Same quintic (minimum-jerk) time-scaling as ComplianceCartesianMove
+  // above - 10u^3-15u^4+6u^5, zero velocity/acceleration at both ends.
+  static double quinticS(double u)
+  {
+    u = std::clamp(u, 0.0, 1.0);
+    return 10.0 * u * u * u - 15.0 * u * u * u * u + 6.0 * u * u * u * u * u;
   }
 
 /*  void start(mc_control::fsm::Controller & ctl) override
@@ -563,6 +1228,17 @@ struct JointMove : mc_control::fsm::State
       mc_rtc::log::info("[{}]   '{}' (dof={})", name(), j.name(), j.dof());
     }
 
+    // Restore the YAML baseline, then let the active trial replace it. Done
+    // here (not in configure) because the profile can change between trials
+    // and start() wraps target_joints_ in place.
+    if(!target_joints_yaml_.empty()) target_joints_ = target_joints_yaml_;
+    if(const std::vector<double> * jt = ppc(ctl).jointTargetFor(name()))
+    {
+      for(size_t i = 0; i < jt->size(); ++i)
+        target_joints_["joint_" + std::to_string(i + 1)] = {(*jt)[i]};
+      mc_rtc::log::info("[{}] trial '{}' overrides joint target", name(), ppc(ctl).activeTrial());
+    }
+
 // ── DEBUG: print what WE are commanding ──────────────────────────
     mc_rtc::log::info("[{}] Our target_joints_:", name());
     for(const auto & kv : target_joints_)
@@ -584,6 +1260,11 @@ void start(mc_control::fsm::Controller & ctl) override
     t_elapsed_ = 0.0;
     tick_      = 0;
 
+    resyncControlToReal(ctl);
+    skipped_    = false;
+    stalled_    = false;
+    stall_time_ = 0.0;
+
     auto pt = ctl.getPostureTask(ctl.robot().name());
     if(!pt)
     {
@@ -600,7 +1281,9 @@ void start(mc_control::fsm::Controller & ctl) override
     // ── FIX: wrap each target angle to within π of the current q ─────
     // Prevents commanding a 360° detour when the bridge seeds joints in
     // a different wrap than the YAML value (e.g. +263° → −97°).
-    const auto & q   = ctl.robot().mbc().q;
+    // Reads realRobot() directly (rather than relying on the resync above)
+    // so this stays correct even if the resync call is ever reordered.
+    const auto & q   = ctl.realRobot().mbc().q;
     const auto & mbs = ctl.robot().mb().joints();
     for(size_t ji = 0; ji < mbs.size(); ++ji)
     {
@@ -615,7 +1298,26 @@ void start(mc_control::fsm::Controller & ctl) override
       while(target - current < -M_PI) target += 2.0 * M_PI;
     }
 
-    // ── DEBUG: print current q vs wrapped target ──────────────────────
+    // ── DEBUG: print current q vs wrapped target, capture q_start_ ────
+    // and compute effective_duration_ so peak velocity is bounded by
+    // construction (2026-08-26): a live test showed the previous
+    // "set target once, let the posture task's spring converge" approach
+    // move far faster than intended even after cutting stiffness_ 40x
+    // (observed ~0.4-0.9 rad/s vs. an estimated ~0.14 rad/s) - either the
+    // stiffness->velocity relationship assumed for that estimate was wrong,
+    // or the changed value didn't take effect (same class of stale-build
+    // mismatch hit earlier with dry_run; left unresolved since this fix
+    // sidesteps the question entirely). Below, q(t) is an explicit quintic
+    // interpolation from q_start_ to target_joints_ over effective_duration_
+    // - a pure function of time and the captured start/target values, not
+    // dependent on any task gain - so its peak velocity
+    // (1.875 * max|delta| / effective_duration_, the standard quintic
+    // peak-velocity factor) is a guaranteed property, not an estimate, and
+    // is directly verifiable in a dry-run log this time (unlike the
+    // stiffness-based approach, this profile doesn't depend on real
+    // feedback at all past q_start_).
+    q_start_.clear();
+    double max_abs_delta = 0.0;
     mc_rtc::log::info("[{}] Joint current_q vs target (after wrap):", name());
     for(size_t ji = 0; ji < mbs.size(); ++ji)
     {
@@ -625,26 +1327,171 @@ void start(mc_control::fsm::Controller & ctl) override
       double target  = target_joints_.count(jname) ? target_joints_.at(jname)[0] : current;
       mc_rtc::log::info("[{}]   '{}' current={:.4f}  target={:.4f}  delta={:.4f}",
                         name(), jname, current, target, target - current);
+      if(target_joints_.count(jname))
+      {
+        q_start_[jname] = current;
+        max_abs_delta = std::max(max_abs_delta, std::abs(target - current));
+      }
     }
+    // GLOBAL SPEED KNOB (2026-09-23): `speed_scale` in the YAML, one number
+    // per trial condition instead of editing v_max on every state. Note it
+    // divides `duration` as well as multiplying v_max - `duration` is a FLOOR,
+    // so a leg pinned by it (MoveUpFromPick is, at 15s vs its 14s v_max term)
+    // would otherwise ignore the scale entirely and the cycle would not
+    // actually speed up. Clamped to [0.1, 3.0] by the controller.
+    const double sc_ = ppc(ctl).speedScale();
+    effective_duration_ = std::max(duration_ / sc_,
+                                   1.875 * max_abs_delta / std::max(v_max_ * sc_, 1e-6));
 
     prev_weight_    = pt->weight();
     prev_stiffness_ = pt->stiffness();
     pt->stiffness(stiffness_);
     pt->weight(weight_);
-    pt->target(target_joints_);
+    // BUG FOUND 2026-08-26: this used to be pt->target(target_joints_) (the
+    // RAW, un-interpolated final target), on the assumption that run()'s
+    // first tick would immediately overwrite it with the s=0 interpolated
+    // value, making it "harmless". Two live/dry-run tests with a large
+    // single-joint delta (2.38 rad, then 3.08 rad) both hit
+    // "[error] QP failed to run()" immediately after this line, before any
+    // run()-tick output ever printed - proving the QP's first solve sees
+    // THIS raw target, several radians away, not the interpolated one.
+    // Smaller deltas (<=0.62 rad, tested earlier) apparently stayed within
+    // whatever numerical tolerance the solver has; large ones don't. Fixed
+    // by setting the initial target to q_start_ (equivalent to s=0, "stay
+    // where you are") - exactly what run()'s first tick computes anyway,
+    // removing the momentary large-jump exposure entirely.
+    {
+      std::map<std::string, std::vector<double>> initial;
+      for(const auto & kv : q_start_) initial[kv.first] = {kv.second};
+      pt->target(initial);
+    }
 
-    mc_rtc::log::info("[{}] Joint-space move started (duration={:.2f}s)", name(), duration_);
+    mc_rtc::log::info(
+        "[{}] Joint-space move started - effective duration {:.2f}s (min {:.2f}s), "
+        "v_max={:.4f} rad/s, max |delta|={:.4f} rad -> peak velocity {:.4f} rad/s "
+        "[speed_scale {:.2f}x; configured v_max {:.4f}, min {:.2f}s]",
+        name(), effective_duration_, duration_ / sc_, v_max_ * sc_, max_abs_delta,
+        1.875 * max_abs_delta / effective_duration_, sc_, v_max_, duration_);
+
+    // CARTESIAN POSE SNAPSHOT (2026-08-26, safe under dry_run - reads
+    // realRobot() only, no motion). JointMove has no Cartesian awareness of
+    // its own (pure joint-space), unlike CartesianMove's "from:"/rotation
+    // log - added here specifically to capture pick_pose/place_pose the
+    // same proven way home_pose was fixed: physically position the arm,
+    // read THIS log, not the Kinova web app's reported pose (confirmed
+    // twice now to not correspond to mc_rtc's tool_frame directly). Same
+    // eulerAngles(2,1,0) decomposition poseFromConfig() uses, so these
+    // numbers drop straight into a YAML `translation:`/`rotation:` block
+    // with no conversion needed.
+    {
+      const double r2d = 180.0 / M_PI;
+      auto cur = ctl.realRobot().frame("tool_frame").position();
+      Eigen::Vector3d cur_ea = cur.rotation().eulerAngles(2, 1, 0);
+      mc_rtc::log::info("[{}]   real tool_frame translation: [{:+.4f}, {:+.4f}, {:+.4f}]",
+                        name(), cur.translation().x(), cur.translation().y(), cur.translation().z());
+      mc_rtc::log::info(
+          "[{}]   real tool_frame rotation [roll,pitch,yaw] (deg): [{:+.2f}, {:+.2f}, {:+.2f}] "
+          "-> YAML rotation: [{:.4f}, {:.4f}, {:.4f}]",
+          name(), cur_ea.z() * r2d, cur_ea.y() * r2d, cur_ea.x() * r2d,
+          cur_ea.z(), cur_ea.y(), cur_ea.x());
+    }
+
+    // "Already there?" check (see skip_if_within_ above). Deliberately placed
+    // at the very END of start(), after the logs: the gains have already been
+    // set and the initial (s=0, "stay put") target written, so teardown()
+    // restores them exactly as in the normal path - and the pose-capture logs
+    // above still print either way.
+    if(skip_if_within_ > 0.0 && max_abs_delta < skip_if_within_)
+    {
+      skipped_ = true;
+      mc_rtc::log::success(
+          "[{}] Already at target (max |delta|={:.4f} rad < skip_if_within={:.4f} rad) - skipping move.",
+          name(), max_abs_delta, skip_if_within_);
+    }
   }
 
   bool run(mc_control::fsm::Controller & ctl) override
   {
-    t_elapsed_ += dt_;
+    if(skipped_) { output(next_state_); return true; }
+
     auto pt = ctl.getPostureTask(ctl.robot().name());
     if(!pt) { output(next_state_); return true; }
 
-    double err = pt->eval().norm();
+    // Stall guard (see divergence_pause_ above). Advance the interpolation
+    // clock ONLY while the real arm is still keeping up; if it has fallen
+    // behind, freeze the reference and glue the model to the encoders so the
+    // gap cannot accumulate into a model_real_gate deadlock.
+    double dev = 0.0;
+    std::string devjoint;
+    {
+      const auto & mq  = ctl.robot().mbc().q;
+      const auto & rq  = ctl.realRobot().mbc().q;
+      const auto & mbs = ctl.robot().mb().joints();
+      for(size_t ji = 0; ji < mbs.size(); ++ji)
+      {
+        if(mbs[ji].dof() != 1) continue;
+        double d = std::abs(mq[ji][0] - rq[ji][0]);
+        if(d > dev) { dev = d; devjoint = mbs[ji].name(); }
+      }
+    }
+    const bool stalled = divergence_pause_ > 0.0 && dev > divergence_pause_
+                         && !ppc(ctl).dryRunValidation();
+    if(stalled)
+    {
+      resyncControlToReal(ctl);
+      if(!stalled_) mc_rtc::log::error(
+          "[{}] STALLED - real arm not following: model-vs-real {:.4f} rad on '{}' "
+          "(limit {:.4f}). Freezing the trajectory clock at {:.2f}s of {:.2f}s and holding the "
+          "model on the encoders. The joint is physically blocked or the target is unreachable - "
+          "this will NOT advance to {} until it moves.",
+          name(), dev, devjoint, divergence_pause_, t_elapsed_, effective_duration_, next_state_);
+      stall_time_ += dt_;
+    }
+    else
+    {
+      if(stalled_) mc_rtc::log::success(
+          "[{}] Stall cleared after {:.1f}s (model-vs-real {:.4f} rad) - resuming from {:.2f}s.",
+          name(), stall_time_, dev, t_elapsed_);
+      stall_time_ = 0.0;
+      t_elapsed_ += dt_;
+    }
+    stalled_ = stalled;
 
-    if(t_elapsed_ >= duration_ && err < threshold_)
+    // Feed the interpolated (slow, bounded) reference every tick - the
+    // posture task's stiffness_/weight_ now only controls how tightly it
+    // tracks THIS moving reference, not how fast the motion itself is.
+    double u = effective_duration_ > 1e-6 ? t_elapsed_ / effective_duration_ : 1.0;
+    double s = quinticS(u);
+    std::map<std::string, std::vector<double>> interp;
+    for(const auto & kv : target_joints_)
+    {
+      double start = q_start_.count(kv.first) ? q_start_.at(kv.first) : kv.second[0];
+      interp[kv.first] = {(1.0 - s) * start + s * kv.second[0]};
+    }
+    pt->target(interp);
+
+    // Convergence judged against the REAL arm (realRobot()), not
+    // pt->eval() (the posture task's own ctl.robot()-internal error) -
+    // same reasoning as CartesianMove/ComplianceCartesianMove above.
+    // EXCEPT under dry_run_validation, where nothing is published so
+    // realRobot() can never move and this would never converge - there the
+    // model is compared instead so the chain walks through in RViz.
+    double err = 0.0;
+    {
+      const auto & q   = (ppc(ctl).dryRunValidation() ? ctl.robot() : ctl.realRobot()).mbc().q;
+      const auto & mbs = ctl.robot().mb().joints();
+      for(size_t ji = 0; ji < mbs.size(); ++ji)
+      {
+        if(mbs[ji].dof() != 1) continue;
+        const std::string & jname = mbs[ji].name();
+        if(!target_joints_.count(jname)) continue;
+        double d = q[ji][0] - target_joints_.at(jname)[0];
+        err += d * d;
+      }
+      err = std::sqrt(err);
+    }
+
+    if(t_elapsed_ >= effective_duration_ && err < threshold_)
     {
       mc_rtc::log::success("[{}] Joint target reached (err={:.4f}).", name(), err);
       output(next_state_);
@@ -654,7 +1501,9 @@ void start(mc_control::fsm::Controller & ctl) override
 //    static int tick = 0;
     if((tick_++ % 200) == 0)
     {
-      mc_rtc::log::info("[{}] err={:.4f}", name(), err);
+      mc_rtc::log::info("[{}] err={:.4f} | clock {:.2f}/{:.2f}s{} | model-vs-real {:.4f} rad on '{}'",
+                        name(), err, t_elapsed_, effective_duration_,
+                        stalled_ ? " STALLED - frozen" : " running", dev, devjoint);
     }
     return false;
   }
@@ -727,6 +1576,10 @@ struct Gripper : mc_control::fsm::State
 {
   std::string action_    = "close";
   double      timeout_   = 5.0; // Increased default timeout slightly to allow ROS 2 discovery
+  // Optional explicit knuckle-joint position (rad) overriding the action
+  // preset - see sendGripperGoal() in PickPlaceController.h for the scale.
+  // Negative = not specified = use the action preset (previous behavior).
+  double      position_  = -1.0;
   std::string next_state_;
 
   bool   sent_      = false;
@@ -737,6 +1590,7 @@ struct Gripper : mc_control::fsm::State
   {
     if(config.has("action"))  action_  = static_cast<std::string>(config("action"));
     if(config.has("timeout")) timeout_ = config("timeout");
+    if(config.has("position")) position_ = config("position");
     if(config.has("next"))    next_state_ = static_cast<std::string>(config("next"));
   }
 
@@ -745,10 +1599,18 @@ struct Gripper : mc_control::fsm::State
     dt_        = ctl.solver().dt();
     t_elapsed_ = 0.0;
     ppc(ctl).resetGripperDone();
-    
+
     // We do NOT send the goal on start() because the DDS discovery might not be ready.
-    sent_ = false; 
-    mc_rtc::log::info("[{}] Gripper state initialized. Waiting to establish connection for action: {}", name(), action_);
+    sent_ = false;
+    if(position_ >= 0.0)
+    {
+      mc_rtc::log::info("[{}] Gripper state initialized. Waiting to establish connection for action: {} "
+                        "(explicit position {:.3f} rad)", name(), action_, position_);
+    }
+    else
+    {
+      mc_rtc::log::info("[{}] Gripper state initialized. Waiting to establish connection for action: {}", name(), action_);
+    }
   }
 
   bool run(mc_control::fsm::Controller & ctl) override
@@ -758,7 +1620,7 @@ struct Gripper : mc_control::fsm::State
     // Attempt to send the goal to ROS 2 until the action server is discovered and ready
     if(!sent_)
     {
-      sent_ = ppc(ctl).sendGripperGoal(action_);
+      sent_ = ppc(ctl).sendGripperGoal(action_, position_);
       if(sent_)
       {
         mc_rtc::log::info("[{}] Connection established. Gripper action successfully sent: {}", name(), action_);
@@ -794,14 +1656,63 @@ struct Gripper : mc_control::fsm::State
 // ════════════════════════════════════════════════════════════════════════════
 //  Idle — terminal state
 // ════════════════════════════════════════════════════════════════════════════
+// TRIAL GATE (2026-09-30, gate moved after MoveToSafe on the same day).
+// Idle used to be a permanent dead end. It is now where the controller parks
+// BEFORE each trial, immediately after MoveToSafe: on launch the arm goes to
+// the safe pose and waits rather than running a cycle unprompted, and at the
+// end of every task it returns there and waits again. It holds position
+// until a trial name arrives on /trial_config, applies that profile
+// (speed_scale + waypoint overrides), and releases into MoveToPick.
+//
+// Applying the profile HERE, on the control thread and between cycles, is
+// deliberate: changing speed mid-leg would discontinuously retime a
+// trajectory already in flight, and every motion state reads speedScale()
+// in its own start(), so a change made here is picked up cleanly by every
+// leg of the next cycle.
+//
+// Nothing restarts between trials - driver, bridge, wrench tare and the
+// arm's live state all persist, which is the whole point.
 struct Idle : mc_control::fsm::State
 {
-  void start(mc_control::fsm::Controller &) override
+  std::string next_state_;
+  bool announced_ = false;
+
+  void configure(const mc_rtc::Configuration & config) override
   {
-    mc_rtc::log::success("[Idle] Pick-and-place complete.");
+    if(config.has("next")) next_state_ = static_cast<std::string>(config("next"));
   }
-  bool run(mc_control::fsm::Controller &) override { return false; }
-  void teardown(mc_control::fsm::Controller &) override {}
+
+  void start(mc_control::fsm::Controller & ctl) override
+  {
+    announced_ = false;
+    // Open the gate: trial requests are accepted ONLY while parked here.
+    // Anything published mid-cycle is rejected with a warning rather than
+    // latched - a couple of seconds of `ros2 topic pub` (no --once) used to
+    // queue a second request and silently run the whole cycle twice.
+    ppc(ctl).setAtGate(true);
+    mc_rtc::log::success("[TrialGate] Parked at the safe pose (last trial: '{}'). Waiting for a "
+                         "trial on /trial_config - the arm holds here and nothing needs "
+                         "restarting between trials.",
+                         ppc(ctl).activeTrial());
+  }
+
+  bool run(mc_control::fsm::Controller & ctl) override
+  {
+    if(next_state_.empty()) return false;          // no trial gate configured
+    if(ppc(ctl).consumePendingTrial())
+    {
+      output(next_state_);
+      return true;
+    }
+    if(!announced_)
+    {
+      announced_ = true;
+      mc_rtc::log::info("[TrialGate] waiting - publish a trial name to /trial_config to run one");
+    }
+    return false;
+  }
+
+  void teardown(mc_control::fsm::Controller & ctl) override { ppc(ctl).setAtGate(false); }
 };
 
 // ════════════════════════════════════════════════════════════════════════════

@@ -26,6 +26,7 @@ public:
 
     dry_run_    = this->declare_parameter("dry_run", true);
     delta_max_  = this->declare_parameter("delta_max", 0.05);
+    model_real_gate_ = this->declare_parameter("model_real_gate", 0.05); // rad; hard publish gate, see run()
     pub_decim_  = this->declare_parameter("publish_decimation", 10); // 1kHz/10 = 100Hz
     loop_dt_ = this->declare_parameter("loop_dt", 0.001);   // seconds; sim keeps 0.001
 
@@ -123,9 +124,14 @@ private:
 
   bool dry_run_{true};
   double delta_max_{0.05};
+  double model_real_gate_{0.05};
   int pub_decim_{10};
   std::atomic<int64_t> last_js_stamp_ns_{0};
   std::vector<double> last_enc_q_;
+  // Encoder velocities kept alongside positions (2026-09-23) purely for the
+  // tracking diagnostic below - they were already read for
+  // setEncoderVelocities but never retained.
+  std::vector<double> last_enc_alpha_;
   bool first_cmd_checked_{false};
   int pub_count_{0};
   double loop_dt_{0.001};
@@ -196,6 +202,7 @@ private:
         std::lock_guard<std::mutex> lock(effort_mutex_);
         latest_efforts_ = enc_tau;
         last_enc_q_ = enc_q;
+        last_enc_alpha_ = enc_alpha;
       }
       return;
     }
@@ -521,6 +528,62 @@ private:
           moment_sensor.x(), moment_sensor.y(), moment_sensor.z());
     }
 
+    // Model-vs-real divergence: the QP-solved control robot (robot.mbc(),
+    // used above for gravity/inertial compensation, and gc_->robot() below
+    // for the published command) integrates open-loop from the solver's
+    // own accelerations and is NEVER resynced to the real, encoder-observed
+    // arm. Under normal tracking the two stay close; but if real execution
+    // can't keep pace (dry_run, an overly tight delta_max, a bad target),
+    // robot() keeps running ahead unchecked - corrupting both this wrench
+    // compensation AND, further down, every FSM state's own convergence
+    // check, which all trust robot() as if it were real. This used to be
+    // logged only every 500 ticks (passive, log-only) - three live E-stops
+    // on 2026-08-19 (unexpected fast/loud motion; "random direction"
+    // motion; continuous drift away from home even with delta_max cut 20x)
+    // all trace back to this gap. Now computed every tick and used as a
+    // hard publish gate below (model_real_gate_).
+    double model_real_dev = 0.0;
+    std::string model_real_worst_joint;
+    double model_real_worst_model_q = 0.0;
+    double model_real_worst_enc_q   = 0.0;
+    double model_real_worst_model_qd = 0.0;
+    double model_real_worst_enc_qd   = 0.0;
+    {
+      std::lock_guard<std::mutex> lock(effort_mutex_);
+      auto ref_order = robot.refJointOrder();
+      for (size_t i = 0; i < ref_order.size() && i < last_enc_q_.size(); ++i)
+      {
+        auto idx = robot.jointIndexByName(ref_order[i]);
+        double model_q = robot.mbc().q[idx][0];
+        double dev = std::abs(model_q - last_enc_q_[i]);
+        if (dev > model_real_dev)
+        {
+          model_real_dev = dev;
+          model_real_worst_joint = ref_order[i];
+          model_real_worst_model_q = model_q;
+          model_real_worst_enc_q   = last_enc_q_[i];
+          model_real_worst_model_qd = robot.mbc().alpha[idx][0];
+          model_real_worst_enc_qd   = (i < last_enc_alpha_.size()) ? last_enc_alpha_[i] : 0.0;
+        }
+      }
+      // Absolute values alongside the gap (2026-08-24): a gap that grows
+      // then goes perfectly flat, rather than continuing to grow for the
+      // whole trajectory, is the signature of the model hitting a
+      // kinematics constraint (e.g. a joint limit) rather than the task
+      // naturally finishing - model_q sitting at/near a joint's URDF limit
+      // confirms that directly instead of leaving it circumstantial.
+      if (log_count % 500 == 0)
+        mc_rtc::log::info(
+            "[KortexBridge] model-vs-real max joint deviation: {:.4f} rad on '{}' "
+            "(model={:.4f} rad, real={:.4f} rad) | VEL cmd={:.4f} real={:.4f} rad/s "
+            "(tracking {:.0f}%)",
+            model_real_dev, model_real_worst_joint, model_real_worst_model_q, model_real_worst_enc_q,
+            model_real_worst_model_qd, model_real_worst_enc_qd,
+            std::abs(model_real_worst_model_qd) > 1e-6
+                ? 100.0 * model_real_worst_enc_qd / model_real_worst_model_qd
+                : 100.0);
+    }
+
     //// 9- Run controller and publish joint trajectory
 
     if (gc_->run() && comms_ok)
@@ -582,6 +645,28 @@ private:
           mc_rtc::log::warning("[KortexBridge] DRY RUN - command not published");
         return;
       }
+
+      // --- SAFETY GATE: model-vs-real divergence (computed above, every tick) ---
+      // delta_max_ already bounds each individual published step; this
+      // bounds the accumulated gap instead, which delta_max cannot do on
+      // its own - a robot() that races ahead just gets clamped every cycle
+      // but never stops racing ahead internally (all three 2026-08-19
+      // E-stops happened with that per-cycle clamp already in place). If
+      // robot() has drifted past model_real_gate_ from the real arm,
+      // refuse to publish rather than keep commanding it toward a position
+      // derived from a fictional internal state; the arm holds its last
+      // commanded point instead of continuing to drift.
+      if (model_real_dev > model_real_gate_)
+      {
+        static int gate_warn_count = 0;
+        if (++gate_warn_count % 20 == 0)
+          mc_rtc::log::error(
+              "[KortexBridge] SAFETY GATE: model-vs-real deviation {:.4f} rad on '{}' exceeds "
+              "model_real_gate ({:.4f} rad) - NOT publishing until this clears",
+              model_real_dev, model_real_worst_joint, model_real_gate_);
+        return;
+      }
+
       pub_->publish(traj);
     }
    }
