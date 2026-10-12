@@ -1480,11 +1480,45 @@ void start(mc_control::fsm::Controller & ctl) override
     auto refAt = [&](double t) {
       double u = effective_duration_ > 1e-6 ? t / effective_duration_ : 1.0;
       double sq = quinticS(u);
+      const auto & mq = ctl.robot().mbc().q;
       std::map<std::string, std::vector<double>> r;
       for(const auto & kv : target_joints_)
       {
         double start = q_start_.count(kv.first) ? q_start_.at(kv.first) : kv.second[0];
-        r[kv.first] = {(1.0 - sq) * start + sq * kv.second[0]};
+        double v = (1.0 - sq) * start + sq * kv.second[0];
+
+        // Re-express the reference in the branch the MODEL is currently on.
+        //
+        // start() unwraps target_joints_ so the interpolation takes the short
+        // way round, which for a continuous joint routinely puts the
+        // reference outside [-pi, pi] (start_1 -> step_1 interpolates
+        // joint_1 from -2.9995 down to -4.683). The model's own q, however,
+        // IS wrapped. The instant the joint crosses the branch cut the
+        // posture task therefore sees reference -3.20 against model +3.08 -
+        // a 2*pi error - and commands an enormous velocity to "correct" it.
+        //
+        // Live, 2026-10-12, speed_scale 1.0 (so nowhere near any tracking
+        // ceiling - the arm was at 104% tracking one tick earlier):
+        //     15.80  model=-3.1353            arm-vs-ref 0.0368
+        //     STALL  model=+3.0844 real=+3.1012
+        //            VEL cmd=-0.7298 real=-0.2239  (0.05 rad/s feedforward!)
+        // The angDiff() added earlier fixed the DIAGNOSTICS (dev, lag, err)
+        // but not this - the control path still fed an unwrapped reference.
+        //
+        // Wrapping per-sample keeps the reference within pi of the model at
+        // all times. It stays smooth: when the model's q jumps by 2*pi at the
+        // cut, so does the reference, and their difference never does.
+        if(ctl.robot().hasJoint(kv.first))
+        {
+          auto idx = ctl.robot().jointIndexByName(kv.first);
+          if(static_cast<size_t>(idx) < mq.size() && mq[idx].size() == 1)
+          {
+            const double cur = mq[idx][0];
+            while(v - cur >  M_PI) v -= 2.0 * M_PI;
+            while(v - cur < -M_PI) v += 2.0 * M_PI;
+          }
+        }
+        r[kv.first] = {v};
       }
       return r;
     };
@@ -1520,10 +1554,28 @@ void start(mc_control::fsm::Controller & ctl) override
     {
       stalled_    = true;
       stall_time_ = 0.0;
+      // Resync ONCE, here, and never again while latched. This collapses the
+      // lead the model built up before the guard fired (at entry the model is
+      // typically ahead of its OWN reference too - 0.0303 model-vs-real
+      // against 0.0074 arm-vs-ref in the 2026-10-12 live run).
+      //
+      // Doing it every tick deadlocks the arm, which is exactly what the
+      // first version of this guard did: the published command is derived
+      // from the model's q, so pinning the model to the encoder every tick
+      // caps the commanded lead at one tick of QP motion (~1e-4 rad), far too
+      // little to break stiction. The log showed model=real=3.0750 frozen,
+      // arm-vs-ref stuck at 0.0154 against a 0.0100 exit threshold, and
+      // VEL cmd=-0.0125 with real=0.0000 - commanded forever, never moving.
+      //
+      // With the clock frozen the reference is stationary, so skipping the
+      // resync cannot let the model run away: it converges to that fixed
+      // point and stops, leaving model-vs-real bounded by the entry lag
+      // (~0.03), comfortably under the bridge's model_real_gate of 0.05.
+      resyncControlToReal(ctl);
       mc_rtc::log::error(
           "[{}] STALLED - real arm not following: model-vs-real {:.4f} rad on '{}' "
           "(limit {:.4f}). Freezing the trajectory clock at {:.2f}s of {:.2f}s and holding the "
-          "model on the encoders until the arm is back within {:.4f} rad of the reference "
+          "reference there until the arm is back within {:.4f} rad of it "
           "(currently {:.4f} rad behind). Will NOT advance to {} until it moves.",
           name(), dev, devjoint, divergence_pause_, t_elapsed_, effective_duration_,
           stall_clear_lag_, lag, next_state_);
@@ -1531,7 +1583,7 @@ void start(mc_control::fsm::Controller & ctl) override
 
     if(stalled_)
     {
-      resyncControlToReal(ctl);
+      // NO resync here - see the note at the latch above.
       stall_time_ += dt_;
       if(lag < stall_clear_lag_)
       {
