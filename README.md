@@ -826,6 +826,129 @@ python prepare_dataset.py --data-dir ./data
 python train_distill.py --data-dir ./data
 ```
 
+## Running trials (pick_and_place)
+
+The cycle parks at the safe pose and waits. Nothing runs until a trial is
+selected, and selecting one needs **no restart** — the driver, the bridge, the
+startup wrench tare and the arm's live state all persist between trials, which
+is what keeps conditions comparable.
+
+```bash
+ros2 topic pub --once /trial_config std_msgs/msg/String "data: 'baseline'"
+```
+
+Flow: `MoveToSafe → TrialGate (waits) → MoveToPick → PickUpPos →
+MoveUpFromPick → HoverToPlace → UnloadObj → ReturnToPickPose → MoveToSafe →
+TrialGate (waits) ⟲`
+
+### Trial profiles
+
+Defined in the `trials:` block of `src/pick_and_place/etc/PickPlaceController.yaml`.
+Each overrides `speed_scale` and, for the distance cells, the `HoverToPlace`
+endpoint. Anything a profile omits keeps the state's own value.
+
+| profile | `speed_scale` | cycle motion | `HoverToPlace` endpoint | traverse |
+|---|---|---|---|---|
+| `slow` | 0.5 | ~9.6 min | (state default) | 0.3771 m |
+| `baseline` | 1.0 | ~4.8 min | (state default) | 0.3771 m |
+| `fast` | 2.5 | ~1.9 min | (state default) | 0.3771 m |
+| `slow_near` | 0.5 | ~9.6 min | `[-0.192, 0.315, 0.400]` | 0.3804 m |
+| `fast_near` | 2.5 | ~1.9 min | `[-0.192, 0.315, 0.400]` | 0.3804 m |
+| `slow_far` | 0.5 | ~9.6 min | `[-0.413, 0.431, 0.400]` | 0.4269 m |
+| `fast_far` | 2.5 | ~1.9 min | `[-0.413, 0.431, 0.400]` | 0.4269 m |
+
+`near` is 5 cm and `far` is 20 cm along the traverse's horizontal normal
+`[-0.886, +0.464, 0]` from the captured endpoint `[-0.2360, +0.3378, +0.4003]`
+— a **25 cm near-far separation**.
+
+Two properties that make this a clean factorial:
+
+- **Distance does not leak into speed.** The `HoverToPlace` leg is
+  angular-limited (0.968 rad of reorientation needs 14.5 s at
+  `speed_scale 2.5`, while even a 0.48 m traverse needs only 7.2 s), and
+  moving the endpoint does not change the orientation delta because the
+  captured rotation is kept. Leg duration is therefore **identical** at every
+  offset tested up to +30 cm.
+- **Distance is varied by moving the endpoint, not by via-points.**
+  `targetAt()` applies its quintic *per segment* and a quintic has zero
+  velocity at both ends, so every via-point brings the arm to a full **stop**
+  mid-traverse. A stop is a salient motion cue, so bowing the path would have
+  confounded distance with smoothness.
+
+### Caveats
+
+- `near` / `far` are lateral to the traverse. They have **not** been verified
+  against where a participant actually stands — the 25 cm separation is solid,
+  which one is nearer to a person is not.
+- A request published mid-cycle is **rejected**, not queued (logged as
+  `IGNORED - a cycle is already running`). Wait for `TrialGate`. One publish is
+  one run regardless of how many messages are sent.
+- `UnloadObj` is a `JointMove` to fixed joints, so after a moved endpoint the
+  arm is pulled back to the same tip configuration. The traverse differs; the
+  unload site does not. Add `joint_targets: {UnloadObj: [...]}` to a profile if
+  the tip should move too.
+
+## Seeing the impedance behaviour on its own
+
+Two options, and they are **not equivalent**.
+
+**Preferred — `pick_and_place` with `init: HoldCurrent`.** Captures the current
+pose as the impedance target and holds it indefinitely, so you can push and
+release repeatedly without running the cycle. This is the same code path, gains
+and contact detection the trials use, so what you feel transfers directly:
+contact pause, yield, return to the hold point, resume. Set `init: HoldCurrent`
+in `PickPlaceController.yaml`, rebuild, launch as usual. Ctrl+C when done —
+`HoldCurrent` loops to itself and has no exit.
+
+**The older standalone `impedance_control` package.** A different controller
+(`KinovaImpedance` / `KI::ImpedanceHoldState`) with its own gains and **none**
+of the 2026-09/10 fixes — no posture back-off, no contact pause, no
+return-to-hold-point. Useful only if you specifically want the original
+behaviour. It also needs the active controller switched, because no launch file
+sets the mc_rtc config:
+
+```bash
+cp src/impedance_control/etc/mc_rtc.yaml ~/.config/mc_rtc/mc_rtc.yaml
+colcon build --packages-select impedance_control   # installs launch/ and config/
+ros2 launch impedance_control impedance_real.launch.py
+# switch back afterwards, or pick_and_place will not load:
+cp src/pick_and_place/etc/mc_rtc.yaml ~/.config/mc_rtc/mc_rtc.yaml
+```
+
+`~/.config/mc_rtc/mc_rtc.yaml` is a single shared file across all packages in
+this repo, and a stale copy once silently loaded the wrong controller for an
+entire session. Check `Enabled:` in the startup log matches what you expect.
+
+`impedance_real.launch.py` was unrunnable until **2026-10-07**. It contained
+only three `controller_manager` spawners plus the bridge, with a comment
+claiming the Kortex driver was started elsewhere — nothing started it, so every
+spawner died with `Could not contact service
+/controller_manager/list_controllers`, no `/joint_states` was ever published,
+and the bridge sat forever at `Waiting for first /joint_states...`. Four fixes
+landed together:
+
+| Fix | Was | Now |
+| --- | --- | --- |
+| Kortex driver | never launched | `ExecuteProcess` running `kortex_bringup gen3.launch.py` under `chrt -f 80`, mirroring `pick_place_real.launch.py` |
+| Controller spawners | three explicit spawners that all failed | removed — `gen3.launch.py` spawns them from `controllers_file` |
+| `config/` install rule | not installed, so `get_package_share_directory` could not find `ros2_controllers.yaml` | `install(DIRECTORY launch config ...)` |
+| `ros2_controllers.yaml` | `update_rate: 1000`, `position_controllers/GripperActionController` | `update_rate: 500`, `parallel_gripper_action_controller/GripperActionController` |
+| `deadband_force` | `6.0` N | `1.0` N |
+
+The `deadband_force` one mattered as much as the missing driver: a firm hand
+push on this arm measures **≈0.86 N** raw against a 0.3–0.8 N motion-only
+baseline, so a 6 N deadband pinned the force channel at exactly 0.00 and
+nothing downstream could ever react to it. 1.0 N matches the value validated in
+`pick_place_real.launch.py`. The force channel is still marginal there
+(SNR ≈ 1) — the moment channel is the usable one.
+
+`dry_run` is left at **`True`**. The arm will not move and you will feel no
+compliance whatsoever until it is `False`; flip it only with an operator on the
+E-stop.
+
+Everything above is on the **`pick_and_place`** branch; no branch switch is
+needed for either option.
+
 ## Open items / suggestions for next session
 
 - ~~Compile and bench-test the impedance_control fixes on real hardware~~ /
