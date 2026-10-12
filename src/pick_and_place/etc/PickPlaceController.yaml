@@ -88,6 +88,20 @@ trials:
   base:
     speed_scale: 1.0
   fast:
+    # ⚠ 2.5 IS KNOWN TO JUDDER on start_1 (live, 2026-10-12). The commanded
+    # peak reaches ~0.166 rad/s, the arm tops out near 0.153, and the 7%
+    # shortfall accumulates into the 0.03 stall guard every ~70 ms, giving a
+    # visible brake-and-go. Lower this to ~1.5 for a usable fast condition,
+    # or raise the tracking ceiling first (see below) and re-test at 2.5.
+    #
+    # Raising the ceiling: the bridge clamps each command to within
+    # delta_max of the measured position (currently 0.004 rad in
+    # pick_place_real.launch.py), which caps real joint speed. Going to
+    # 0.006 should buy proportionally more headroom - but it is a SAFETY
+    # clamp on how far a command may lead the arm, so raise it one step at
+    # a time and watch model-vs-real, and keep it well under
+    # model_real_gate (0.05), past which the bridge stops publishing
+    # entirely and needs a restart.
     speed_scale: 2.5
 
   # ── DISTANCE factor - NOT USABLE YET ─────────────────────────────────
@@ -162,7 +176,17 @@ trials:
 # model outrunning the real arm into a model_real_gate deadlock.
 dry_run_validation: false
 
-speed_scale: 2.5
+# 2.5 -> 1.0 on 2026-10-12 after a live run juddered on start_1.
+# At 2.5 the leg's feedforward peak is v_max*2.5 = 0.125 rad/s, the posture
+# task adds feedback on top (measured commanded peak 0.1657 rad/s), and the
+# real arm delivered 0.1535 - a 7% shortfall that accumulated straight into
+# the 0.03 stall guard. The guard then resynced, which zeroes model-vs-real
+# BY CONSTRUCTION, so it un-latched immediately and the accumulated lag hit
+# the posture task as a step: commanded 0.7950 rad/s against 0.0308 real
+# (4% tracking). Result was a ~70 ms brake-and-go sawtooth - stalls logged
+# at 17.50 / 17.56 / 17.63 / 17.71 / 17.78 / 17.85 / 17.92 s.
+# At 1.0 the peak is 0.05 rad/s, roughly 3x under the measured ceiling.
+speed_scale: 1.0
 # ─────────────────────────────────────────────────────────────────────────
 #  EXPERIMENT KNOBS (2026-09-07) - what to change per trial condition
 # ─────────────────────────────────────────────────────────────────────────

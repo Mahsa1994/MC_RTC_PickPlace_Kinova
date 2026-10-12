@@ -153,7 +153,20 @@ def generate_launch_description():
                     # arm move faster - speed_scale does - it only stops the
                     # per-cycle clamp from being the binding limit. Measured:
                     # at 0.003 the arm tracked a commanded 0.089 rad/s at 99%.
-                    'delta_max': 0.004,
+                    # 0.004 -> 0.006 on 2026-10-12. delta_max clamps each
+                    # published command to within this of the MEASURED
+                    # position, so it is what actually caps real joint speed.
+                    # At 0.004 the arm topped out near 0.153 rad/s while
+                    # speed_scale 2.5 commanded ~0.166, and the 7% shortfall
+                    # accumulated into the 0.03 stall guard every ~70 ms
+                    # (live, start_1). More headroom is needed for the 'fast'
+                    # trial condition to track.
+                    # THIS IS A SAFETY CLAMP - it bounds how far a command may
+                    # lead the arm. Raise one step at a time, watch
+                    # model-vs-real in the per-state logs, and keep it well
+                    # under model_real_gate (0.05) below, past which the
+                    # bridge stops publishing and needs a restart.
+                    'delta_max': 0.006,
                     'model_real_gate': 0.05,
                 }]
             )

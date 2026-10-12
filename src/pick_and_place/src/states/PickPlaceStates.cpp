@@ -18,6 +18,7 @@
 
 #include "PickPlaceController.h"
 #include <limits>
+#include <cmath>
 
 #include <mc_control/fsm/Controller.h>
 #include <mc_control/fsm/State.h>
@@ -1200,6 +1201,10 @@ struct JointMove : mc_control::fsm::State
   bool   skipped_             = false;
   bool   stalled_             = false;
   double stall_time_          = 0.0;
+  // Exit threshold for the stall guard, measured as the REAL arm's distance
+  // from the frozen reference (see the note in run()). <= 0 means "derive
+  // from divergence_pause_" and is resolved in configure().
+  double stall_clear_lag_     = -1.0;
   std::map<std::string, double> q_start_;
 
   int tick_ = 0;
@@ -1213,6 +1218,11 @@ struct JointMove : mc_control::fsm::State
     if(config.has("v_max"))     v_max_     = config("v_max");
     if(config.has("skip_if_within")) skip_if_within_ = config("skip_if_within");
     if(config.has("divergence_pause")) divergence_pause_ = config("divergence_pause");
+    if(config.has("stall_clear_lag")) stall_clear_lag_ = config("stall_clear_lag");
+    // Default to a third of the entry threshold: wide enough that the arm
+    // reaches it in a fraction of a second, tight enough that the clock does
+    // not restart while a real gap remains. Hysteresis ratio 3:1.
+    if(stall_clear_lag_ <= 0.0) stall_clear_lag_ = divergence_pause_ / 3.0;
     if(config.has("next"))      next_state_ = static_cast<std::string>(config("next"));
 
     // target: [v1, v2, ... v6]  (array form only — simplest and most common)
@@ -1466,41 +1476,88 @@ void start(mc_control::fsm::Controller & ctl) override
         if(d > dev) { dev = d; devjoint = mbs[ji].name(); }
       }
     }
-    const bool stalled = divergence_pause_ > 0.0 && dev > divergence_pause_
-                         && !ppc(ctl).dryRunValidation();
-    if(stalled)
+    // Interpolated reference at a given clock value.
+    auto refAt = [&](double t) {
+      double u = effective_duration_ > 1e-6 ? t / effective_duration_ : 1.0;
+      double sq = quinticS(u);
+      std::map<std::string, std::vector<double>> r;
+      for(const auto & kv : target_joints_)
+      {
+        double start = q_start_.count(kv.first) ? q_start_.at(kv.first) : kv.second[0];
+        r[kv.first] = {(1.0 - sq) * start + sq * kv.second[0]};
+      }
+      return r;
+    };
+
+    // How far the REAL arm is behind the reference the clock currently holds.
+    //
+    // THIS - not `dev` - is the exit criterion (2026-10-12). While stalled we
+    // resync the model onto the encoders every tick, which forces `dev` to ~0
+    // BY CONSTRUCTION. Testing `dev` therefore un-latched the guard on the
+    // very next tick, and the lag that had accumulated hit the posture task
+    // as a step input. Live on start_1 that gave a ~70 ms brake-and-go
+    // sawtooth - stalls at 17.50/17.56/17.63/17.71/17.78/17.85/17.92 s, with
+    // commanded velocity spiking to 0.7950 rad/s against 0.0308 real (4%
+    // tracking) on each re-entry. Measuring the arm against the frozen
+    // reference is immune to the resync, so the guard stays latched until the
+    // arm has genuinely caught up.
+    double lag = 0.0;
     {
-      resyncControlToReal(ctl);
-      if(!stalled_) mc_rtc::log::error(
+      const auto ref   = refAt(t_elapsed_);
+      const auto & rq  = ctl.realRobot().mbc().q;
+      const auto & mbs = ctl.robot().mb().joints();
+      for(size_t ji = 0; ji < mbs.size(); ++ji)
+      {
+        if(mbs[ji].dof() != 1) continue;
+        auto it = ref.find(mbs[ji].name());
+        if(it == ref.end()) continue;
+        lag = std::max(lag, std::abs(angDiff(rq[ji][0], it->second[0])));
+      }
+    }
+
+    const bool can_stall = divergence_pause_ > 0.0 && !ppc(ctl).dryRunValidation();
+    if(!stalled_ && can_stall && dev > divergence_pause_)
+    {
+      stalled_    = true;
+      stall_time_ = 0.0;
+      mc_rtc::log::error(
           "[{}] STALLED - real arm not following: model-vs-real {:.4f} rad on '{}' "
           "(limit {:.4f}). Freezing the trajectory clock at {:.2f}s of {:.2f}s and holding the "
-          "model on the encoders. The joint is physically blocked or the target is unreachable - "
-          "this will NOT advance to {} until it moves.",
-          name(), dev, devjoint, divergence_pause_, t_elapsed_, effective_duration_, next_state_);
+          "model on the encoders until the arm is back within {:.4f} rad of the reference "
+          "(currently {:.4f} rad behind). Will NOT advance to {} until it moves.",
+          name(), dev, devjoint, divergence_pause_, t_elapsed_, effective_duration_,
+          stall_clear_lag_, lag, next_state_);
+    }
+
+    if(stalled_)
+    {
+      resyncControlToReal(ctl);
       stall_time_ += dt_;
+      if(lag < stall_clear_lag_)
+      {
+        mc_rtc::log::success(
+            "[{}] Stall cleared after {:.2f}s (arm now {:.4f} rad from the reference) - "
+            "resuming from {:.2f}s.", name(), stall_time_, lag, t_elapsed_);
+        stalled_    = false;
+        stall_time_ = 0.0;
+      }
+      else if(stall_time_ > 5.0 && std::fmod(stall_time_, 5.0) < dt_)
+      {
+        mc_rtc::log::error(
+            "[{}] STILL stalled after {:.0f}s - arm {:.4f} rad behind the reference "
+            "(needs < {:.4f}). Physically blocked, or the target is unreachable.",
+            name(), stall_time_, lag, stall_clear_lag_);
+      }
     }
     else
     {
-      if(stalled_) mc_rtc::log::success(
-          "[{}] Stall cleared after {:.1f}s (model-vs-real {:.4f} rad) - resuming from {:.2f}s.",
-          name(), stall_time_, dev, t_elapsed_);
-      stall_time_ = 0.0;
       t_elapsed_ += dt_;
     }
-    stalled_ = stalled;
 
     // Feed the interpolated (slow, bounded) reference every tick - the
     // posture task's stiffness_/weight_ now only controls how tightly it
     // tracks THIS moving reference, not how fast the motion itself is.
-    double u = effective_duration_ > 1e-6 ? t_elapsed_ / effective_duration_ : 1.0;
-    double s = quinticS(u);
-    std::map<std::string, std::vector<double>> interp;
-    for(const auto & kv : target_joints_)
-    {
-      double start = q_start_.count(kv.first) ? q_start_.at(kv.first) : kv.second[0];
-      interp[kv.first] = {(1.0 - s) * start + s * kv.second[0]};
-    }
-    pt->target(interp);
+    pt->target(refAt(t_elapsed_));
 
     // Convergence judged against the REAL arm (realRobot()), not
     // pt->eval() (the posture task's own ctl.robot()-internal error) -
@@ -1533,9 +1590,10 @@ void start(mc_control::fsm::Controller & ctl) override
 //    static int tick = 0;
     if((tick_++ % 200) == 0)
     {
-      mc_rtc::log::info("[{}] err={:.4f} | clock {:.2f}/{:.2f}s{} | model-vs-real {:.4f} rad on '{}'",
+      mc_rtc::log::info("[{}] err={:.4f} | clock {:.2f}/{:.2f}s{} | model-vs-real {:.4f} rad "
+                        "on '{}' | arm-vs-ref {:.4f} rad",
                         name(), err, t_elapsed_, effective_duration_,
-                        stalled_ ? " STALLED - frozen" : " running", dev, devjoint);
+                        stalled_ ? " STALLED - frozen" : " running", dev, devjoint, lag);
     }
     return false;
   }
