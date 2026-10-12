@@ -116,6 +116,18 @@ def generate_launch_description():
             # toward 2 if a deliberate gentle pull stops registering.
             'deadband_force': 3.0,
             'deadband_moment': 1.5,
+            # Velocity gate on the estimated wrench. Was hardcoded 0.05/0.15
+            # in the bridge; those values gated the compliance OFF exactly
+            # while the arm was returning from a pull, which is what produced
+            # the limit cycle. See the long note at the gate in
+            # kortex_mc_rtc_bridge_impedance.cpp.
+            # 0.3 keeps the wrench at full strength through a normal return;
+            # 0.8 still fades it out before the joint velocity limits
+            # (1.22-1.40 rad/s), where the estimate really is unusable.
+            # If oscillation persists, widen further (0.5 / 1.2). If the arm
+            # starts drifting while moving, narrow back toward 0.2 / 0.6.
+            'qd_gate_low': 0.3,
+            'qd_gate_high': 0.8,
         }])])
 
     return LaunchDescription([

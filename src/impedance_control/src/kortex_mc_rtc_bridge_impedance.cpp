@@ -33,6 +33,12 @@ public:
     deadband_force_ = this->declare_parameter("deadband_force", 1.5);  // sim value; real: start 6.0
     deadband_moment_= this->declare_parameter("deadband_moment", 0.5); // sim value; real: start 1.5
 
+    // Velocity gate on the estimated wrench (was hardcoded 0.05 / 0.15).
+    // Made tunable 2026-10-12 - see the note at the gate itself; the old
+    // hardcoded 0.15 rad/s cutoff was driving a limit cycle on release.
+    qd_gate_low_  = this->declare_parameter("qd_gate_low", 0.05);
+    qd_gate_high_ = this->declare_parameter("qd_gate_high", 0.15);
+
     pub_ = this->create_publisher<trajectory_msgs::msg::JointTrajectory>(
         "/joint_trajectory_controller/joint_trajectory", 1);
 
@@ -114,6 +120,8 @@ private:
   double torque_sign_{1.0};
   double deadband_force_{1.5};
   double deadband_moment_{0.5};
+  double qd_gate_low_{0.05};
+  double qd_gate_high_{0.15};
 
   // Helper: build a map from joint name �- DOF start index in the nrDof vector
   // RBDyn does not expose jointVelocityIndex(), we reconstruct it by walking
@@ -401,10 +409,34 @@ private:
       }
     }
 
-    // Gate: full wrench (1) below 0.05 rad/s, zero above 0.15 rad/s
-    const double qd_low = 0.05;
-    const double qd_high = 0.15;
-    double gate = 1.0 - std::clamp((max_qd - qd_low) / (qd_high - qd_low), 0.0, 1.0);
+    // Gate: full wrench (1) below qd_gate_low_, zero above qd_gate_high_.
+    //
+    // 2026-10-12: these were hardcoded 0.05 / 0.15 and that pair was driving
+    // the limit cycle seen after releasing a pull. The gate multiplies the
+    // wrench AFTER the deadband (below), so it is a hard switch in the middle
+    // of the compliance loop:
+    //   arm returns -> speeds past 0.15 rad/s -> gate 0 -> wrench forced to 0
+    //   -> impedance offset collapses -> arm driven harder -> still moving
+    //   -> gate stays 0 -> overshoot -> slows under 0.05 -> gate 1 -> wrench
+    //   reappears -> offset jumps back -> arm moves -> gate 0 -> ...
+    // i.e. the compliance that is supposed to damp the return is switched off
+    // exactly while the arm is returning. That is a switching nonlinearity in
+    // a feedback path, which is a limit-cycle generator regardless of the
+    // deadband or the impedance gains (which are overdamped: M=3, K=100,
+    // D=60, so 2*sqrt(KM)=34.6 and zeta=1.73).
+    //
+    // The evidence: with deadband_force at 3.0 the logged wrench read exactly
+    // (0.00,0.00,0.00) through the oscillation while Deflection still swung
+    // 2.3-6.9 mm. Zero input, sustained output - so the wrench was not the
+    // driver, the gate zeroing it was. Sub-deadband values like 2.06 N also
+    // appear in the log, which is only possible because the gate scales an
+    // already-deadbanded value.
+    //
+    // Raising qd_gate_high_ above the speed the arm reaches while returning
+    // keeps the loop continuous. The gate still exists for its real purpose:
+    // inverse-dynamics wrench estimates ARE unreliable at speed. It just must
+    // not fire during the motion it is meant to damp.
+    double gate = 1.0 - std::clamp((max_qd - qd_gate_low_) / (qd_gate_high_ - qd_gate_low_), 0.0, 1.0);
     force_sensor *= gate;
     moment_sensor *= gate;
 
