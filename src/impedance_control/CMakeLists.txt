@@ -68,7 +68,7 @@ install(TARGETS KI_ImpedanceHoldState
 install(FILES etc/KinovaImpedance.yaml
   DESTINATION lib/mc_controller/etc
 )
-install(DIRECTORY launch
+install(DIRECTORY launch config
   DESTINATION share/${PROJECT_NAME}
 )
 
