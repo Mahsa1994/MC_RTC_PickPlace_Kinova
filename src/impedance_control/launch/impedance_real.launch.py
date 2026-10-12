@@ -88,22 +88,33 @@ def generate_launch_description():
             'publish_decimation': 10,
             'delta_max': 0.01,
             'torque_sign': -1.0,
-            # 6.0 -> 1.0 on 2026-10-12, from the logs of the 2026-08-05 run
-            # where the push test demonstrably worked:
-            #   mc-control-KinovaImpedance-pullDown.csv
-            #     peak |F| during the pull      1.026 N
-            #     smallest nonzero |F| logged   0.978 N  -> deadband was ~1.0
-            #     peak impedance offset         8.92 mm
-            #     tool movement around the push 11.4 mm (Z-dominant)
-            #   mc-control-KinovaImpedance-untouched.csv
-            #     all 46,966 samples exactly 0.000 N - nothing clears the
-            #     deadband while stationary and untouched, so 1.0 N is not
-            #     so low that noise leaks through.
-            # At 6.0 the peak of a real push (1.03 N) never clears the
-            # threshold, the linear channel stays dead, and only the moment
-            # channel (2.68 Nm vs 1.5) gets through - rotation, not the
-            # translation the push test is looking for.
-            'deadband_force': 1.0,
+            # 6.0 -> 1.0 -> 3.0, both changes on 2026-10-12.
+            #
+            # 1.0 came from the 2026-08-05 pullDown log (peak |F| 1.026 N,
+            # smallest nonzero 0.978 N). That turned out to be an unusually
+            # GENTLE pull that barely cleared its own deadband, so it was a
+            # bad calibration point.
+            #
+            # The live run on 2026-10-12 settled it. A firm pull-down gives:
+            #     peak |F|          12.69 N
+            #     peak deflection   120 mm   (F/K = 12.69/100 = 127 mm)
+            # i.e. a real pull is ~12x what Aug 5 recorded. Meanwhile, AFTER
+            # the pull the arm settles ~15 mm off its start pose, where the
+            # gravity model is wrong by 1-3 N. At deadband 1.0 that residual
+            # passed straight through and drove a sustained limit cycle:
+            # measuredWrench_y flipped sign on CONSECUTIVE samples
+            # (-2.48, +0.14, -0.82, +1.45, -0.80, +1.86, ...), the classic
+            # Nyquist-frequency signature of loop gain > 1.
+            #
+            # It is not the impedance filter ringing - with M=3, K=100, D=60
+            # critical damping is 2*sqrt(K*M) = 34.6, so zeta = 1.73, firmly
+            # overdamped. It is the outer loop: wrench -> offset -> motion ->
+            # efforts -> wrench.
+            #
+            # 3.0 sits in the gap between the 1-3 N residual and the 12+ N of
+            # a real pull. Raise toward 4-5 if any chatter remains; lower
+            # toward 2 if a deliberate gentle pull stops registering.
+            'deadband_force': 3.0,
             'deadband_moment': 1.5,
         }])])
 

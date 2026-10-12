@@ -1,6 +1,12 @@
 controller_manager:
   ros__parameters:
-    update_rate: 1000 #500
+    # 1000 -> 500 on 2026-10-12. At 1000 Hz the live log showed continuous
+    # "Overrun detected! ... missed cycles : 2" with write time alone at
+    # 650-880 us of a 1000 us budget. Irregular timing feeds the wrench ->
+    # offset -> motion -> wrench limit cycle seen after a pull-release.
+    # 500 Hz gives a 2000 us budget, which the same write fits inside with
+    # room to spare. 500 also matches the value validated in pick_and_place.
+    update_rate: 500
 
     joint_state_broadcaster:
       type: joint_state_broadcaster/JointStateBroadcaster
