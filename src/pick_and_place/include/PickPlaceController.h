@@ -140,17 +140,28 @@ public:
       if(!trial_pending_) return false;
       name = pending_trial_;
       trial_pending_ = false;
-      // Close the window immediately: without this, messages arriving between
-      // here and TrialGate::teardown would latch and silently trigger a
-      // SECOND cycle. That is exactly what a couple of seconds of
-      // `ros2 topic pub` (no --once) produced - one publish, two runs.
-      at_gate_ = false;
     }
     auto it = trials_.find(name);
     if(it == trials_.end())
     {
-      mc_rtc::log::error("[PickPlace] trial '{}' is not defined - staying idle", name);
+      // Deliberately leaves at_gate_ TRUE so the next publish is still
+      // accepted. Until 2026-10-12 at_gate_ was cleared BEFORE this check,
+      // which bricked the gate on any typo: the state never exits, so
+      // TrialGate::start() - the only place that sets at_gate_ back to true -
+      // never ran again, and every subsequent valid trial was rejected with
+      // "a cycle is already running" until the controller was restarted.
+      mc_rtc::log::error("[PickPlace] trial '{}' is not defined - staying idle. "
+                         "Publish one of the names in the trials: block.", name);
       return false;
+    }
+    {
+      // Close the window only once a VALID trial is actually starting:
+      // without this, messages arriving between here and TrialGate::teardown
+      // would latch and silently trigger a SECOND cycle. That is exactly what
+      // a couple of seconds of `ros2 topic pub` (no --once) produced - one
+      // publish, two runs.
+      std::lock_guard<std::mutex> lock(trial_mutex_);
+      at_gate_ = false;
     }
     active_trial_ = name;
     speed_scale_  = it->second.speed_scale;
