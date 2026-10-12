@@ -15,8 +15,18 @@
 #include <vector>
 #include <map>
 #include <thread>
+#include <cmath>
 
 using namespace std::chrono_literals;
+
+// Shortest signed difference between two angles, wrapped into [-pi, pi].
+static inline double angDiffBridge(double a, double b)
+{
+  double d = a - b;
+  while(d >  M_PI) d -= 2.0 * M_PI;
+  while(d < -M_PI) d += 2.0 * M_PI;
+  return d;
+}
 
 class KortexMcRtcBridge : public rclcpp::Node
 {
@@ -555,7 +565,17 @@ private:
       {
         auto idx = robot.jointIndexByName(ref_order[i]);
         double model_q = robot.mbc().q[idx][0];
-        double dev = std::abs(model_q - last_enc_q_[i]);
+        // Wrap-aware (2026-10-12): joints 1/4/6 are CONTINUOUS and the
+        // driver reports them in [-pi, pi], so a raw difference reads ~2*pi
+        // the instant the model and the encoder sit on opposite sides of
+        // the branch cut - while being physically at the same place. That
+        // would trip this gate spuriously and, because the gate STOPS
+        // PUBLISHING, strand the arm until a restart. Seen on the
+        // pick_and_place side the same day: a 6.2848 rad "deviation" at
+        // model=-3.1387 / real=-3.1406, i.e. 0.002 rad truly apart.
+        // Safe: the gate itself is 0.05 rad, far below the pi at which
+        // wrapping changes anything, so no genuine fault can be masked.
+        double dev = std::abs(angDiffBridge(model_q, last_enc_q_[i]));
         if (dev > model_real_dev)
         {
           model_real_dev = dev;

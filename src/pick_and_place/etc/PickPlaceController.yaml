@@ -46,7 +46,8 @@ place_pose:
 #  TRIAL PROFILES - selectable at runtime, no restart
 # ═════════════════════════════════════════════════════════════════════════
 # Select one while everything is running:
-#     ros2 topic pub --once /trial_config std_msgs/msg/String "data: 'near'"
+#     ros2 topic pub --once /trial_config std_msgs/msg/String "data: 'base'"
+# Defined names right now: slow, base, fast.
 #
 # The arm parks at start_1/TrialGate between cycles and begins the requested
 # trial from there. Driver, bridge, wrench tare and the arm's live state all
@@ -74,15 +75,44 @@ place_pose:
 # `targets:` until targetAt() is reworked to arc-length-parameterise the
 # whole polyline under a single quintic.
 trials:
-  near:
+  # ── SPEED factor (works now - all three run the captured 'far' path) ──
+  # Same three levels as the previous design. speed_scale multiplies every
+  # v_max/v_max_lin/v_max_ang and divides every `duration`, so the whole
+  # cycle scales uniformly from one number.
+  #   slow 0.5 -> ~9 min 06 s per cycle
+  #   base 1.0 -> ~4 min 33 s
+  #   fast 2.5 -> ~1 min 49 s
+  # (The two unload legs dominate: joint_6 swings 87.6 deg at v_max 0.05.)
+  slow:
+    speed_scale: 0.5
+  base:
     speed_scale: 1.0
-    # targets: {step_2: [x, y, z]}   # TODO - awaiting capture
-  baseline:
-    speed_scale: 1.0
-    # targets: {step_2: [x, y, z]}   # TODO - awaiting capture
-  far:
-    speed_scale: 1.0
-    # no override: step_2's own target IS the far pose
+  fast:
+    speed_scale: 2.5
+
+  # ── DISTANCE factor - NOT USABLE YET ─────────────────────────────────
+  # 'far' is the captured geometry, so it needs no override and is simply
+  # what every profile above already runs. 'near' and 'baseline' need their
+  # step_2 / step_1_return endpoints captured before they mean anything -
+  # until then they would be identical to 'far' and would silently produce
+  # three copies of the same condition.
+  #
+  # Once captured, cross them with speed to get the 9 cells, e.g.
+  #   slow_near:
+  #     speed_scale: 0.5
+  #     targets:
+  #       step_2:        [x, y, z]
+  #       step_1_return: [x, y, z]   # keep the inbound half symmetric
+  # BOTH compliant legs need the override, or the arm would go out on the
+  # near path and come back on the far one.
+  #
+  # ALSO PENDING: the step_1 <-> step_2 leg is currently LINEAR-limited
+  # (6.36 s vs 5.02 s angular at speed_scale 2.5), so moving the endpoint
+  # changes the leg's DURATION as well as its distance - distance would be
+  # confounded with time-spent-near-participant. Fix before collecting
+  # data: drop v_max_ang to ~0.03 on both compliant states so the angular
+  # term binds at every distance and duration stays constant, the property
+  # the previous design relied on.
 
 # ═════════════════════════════════════════════════════════════════════════
 #  speed_scale - THE ONE KNOB TO CHANGE PER TRIAL CONDITION
@@ -98,7 +128,9 @@ trials:
 # v_max alone would leave it at 15s no matter what and the cycle would not
 # actually speed up.
 #
-# CEILING: clamped to [0.1, 1.5] in PickPlaceController.cpp.
+# CEILING: the TOP-LEVEL speed_scale is clamped to [0.1, 3.0] in
+# PickPlaceController.cpp. A trials: profile's speed_scale is NOT clamped -
+# it is assigned straight through - so a typo there goes to the arm as-is.
 # MEASURED, not estimated. A live run at 2.0 showed MoveToSafe commanding a
 # 0.100 rad/s peak while the real arm saturated near 0.077 rad/s; the
 # shortfall accumulated into the 0.03 stall guard every ~1.5 s, giving a

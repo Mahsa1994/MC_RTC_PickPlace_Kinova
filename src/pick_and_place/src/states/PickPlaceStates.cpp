@@ -28,6 +28,38 @@
 #include <SpaceVecAlg/Conversions.h>
 #include <algorithm>
 
+// ── Wrap-aware joint difference (2026-10-12) ──────────────────────────────
+// joint_1, joint_4 and joint_6 are CONTINUOUS. The driver reports them
+// wrapped into [-pi, pi], while the model interpolates a target that
+// start() has already unwrapped to be within pi of the start angle (see
+// the wrap block in JointMove::start()). The moment the real joint crosses
+// the branch cut, a raw `model - real` therefore reads ~2*pi even though
+// the two are physically at the SAME place.
+//
+// That is not hypothetical. Live run 2026-10-12, start_1, joint_1 going
+// +1.6002 -> -2.9995 the short way (i.e. increasing through +pi):
+//     [start_1] err=0.2459                             <- one tick before
+//     [start_1] STALLED - model-vs-real 6.2848 rad on 'joint_1'
+//     [start_1] err=6.4266
+//     model=-3.1387 rad, real=-3.1406 rad              <- 0.002 rad apart!
+// 6.2848 is 2*pi. The stall guard then chattered in and out every tick,
+// the convergence error sat at 6.43 against a 0.05 threshold so the state
+// could never finish, and the posture task was driven toward a point a
+// full turn away - commanded velocity spiked to 0.2678 rad/s against a
+// v_max of 0.05 and the arm started travelling the long way round.
+//
+// Every runtime angle comparison must therefore go through this. Wrapping
+// cannot mask a real fault: the stall guard trips at 0.03 rad and the
+// bridge's publish gate at 0.05, both orders of magnitude below the pi
+// where wrapping starts to have any effect at all.
+static inline double angDiff(double a, double b)
+{
+  double d = a - b;
+  while(d >  M_PI) d -= 2.0 * M_PI;
+  while(d < -M_PI) d += 2.0 * M_PI;
+  return d;
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 static PickPlaceController & ppc(mc_control::fsm::Controller & ctl)
 {
@@ -724,7 +756,7 @@ struct ComplianceCartesianMove : mc_control::fsm::State
       for(size_t ji = 0; ji < mbs.size(); ++ji)
       {
         if(mbs[ji].dof() != 1) continue;
-        dev = std::max(dev, std::abs(mq[ji][0] - rq[ji][0]));
+        dev = std::max(dev, std::abs(angDiff(mq[ji][0], rq[ji][0])));
       }
     }
 
@@ -1006,7 +1038,7 @@ struct ComplianceCartesianMove : mc_control::fsm::State
         for(size_t ji = 0; ji < mbs.size(); ++ji)
         {
           if(mbs[ji].dof() != 1) continue;
-          double d = std::abs(mq[ji][0] - rq[ji][0]);
+          double d = std::abs(angDiff(mq[ji][0], rq[ji][0]));
           if(d > maxdev) { maxdev = d; devjoint = mbs[ji].name(); }
         }
       }
@@ -1430,7 +1462,7 @@ void start(mc_control::fsm::Controller & ctl) override
       for(size_t ji = 0; ji < mbs.size(); ++ji)
       {
         if(mbs[ji].dof() != 1) continue;
-        double d = std::abs(mq[ji][0] - rq[ji][0]);
+        double d = std::abs(angDiff(mq[ji][0], rq[ji][0]));
         if(d > dev) { dev = d; devjoint = mbs[ji].name(); }
       }
     }
@@ -1485,7 +1517,7 @@ void start(mc_control::fsm::Controller & ctl) override
         if(mbs[ji].dof() != 1) continue;
         const std::string & jname = mbs[ji].name();
         if(!target_joints_.count(jname)) continue;
-        double d = q[ji][0] - target_joints_.at(jname)[0];
+        double d = angDiff(q[ji][0], target_joints_.at(jname)[0]);
         err += d * d;
       }
       err = std::sqrt(err);
