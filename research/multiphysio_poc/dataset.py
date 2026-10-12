@@ -21,6 +21,7 @@ class Split:
     student_X: np.ndarray
     y: np.ndarray
     ids: np.ndarray
+    task: np.ndarray = None  # trial Class (e.g. "stroophard"), for the task-identity reference baseline
 
 
 def _usable_columns(df: pd.DataFrame, cols: list) -> list:
@@ -85,10 +86,11 @@ def _build_split(df: pd.DataFrame, train_idx, val_idx, teacher_cols, student_col
             sub[student_cols].to_numpy(dtype=np.float32),
             sub[TARGET_COLS].to_numpy(dtype=np.float32),
             sub["ID"].to_numpy(),
+            sub["Class"].to_numpy(),
         )
 
-    t_tr, s_tr, y_tr, id_tr = build(train_idx)
-    t_va, s_va, y_va, id_va = build(val_idx)
+    t_tr, s_tr, y_tr, id_tr, task_tr = build(train_idx)
+    t_va, s_va, y_va, id_va, task_va = build(val_idx)
 
     teacher_scaler = StandardScaler().fit(t_tr)
     student_scaler = StandardScaler().fit(s_tr)
@@ -96,10 +98,10 @@ def _build_split(df: pd.DataFrame, train_idx, val_idx, teacher_cols, student_col
 
     train = Split(teacher_scaler.transform(t_tr).astype(np.float32),
                   student_scaler.transform(s_tr).astype(np.float32),
-                  y_scaler.transform(y_tr).astype(np.float32), id_tr)
+                  y_scaler.transform(y_tr).astype(np.float32), id_tr, task_tr)
     val = Split(teacher_scaler.transform(t_va).astype(np.float32),
                 student_scaler.transform(s_va).astype(np.float32),
-                y_scaler.transform(y_va).astype(np.float32), id_va)
+                y_scaler.transform(y_va).astype(np.float32), id_va, task_va)
 
     meta = dict(teacher_dim=t_tr.shape[1], student_dim=s_tr.shape[1],
                 teacher_cols=teacher_cols, student_cols=student_cols, y_scaler=y_scaler)

@@ -143,11 +143,29 @@ def print_cv_table(title, rows, names):
 
 
 def tertile_bins(y_tr_cont, y_va_cont):
-    """Cut a continuous target into train-quantile tertiles (low/mid/high).
-    Cut points come from TRAIN only, no leakage - shared by classify_folds()
-    and pca_analysis.py."""
-    q1, q2 = np.quantile(y_tr_cont, [1 / 3, 2 / 3])
-    return np.digitize(y_tr_cont, [q1, q2]), np.digitize(y_va_cont, [q1, q2])
+    """Cut a target into 3 ordinal classes (low/mid/high). Cut points come
+    from TRAIN only, no leakage - shared by classify_folds(),
+    pca_analysis.py and train_kd_classify.py.
+
+    SAM ratings are integers on a 1-5 scale, so plain quantile cut points
+    tie: for Arousal q1 == q2 == 2, and np.digitize(y, [2, 2]) silently
+    yields only TWO classes (y < 2 vs y >= 2) - this was the behavior before
+    2026-10-09, see README "Binning bug". Instead, search over cut points
+    halfway between consecutive observed levels for the split whose class
+    sizes are closest to equal thirds, which guarantees 3 non-empty classes
+    whenever the train fold has >= 3 distinct levels."""
+    levels = np.unique(y_tr_cont)
+    if len(levels) < 3:
+        raise ValueError(f"need >= 3 distinct target levels for 3 classes, got {len(levels)}")
+    mids = (levels[:-1] + levels[1:]) / 2
+    best_cuts, best_score = None, np.inf
+    for i in range(len(mids)):
+        for j in range(i + 1, len(mids)):
+            counts = np.bincount(np.digitize(y_tr_cont, [mids[i], mids[j]]), minlength=3)
+            score = np.sum((counts - len(y_tr_cont) / 3) ** 2)
+            if score < best_score:
+                best_cuts, best_score = [mids[i], mids[j]], score
+    return np.digitize(y_tr_cont, best_cuts), np.digitize(y_va_cont, best_cuts)
 
 
 def tertile_f1(X_tr, y_tr, X_va, y_va):
