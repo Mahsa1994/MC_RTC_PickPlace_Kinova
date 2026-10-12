@@ -114,7 +114,20 @@ def generate_launch_description():
             # 3.0 sits in the gap between the 1-3 N residual and the 12+ N of
             # a real pull. Raise toward 4-5 if any chatter remains; lower
             # toward 2 if a deliberate gentle pull stops registering.
-            'deadband_force': 3.0,
+            # 3.0 -> 5.0 (2026-10-12, third pass). 3.0 was set to clear the
+            # 1-3 N post-pull residual and it landed exactly ON it: every
+            # nonzero sample logged while the arm sat still had norm 3.05,
+            # 3.12, 3.19, 3.33, 3.44, 3.44 - all just over the threshold, all
+            # in the same (-X,-Y) direction. That is a systematic model bias
+            # at this pose, not noise, and parking the deadband on top of it
+            # turned the deadband itself into the switching nonlinearity: the
+            # signal chatters across 3.0, each crossing steps the impedance
+            # law by 3 N = 30 mm of commanded offset, and the filtered result
+            # is the 4-9 mm limit cycle.
+            # Measured separation: residual peaks at 3.44 N, a real pull
+            # reaches 10-12 N. 5.0 sits in the middle with 1.6 N of margin
+            # below and 5+ N above.
+            'deadband_force': 5.0,
             'deadband_moment': 1.5,
             # Velocity gate on the estimated wrench. Was hardcoded 0.05/0.15
             # in the bridge; those values gated the compliance OFF exactly
