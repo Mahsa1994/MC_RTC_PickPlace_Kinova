@@ -127,8 +127,24 @@ def generate_launch_description():
             # Measured separation: residual peaks at 3.44 N, a real pull
             # reaches 10-12 N. 5.0 sits in the middle with 1.6 N of margin
             # below and 5+ N above.
+            # Schmitt trigger (2026-10-12): the plain value RELEASES, the
+            # _high value ENGAGES. Chosen from the measured spread:
+            #     quiet, settled, untouched   0.00 N   (clean tare)
+            #     post-push model bias        3.2 - 6.08 N, scales with the
+            #                                 push, decays over seconds
+            #     a real deliberate push      10 - 18 N
+            # Engage at 8.0 so the bias - which peaked at 6.08 - can never
+            # re-trigger the channel once it has released. Release at 5.0,
+            # the value already shown to settle. The whole 5-8 N band is dead
+            # in both directions, so there is no edge for the bias to chatter
+            # across, whatever the push magnitude was.
+            # Cost: a push under 8 N will not register at all. Fine here -
+            # every measured deliberate push is 10 N or more - but lower
+            # BOTH numbers together if gentle pushes need to count.
             'deadband_force': 5.0,
+            'deadband_force_high': 8.0,
             'deadband_moment': 1.5,
+            'deadband_moment_high': 2.5,
             # Velocity gate on the estimated wrench. Was hardcoded 0.05/0.15
             # in the bridge; those values gated the compliance OFF exactly
             # while the arm was returning from a pull, which is what produced

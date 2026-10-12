@@ -30,8 +30,32 @@ public:
     loop_dt_ = this->declare_parameter("loop_dt", 0.001);   // seconds; sim keeps 0.001
 
     torque_sign_    = this->declare_parameter("torque_sign", 1.0);   // flip to -1.0 if inverted on real
+    // Schmitt-trigger deadband: *_high engages the channel, the plain value
+    // releases it. See the long note at the trigger itself. Defaults keep
+    // high == low, i.e. the old single-threshold behaviour, so nothing
+    // changes for a caller that does not set the _high parameters.
     deadband_force_ = this->declare_parameter("deadband_force", 1.5);  // sim value; real: start 6.0
     deadband_moment_= this->declare_parameter("deadband_moment", 0.5); // sim value; real: start 1.5
+    deadband_force_high_  = this->declare_parameter("deadband_force_high", deadband_force_);
+    deadband_moment_high_ = this->declare_parameter("deadband_moment_high", deadband_moment_);
+    if (deadband_force_high_ < deadband_force_)
+    {
+      mc_rtc::log::warning("[KortexBridge] deadband_force_high ({:.2f}) < deadband_force ({:.2f}) "
+                           "- hysteresis disabled, using the single threshold",
+                           deadband_force_high_, deadband_force_);
+      deadband_force_high_ = deadband_force_;
+    }
+    if (deadband_moment_high_ < deadband_moment_)
+    {
+      mc_rtc::log::warning("[KortexBridge] deadband_moment_high ({:.2f}) < deadband_moment ({:.2f}) "
+                           "- hysteresis disabled, using the single threshold",
+                           deadband_moment_high_, deadband_moment_);
+      deadband_moment_high_ = deadband_moment_;
+    }
+    mc_rtc::log::info("[KortexBridge] force deadband: engage > {:.2f} N, release < {:.2f} N | "
+                      "moment: engage > {:.2f} Nm, release < {:.2f} Nm",
+                      deadband_force_high_, deadband_force_,
+                      deadband_moment_high_, deadband_moment_);
 
     // Velocity gate on the estimated wrench (was hardcoded 0.05 / 0.15).
     // Made tunable 2026-10-12 - see the note at the gate itself; the old
@@ -120,6 +144,11 @@ private:
   double torque_sign_{1.0};
   double deadband_force_{1.5};
   double deadband_moment_{0.5};
+  double deadband_force_high_{1.5};
+  double deadband_moment_high_{0.5};
+  // Schmitt-trigger state: is each channel currently passing through?
+  bool   force_engaged_{false};
+  bool   moment_engaged_{false};
   double qd_gate_low_{0.05};
   double qd_gate_high_{0.15};
 
@@ -378,17 +407,38 @@ private:
       Eigen::Vector3d output_force = filtered_force;
       Eigen::Vector3d output_moment = filtered_moment;
 
-      // 3. Apply Deadband on the temporary copies
-      //if (output_force.norm() < 1.5)
-      //{
-       // output_force.setZero();
-      //}
-      //if (output_moment.norm() < 0.5)
-      //{
-       // output_moment.setZero();
-      //}
-      if (output_force.norm()  < deadband_force_)  output_force.setZero();
-      if (output_moment.norm() < deadband_moment_) output_moment.setZero();
+      // 3. Schmitt-trigger deadband (2026-10-12, replaces the single
+      //    threshold below). A plain deadband has one edge, so any signal
+      //    that parks near it chatters across it, and on this arm something
+      //    always does: after a push the inverse-dynamics estimate carries a
+      //    systematic bias in a fixed direction whose SIZE SCALES WITH THE
+      //    PUSH - measured ~3.2 N after a moderate pull and ~5.2 N after an
+      //    18 N one, decaying over seconds. Each crossing steps the
+      //    impedance law by the threshold value (at K=100 N/m, 5 N = 50 mm
+      //    of commanded offset), which is what produced the visible limit
+      //    cycle while the arm settled. Observed with the threshold at 3.0,
+      //    then again at 5.0 - raising it tracks the bias instead of
+      //    rejecting it, because the bias follows the push magnitude.
+      //
+      //    Two thresholds fix that for any push size: the channel must
+      //    exceed deadband_force_high_ to ENGAGE, and then stays engaged
+      //    until it falls below deadband_force_ to RELEASE. A bias sitting
+      //    anywhere between the two cannot toggle anything, so there is no
+      //    edge left to chatter on.
+      //
+      //    Set high above the largest expected residual and low above the
+      //    quiet-state noise floor (which is 0.00 here - the tare is clean).
+      //    Degenerate case: high <= low reproduces the old single-threshold
+      //    behaviour exactly, so the previous tuning is still reachable.
+      const double fn = output_force.norm();
+      if (force_engaged_) { if (fn < deadband_force_)      force_engaged_ = false; }
+      else                { if (fn > deadband_force_high_) force_engaged_ = true;  }
+      if (!force_engaged_) output_force.setZero();
+
+      const double mn = output_moment.norm();
+      if (moment_engaged_) { if (mn < deadband_moment_)      moment_engaged_ = false; }
+      else                 { if (mn > deadband_moment_high_) moment_engaged_ = true;  }
+      if (!moment_engaged_) output_moment.setZero();
 
       // 4. Update the active sensor readings to send to mc_rtc
       force_sensor = output_force;
