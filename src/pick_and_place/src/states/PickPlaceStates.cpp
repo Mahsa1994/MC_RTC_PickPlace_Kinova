@@ -802,7 +802,40 @@ struct ComplianceCartesianMove : mc_control::fsm::State
 
     const bool by_force  = f > contact_force_threshold_;
     const bool by_moment = m > m_thresh;
-    const bool by_dev    = divergence_pause_ > 0.0 && dev > divergence_pause_
+    // divergence_pause_ MUST scale with speed, same reasoning as
+    // stall_lag_enter_ in JointMove above. `dev` is the model's lead over the
+    // real arm - a following error, so proportional to commanded velocity and
+    // therefore to speed_scale. Pinned at the value that suits base (0.010)
+    // it sits ON normal operation for the fastest leg at speed_scale 2.5:
+    //
+    //   condition  max dq   leg @fast  peak dq/dt   expected dev
+    //   near       1.0167   10.6 s     0.1795 rad/s   0.0100  <- trips
+    //   far1       0.8285   11.3 s     0.1374 rad/s   0.0077
+    //   far2       0.6103    8.8 s     0.1304 rad/s   0.0073
+    //
+    // which is exactly what was seen: near_fast paused with both wrench
+    // channels reading zero -
+    //   "CLOCK PAUSED - triggered by model-vs-real divergence: force
+    //    0.00/2.00 N, moment 0.00/2.00 Nm, model-vs-real 0.0100/0.0100 rad"
+    // while far1_fast and far2_fast ran clean. Near's compliant leg is ~30%
+    // faster than the others, so it was the only condition reaching the flat
+    // threshold - the bug was there for all three, only near exposed it.
+    //
+    // TRADE-OFF, deliberate: scaling keeps the false-trigger margin constant
+    // (~2.5x) at every speed, but a human must hold the arm back 2.5x further
+    // to trip THIS path at fast than at slow. Not tuning - at fast the normal
+    // following error is already as large as a light hold, so the two are not
+    // separable on this signal. The force and moment channels still work at
+    // fast (attenuated ~48% by the bridge's velocity gate). A spurious pause
+    // mid-trial corrupts data worse than a missed light touch.
+    //
+    // NOTE this interacts with delta_max: lowering delta_max lets the model
+    // run further ahead, which RAISES dev and eats this margin. The two were
+    // changed together once (delta_max 0.006 -> 0.004 alongside this scaling)
+    // and the effects cancelled, producing more pauses rather than fewer.
+    // Change one at a time.
+    const double dev_thresh = divergence_pause_ * ppc(ctl).speedScale();
+    const bool by_dev    = divergence_pause_ > 0.0 && dev > dev_thresh
                            && !ppc(ctl).dryRunValidation();
 
     const bool was_paused = paused_;
@@ -836,7 +869,7 @@ struct ComplianceCartesianMove : mc_control::fsm::State
             "[{}] CLOCK PAUSED  - triggered by {}: force {:.2f}/{:.2f} N, moment {:.2f}/{:.2f} Nm, "
             "model-vs-real {:.4f}/{:.4f} rad. t_elapsed frozen at {:.2f}s of {:.2f}s",
             name(), pause_cause_, f, contact_force_threshold_, m, m_thresh,
-            dev, divergence_pause_, t_elapsed_, effective_duration_);
+            dev, dev_thresh, t_elapsed_, effective_duration_);
       }
       else
       {
