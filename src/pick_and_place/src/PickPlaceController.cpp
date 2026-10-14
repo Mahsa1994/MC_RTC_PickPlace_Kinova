@@ -95,6 +95,7 @@ try : mc_control::fsm::Controller(rm, dt, config)
       tp.speed_scale = speed_scale_;                 // default: the global one
       auto t = trials(name);
       if(t.has("speed_scale")) tp.speed_scale = t("speed_scale");
+      if(t.has("entry")) tp.entry = static_cast<std::string>(t("entry"));
       if(t.has("targets"))          // Cartesian endpoint overrides
       {
         auto tg = t("targets");

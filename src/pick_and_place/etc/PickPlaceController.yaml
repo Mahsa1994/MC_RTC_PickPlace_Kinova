@@ -114,14 +114,7 @@ trials:
     # no overrides - the states: block IS the near geometry
   far1:
     speed_scale: 1.0
-    joint_targets:
-      start_1:       [-3.0683, -0.2699, 1.8801, -0.0026, 0.9525, 0.0948]
-      step_1:        [ 1.6522, -0.2699, 1.8801, -0.0026, 0.9525, 0.0948]
-      unload_1:      [ 1.8232, -0.9163, 1.3348, -0.0463, 0.1240, 1.4303]
-      step_2_return: [ 1.8232, -0.9163, 1.3348, -0.0463, 0.1240, 0.1057]
-    targets:
-      step_2:        [0.1716, 0.6640, 0.2160,  2.3900, -0.1685, -1.6945]
-      step_1_return: [0.0318, 0.3776, 0.3406,  3.1025, -0.0011, -1.5588]
+    entry: start_2        # routes TrialGate into the far1 chain
 
   # ── SPEED conditions (near geometry) ─────────────────────────────────
   slow:
@@ -575,6 +568,125 @@ states:
         linear:  [60, 60, 60]
         angular: [15, 15, 15]
 
+
+  # ═══════════════════════════════════════════════════════════════════
+  #  far1 CHAIN (2026-10-14) - a SEPARATE set of states, not overrides
+  # ═══════════════════════════════════════════════════════════════════
+  # far1 needs its own start pose, and a start state that runs BEFORE the
+  # trial gate cannot know which trial is coming. Rather than contort the
+  # shared chain, far1 owns its poses outright and TrialGate routes into
+  # this chain via `entry: start_2` in the trials: block. The near chain
+  # above is byte-identical to what it was.
+  #
+  # Yes, this duplicates structure. Deliberate, for now: it keeps the two
+  # conditions independent so a change to one cannot silently alter the
+  # other. If a third condition appears, revisit.
+  #
+  #   TrialGate -> start_2 -> step_1_far1 -> step_2_far1 -> unload_far1
+  #             -> step_2_far1_return -> step_1_far1_return -> start_2_end
+  #             -> TrialGate
+  #
+  # Compliant legs: step_2_far1 and step_1_far1_return (the step_1<->step_2
+  # traverse, both directions), matching near.
+  start_2:
+    base: JointMove
+    stiffness: 2.0
+    v_max: 0.05
+    target: [-3.0683, -0.2699, 1.8801, -0.0026, 0.9525, 0.0948]
+    # goes here from wherever the arm is; skips if already within
+    skip_if_within: 0.05
+    duration: 15.0
+    threshold: 0.05
+    divergence_pause: 0.03
+    next: step_1_far1
+  step_1_far1:
+    base: JointMove
+    stiffness: 2.0
+    v_max: 0.05
+    target: [1.6522, -0.2699, 1.8801, -0.0026, 0.9525, 0.0948]
+    duration: 15.0
+    threshold: 0.05
+    divergence_pause: 0.03
+    next: step_2_far1
+  step_2_far1:
+    base: ComplianceCartesianMove
+    target:
+      translation: [0.1716, 0.6640, 0.2160]
+      rotation:    [2.3900, -0.1685, -1.6945]
+    waypoints: []
+    duration: 4.0
+    v_max_lin: 0.05
+    v_max_ang: 0.05
+    stiffness: 25.0
+    damping: 12.0
+    weight: 100.0
+    contact_force_threshold: 2.0
+    contact_moment_threshold: 2.0
+    contact_moment_speed_gain: 0.0
+    divergence_pause: 0.010
+    clear_hold_time: 0.3
+    settle_timeout: 8.0
+    next: unload_far1
+    gains:
+      mass:      {linear: [3, 3, 3],       angular: [2, 2, 2]}
+      stiffness: {linear: [100, 100, 100], angular: [10, 10, 10]}
+      damping:   {linear: [60, 60, 60],    angular: [15, 15, 15]}
+  unload_far1:
+    base: JointMove
+    stiffness: 2.0
+    v_max: 0.05
+    target: [1.8232, -0.9163, 1.3348, -0.0463, 0.1240, 1.4303]
+    # = step_2_far1 joints with joint_6 rolled +1.3246 rad (75.89 deg),
+    # the same roll near's unload_1 uses
+    duration: 15.0
+    threshold: 0.05
+    divergence_pause: 0.03
+    next: step_2_far1_return
+  step_2_far1_return:
+    base: JointMove
+    stiffness: 2.0
+    v_max: 0.05
+    target: [1.8232, -0.9163, 1.3348, -0.0463, 0.1240, 0.1057]
+    # = step_2_far1's joints
+    duration: 15.0
+    threshold: 0.05
+    divergence_pause: 0.03
+    next: step_1_far1_return
+  step_1_far1_return:
+    base: ComplianceCartesianMove
+    target:
+      translation: [0.0318, 0.3776, 0.3406]
+      rotation:    [3.1025, -0.0011, -1.5588]
+    waypoints: []
+    duration: 4.0
+    v_max_lin: 0.05
+    v_max_ang: 0.05
+    stiffness: 25.0
+    damping: 12.0
+    weight: 100.0
+    contact_force_threshold: 2.0
+    contact_moment_threshold: 2.0
+    contact_moment_speed_gain: 0.0
+    divergence_pause: 0.010
+    clear_hold_time: 0.3
+    settle_timeout: 8.0
+    next: start_2_end
+    gains:
+      mass:      {linear: [3, 3, 3],       angular: [2, 2, 2]}
+      stiffness: {linear: [100, 100, 100], angular: [10, 10, 10]}
+      damping:   {linear: [60, 60, 60],    angular: [15, 15, 15]}
+  start_2_end:
+    base: JointMove
+    stiffness: 2.0
+    v_max: 0.05
+    target: [-3.0683, -0.2699, 1.8801, -0.0026, 0.9525, 0.0948]
+    # same pose as start_2; separate state because mc_rtc keys
+    # transitions on (state, output) and this one returns to the gate
+    duration: 15.0
+    threshold: 0.05
+    divergence_pause: 0.03
+    next: TrialGate
+
   # ── Trial gate ───────────────────────────────────────────────────────
   # The arm parks at start_1 and waits here for a trial name on
   # /trial_config before running a cycle. See the trials: block at the top.
@@ -604,6 +716,15 @@ transitions:
   - [unload_1,       step_2_return,  step_2_return,  Auto]
   - [step_2_return,  step_1_return,  step_1_return,  Auto]
   - [step_1_return,  start_1,        start_1,        Auto]
+  # ── far1 chain (entered from TrialGate via `entry: start_2`) ─────────
+  - [TrialGate,          start_2,            start_2,            Auto]
+  - [start_2,            step_1_far1,        step_1_far1,        Auto]
+  - [step_1_far1,        step_2_far1,        step_2_far1,        Auto]
+  - [step_2_far1,        unload_far1,        unload_far1,        Auto]
+  - [unload_far1,        step_2_far1_return, step_2_far1_return, Auto]
+  - [step_2_far1_return, step_1_far1_return, step_1_far1_return, Auto]
+  - [step_1_far1_return, start_2_end,        start_2_end,        Auto]
+  - [start_2_end,        TrialGate,          TrialGate,          Auto]
 
 constraints:
   - type: kinematics

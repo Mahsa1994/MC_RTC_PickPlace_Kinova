@@ -69,6 +69,13 @@ public:
   struct TrialProfile
   {
     double speed_scale = 1.0;
+    // First state of this trial's chain. Empty = use TrialGate's own `next`.
+    // Added 2026-10-14 so a condition can have its OWN chain of states rather
+    // than overriding a shared one: far1 needs a different start pose, and a
+    // start state that runs BEFORE the gate cannot know which trial is
+    // coming. Routing from the gate instead means each condition owns its
+    // poses outright and near's chain is untouched.
+    std::string entry;
     // state name -> via-points for that state's Cartesian leg
     std::map<std::string, std::vector<Eigen::Vector3d>> waypoints;
     // state name -> replacement ENDPOINT translation for a Cartesian leg.
@@ -104,6 +111,14 @@ public:
     if(t == trials_.end()) return nullptr;
     auto w = t->second.waypoints.find(state);
     return w == t->second.waypoints.end() ? nullptr : &w->second;
+  }
+
+  /// First state of the active trial's chain, or empty if it does not name
+  /// one (TrialGate then falls through to its own `next:`).
+  std::string entryFor() const
+  {
+    auto t = trials_.find(active_trial_);
+    return t == trials_.end() ? std::string() : t->second.entry;
   }
 
   /// Endpoint rotation override for `state` ([roll,pitch,yaw]), or nullptr if

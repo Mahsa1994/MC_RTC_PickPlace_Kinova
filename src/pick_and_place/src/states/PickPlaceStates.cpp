@@ -1900,7 +1900,15 @@ struct Idle : mc_control::fsm::State
     if(next_state_.empty()) return false;          // no trial gate configured
     if(ppc(ctl).consumePendingTrial())
     {
-      output(next_state_);
+      // Route to the trial's own chain if it names one, else fall through to
+      // this state's `next:`. The transition table must list a row for every
+      // entry state used, keyed on that same output name.
+      const std::string entry = ppc(ctl).entryFor();
+      const std::string & dest = entry.empty() ? next_state_ : entry;
+      if(!entry.empty())
+        mc_rtc::log::info("[TrialGate] trial '{}' -> entering its own chain at '{}'",
+                          ppc(ctl).activeTrial(), dest);
+      output(dest);
       return true;
     }
     if(!announced_)
