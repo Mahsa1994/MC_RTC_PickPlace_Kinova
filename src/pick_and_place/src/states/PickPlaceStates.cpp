@@ -1287,53 +1287,6 @@ struct JointMove : mc_control::fsm::State
     return 10.0 * u * u * u - 15.0 * u * u * u * u + 6.0 * u * u * u * u * u;
   }
 
-/*  void start(mc_control::fsm::Controller & ctl) override
-  {
-    dt_        = ctl.solver().dt();
-    t_elapsed_ = 0.0;
-    tick_      = 0;
-
-    auto pt = ctl.getPostureTask(ctl.robot().name());
-    if(!pt)
-    {
-      mc_rtc::log::error("[{}] No posture task available!", name());
-      output(next_state_);
-      return;
-    }
-
-// ── DEBUG: print actual joint names the robot knows ──────────────
-    mc_rtc::log::info("[{}] Robot joint names:", name());
-    for(const auto & j : ctl.robot().mb().joints())
-    {
-      mc_rtc::log::info("[{}]   '{}' (dof={})", name(), j.name(), j.dof());
-    }
-
-    // Restore the YAML baseline, then let the active trial replace it. Done
-    // here (not in configure) because the profile can change between trials
-    // and start() wraps target_joints_ in place.
-    if(!target_joints_yaml_.empty()) target_joints_ = target_joints_yaml_;
-    if(const std::vector<double> * jt = ppc(ctl).jointTargetFor(name()))
-    {
-      for(size_t i = 0; i < jt->size(); ++i)
-        target_joints_["joint_" + std::to_string(i + 1)] = {(*jt)[i]};
-      mc_rtc::log::info("[{}] trial '{}' overrides joint target", name(), ppc(ctl).activeTrial());
-    }
-
-// ── DEBUG: print what WE are commanding ──────────────────────────
-    mc_rtc::log::info("[{}] Our target_joints_:", name());
-    for(const auto & kv : target_joints_)
-      mc_rtc::log::info("[{}]   '{}' = {:.4f}", name(), kv.first, kv.second[0]);
-
-
-    prev_weight_    = pt->weight();
-    prev_stiffness_ = pt->stiffness();
-    pt->stiffness(stiffness_);
-    pt->weight(weight_);
-    pt->target(target_joints_);
-
-    mc_rtc::log::info("[{}] Joint-space move started (duration={:.2f}s)", name(), duration_);
-  } */
-
 void start(mc_control::fsm::Controller & ctl) override
   {
     dt_        = ctl.solver().dt();
