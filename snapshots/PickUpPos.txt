@@ -1,0 +1,24 @@
+] Starting state MoveToZero
+[kortex_mc_rtc_bridge_impedance-3] [info] [MoveToZero] Robot joint names:
+[kortex_mc_rtc_bridge_impedance-3] [info] [MoveToZero]   'Root' (dof=0)
+[kortex_mc_rtc_bridge_impedance-3] [info] [MoveToZero]   'base_joint' (dof=0)
+[kortex_mc_rtc_bridge_impedance-3] [info] [MoveToZero]   'joint_1' (dof=1)
+[kortex_mc_rtc_bridge_impedance-3] [info] [MoveToZero]   'joint_2' (dof=1)
+[kortex_mc_rtc_bridge_impedance-3] [info] [MoveToZero]   'joint_3' (dof=1)
+[kortex_mc_rtc_bridge_impedance-3] [info] [MoveToZero]   'joint_4' (dof=1)
+[kortex_mc_rtc_bridge_impedance-3] [info] [MoveToZero]   'joint_5' (dof=1)
+[kortex_mc_rtc_bridge_impedance-3] [info] [MoveToZero]   'joint_6' (dof=1)
+[kortex_mc_rtc_bridge_impedance-3] [info] [MoveToZero]   'end_effector' (dof=0)
+[kortex_mc_rtc_bridge_impedance-3] [info] [MoveToZero]   'tool_frame_joint' (dof=0)
+[kortex_mc_rtc_bridge_impedance-3] [info] [MoveToZero] Joint current_q vs target (after wrap):
+[kortex_mc_rtc_bridge_impedance-3] [info] [MoveToZero]   'joint_1' current=-0.0000  target=0.0000  delta=0.0000
+[kortex_mc_rtc_bridge_impedance-3] [info] [MoveToZero]   'joint_2' current=-0.5538  target=0.0000  delta=0.5538
+[kortex_mc_rtc_bridge_impedance-3] [info] [MoveToZero]   'joint_3' current=1.8129  target=0.0000  delta=-1.8129
+[kortex_mc_rtc_bridge_impedance-3] [info] [MoveToZero]   'joint_4' current=-0.0326  target=0.0000  delta=0.0326
+[kortex_mc_rtc_bridge_impedance-3] [info] [MoveToZero]   'joint_5' current=0.8466  target=0.0000  delta=-0.8466
+[kortex_mc_rtc_bridge_impedance-3] [info] [MoveToZero]   'joint_6' current=0.0000  target=0.0000  delta=-0.0000
+[kortex_mc_rtc_bridge_impedance-3] [info] [MoveToZero] Joint-space move started - effective duration 67.98s (configured min 15.00s), v_max=0.0500 rad/s, max |delta|=1.8129 rad -> peak velocity 0.0500 rad/s
+[kortex_mc_rtc_bridge_impedance-3] [info] [MoveToZero]   real tool_frame translation: [-0.4236, -0.0027, +0.2419]
+[kortex_mc_rtc_bridge_impedance-3] [info] [MoveToZero]   real tool_frame rotation [roll,pitch,yaw] (deg): [+1.40, -175.91, +178.67] -> YAML rotation: [0.0245, -3.0701, 3.1183]
+[kortex_mc_rtc_bridge_impedance-3] [info] [MoveToZero] err=2.0763
+[kortex_mc_rtc_bridge_impedance-3] [info] [MoveToZero] err=2.0763

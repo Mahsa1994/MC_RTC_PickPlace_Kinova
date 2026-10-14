@@ -3,29 +3,272 @@ ControllerName: PickPlaceController
 z_min_limit: 0.15
 
 home_pose:
-  translation: [0.287, 0.175, 0.392]
-  rotation: [3.0087, 0.0020, 1.7769]
+  
+  translation: [-0.0000, 0.0014, 1.1766]
+  rotation: [-0.0000, 0.0001, 3.1413]
 
 pick_pose:
-  translation: [0.40, 0.10, 0.15]
-  rotation:    [3.1416, 0.0, 0.0]
+  # REPLACED 2026-08-26: fresh physical capture as part of the MoveToZero ->
+  # MoveToSafe -> MoveToPick -> PickUpPos sequence (see snapshots/
+  # MoveToPick.txt). NOT yet dry-run/live validated as this pipeline's
+  # target.
+  translation: [-0.5570, 0.0008, 0.2944]
+  rotation:    [0.0041, 2.4140, 3.1119]
 
 place_pose:
-  translation: [0.35, -0.10, 0.15]
-  rotation:    [3.1416, 0.0, 0.0]
+  # REPLACED 2026-09-07 - real capture, superseding the never-tested
+  # 2026-08-19 placeholder ([0.35, -0.10, 0.15] / [3.1416, 0, 0], which sat
+  # at +x, the opposite side of the robot from everything else in this file).
+  # Derived the same mc_rtc-native way as pick_pose/MoveToSafe/PickUpPos:
+  # arm jogged to the place location, then read straight off MoveToZero's
+  # startup log (raw capture kept in snapshots/MoveToPlace.txt):
+  #   real tool_frame translation: [-0.4984, +0.4515, +0.5492]
+  #   real tool_frame rotation [roll,pitch,yaw] (deg): [-61.67, +135.66, +110.06]
+  # Cross-checked against snapshots/MoveToPlace.json (the Kinova web-app
+  # snapshot of the same pose) via tools/snapshot_to_joints.py: the joint
+  # angles agree to 0.00027 rad (0.015 deg), i.e. web-app rounding only.
+  # Joint configuration there: [0.7344, -0.5168, 1.1662, -0.0047, 0.2341,
+  # -0.0054] - margins to the nearest limit are comfortable on every
+  # constrained joint (joint_2 1.72 rad, joint_3 1.40 rad, joint_5 1.86 rad),
+  # so this is not near the limit-lock failure mode that plagued the earlier
+  # pick_pose candidates.
+  # CURRENTLY UNREFERENCED (2026-09-07): the place side was rewritten as a
+  # carry-and-tip sequence (MoveUpFromPick -> HoverToPlace -> UnloadObj),
+  # all captured as joint configurations, so no state resolves `ref: place`
+  # any more. Kept because it is a valid, cross-checked capture of that
+  # location and costs nothing - it becomes live again the moment any state
+  # uses `ref: place`. NOTE it is NOT the same spot as HoverToPlace
+  # (that one's tool pose is [-0.2360, +0.3378, +0.4003]).
+  translation: [-0.4984, 0.4515, 0.5492]
+  rotation:    [-1.0763, 2.3677, 1.9208]
+
+# ═════════════════════════════════════════════════════════════════════════
+#  TRIAL PROFILES - selectable at runtime, no restart
+# ═════════════════════════════════════════════════════════════════════════
+# Select one while everything is running:
+#     ros2 topic pub --once /trial_config std_msgs/msg/String "data: 'base'"
+# Defined names right now: slow, base, fast.
+#
+# The arm parks at start_1/TrialGate between cycles and begins the requested
+# trial from there. Driver, bridge, wrench tare and the arm's live state all
+# persist between trials - that is what makes back-to-back runs comparable.
+#
+# step_2 is the only leg a profile can reshape: it is the sole Cartesian
+# state and the only one the participant is near. A profile may set
+#   targets:   {step_2: [x, y, z]}        - move the traverse ENDPOINT
+#   waypoints: {step_2: [[x,y,z], ...]}   - bow the mid-path (SEE WARNING)
+# Anything a profile omits keeps the state's own value.
+#
+# GEOMETRY (rebuilt 2026-10-12). The traverse runs step_1 -> step_2:
+#     [+0.0033, +0.2373, +0.2880]  ->  [+0.0156, +0.6575, +0.2345]
+# i.e. 0.4237 m almost purely along +y. 'far' is the captured pose, so it
+# needs no override at all; 'near' and 'baseline' move toward the
+# participant and are filled in once their poses are captured.
+#
+# ⚠ WARNING ON `waypoints:` - A CURVE WILL CURRENTLY STOP THE ARM.
+# ComplianceCartesianMove::targetAt() applies its quintic PER SEGMENT, and a
+# quintic has zero velocity at BOTH ends, so every via-point brings the arm
+# to a complete stop mid-traverse. This was seen live on 2026-09-30 (the
+# fast_far test showed visible move/stop intervals). A stop is a salient
+# motion cue, so a curve built this way would confound distance with
+# smoothness - the two things the study is trying to separate. Use
+# `targets:` until targetAt() is reworked to arc-length-parameterise the
+# whole polyline under a single quintic.
+trials:
+  # ── DISTANCE x SPEED, 9 cells ────────────────────────────────────────
+  # Publish one by name:
+  #     ros2 topic pub --once /trial_config std_msgs/msg/String "data: 'far1_fast'"
+  #
+  # The two factors are independent and compose cleanly:
+  #   entry:        which chain to run  -> start_1 / start_2 / start_3
+  #   speed_scale:  how fast to run it  -> 0.5 / 1.0 / 2.5
+  # Each chain drives to its OWN start pose first and returns there at the
+  # end, so conditions can be run in any order without a sequence effect.
+  #
+  # The bare names (near / far1 / far2 / slow / base / fast) are GONE - they
+  # each named only one factor, so a log line reading "trial 'far1'" left the
+  # speed implicit and "trial 'fast'" left the geometry implicit. Every name
+  # now states both, which makes the per-run log self-documenting. Ask if you
+  # want the shorthands back as aliases for the _base cells.
+  #
+  # ⚠ THE VELOCITY GATE MAKES COMPLIANCE SPEED-DEPENDENT. The bridge scales
+  # the estimated wrench down as the arm moves faster (qd_gate 0.05 -> 0.3
+  # rad/s), so the SAME push registers differently per speed: ~100% of it at
+  # slow, ~91% at base, ~48% at fast. A contact that pauses the arm in a slow
+  # trial may not in a fast one. That is a confound between the speed factor
+  # and the compliance behaviour - worth deciding how to handle before
+  # collecting data (widen qd_gate_high, or scale contact_force_threshold
+  # with speed the way stall_lag_enter now is).
+
+  # ── near (entry start_1) ──
+  near_slow:
+    speed_scale: 0.5
+    entry: start_1
+  near_base:
+    speed_scale: 1.0
+    entry: start_1
+  near_fast:
+    speed_scale: 2.5
+    entry: start_1
+
+  # ── far1 (entry start_2) ──
+  far1_slow:
+    speed_scale: 0.5
+    entry: start_2
+  far1_base:
+    speed_scale: 1.0
+    entry: start_2
+  far1_fast:
+    speed_scale: 2.5
+    entry: start_2
+
+  # ── far2 (entry start_3) ──
+  far2_slow:
+    speed_scale: 0.5
+    entry: start_3
+  far2_base:
+    speed_scale: 1.0
+    entry: start_3
+  far2_fast:
+    speed_scale: 2.5
+    entry: start_3
+
+# ═════════════════════════════════════════════════════════════════════════
+#  speed_scale - THE ONE KNOB TO CHANGE PER TRIAL CONDITION
+# ═════════════════════════════════════════════════════════════════════════
+# Multiplies every motion state's v_max / v_max_lin / v_max_ang AND divides
+# every `duration`, so the whole cycle gets uniformly faster or slower from a
+# single number. 1.0 = the validated baseline below (~4.8 min of motion per
+# cycle); 2.0 = twice as fast (~2.4 min); 0.5 = half speed.
+#
+# `duration` has to scale too, not just v_max: it is a FLOOR, and any leg
+# pinned by it would otherwise ignore the knob completely. MoveUpFromPick is
+# exactly that case today (15.0s floor vs a 14.0s v_max term), so scaling
+# v_max alone would leave it at 15s no matter what and the cycle would not
+# actually speed up.
+#
+# CEILING: the TOP-LEVEL speed_scale is clamped to [0.1, 3.0] in
+# PickPlaceController.cpp. A trials: profile's speed_scale is NOT clamped -
+# it is assigned straight through - so a typo there goes to the arm as-is.
+# MEASURED, not estimated. A live run at 2.0 showed MoveToSafe commanding a
+# 0.100 rad/s peak while the real arm saturated near 0.077 rad/s; the
+# shortfall accumulated into the 0.03 stall guard every ~1.5 s, giving a
+# continuous brake-and-go judder with nobody touching the robot.
+#
+# The limit is NOT delta_max. The bridge publishes a new single-point
+# trajectory every 10 ms but asks the joint_trajectory_controller to reach it
+# in 50 ms with ZERO terminal velocity, so the arm is always decelerating
+# toward a point that gets replaced before it arrives. To go genuinely faster,
+# fix that (shorten time_from_start toward the publish period, and/or publish
+# a non-zero terminal velocity) - raising speed_scale past 1.5 only makes the
+# model outrun the arm.
+#
+# 1.0 is the only value validated end-to-end on hardware. 2.0 is known to
+# judder. Step through 1.25 and watch "model-vs-real" in the per-state logs:
+# it should stay well under 0.03. If it ramps toward 0.03 repeatedly, the arm
+# is already at its tracking limit for that leg.
+#
+# Per-leg overrides still work: set a state's own v_max* if one leg needs to
+# differ from the global scale (e.g. keeping the descent slow while the
+# traverse speeds up).
+# Set TRUE together with the bridge's dry_run to validate trajectories in
+# RViz. In dry_run nothing is published, so realRobot() never moves and
+# model-vs-real divergence grows by construction - the stall guard then
+# resyncs the model back onto the stationary arm every time it trips, making
+# the model creep ~1 mm and look frozen. This suppresses that guard so the
+# model runs the whole path.
+# MUST be false for any live run - it disables the protection that stops the
+# model outrunning the real arm into a model_real_gate deadlock.
+dry_run_validation: false
+
+# 2.5 -> 1.0 on 2026-10-12 after a live run juddered on start_1.
+# At 2.5 the leg's feedforward peak is v_max*2.5 = 0.125 rad/s, the posture
+# task adds feedback on top (measured commanded peak 0.1657 rad/s), and the
+# real arm delivered 0.1535 - a 7% shortfall that accumulated straight into
+# the 0.03 stall guard. The guard then resynced, which zeroes model-vs-real
+# BY CONSTRUCTION, so it un-latched immediately and the accumulated lag hit
+# the posture task as a step: commanded 0.7950 rad/s against 0.0308 real
+# (4% tracking). Result was a ~70 ms brake-and-go sawtooth - stalls logged
+# at 17.50 / 17.56 / 17.63 / 17.71 / 17.78 / 17.85 / 17.92 s.
+# At 1.0 the peak is 0.05 rad/s, roughly 3x under the measured ceiling.
+speed_scale: 1.0
+# ─────────────────────────────────────────────────────────────────────────
+#  EXPERIMENT KNOBS (2026-09-07) - what to change per trial condition
+# ─────────────────────────────────────────────────────────────────────────
+# The HRC study varies the arm's DISTANCE and VELOCITY relative to the
+# participant, so both need to be settable per leg without recompiling.
+# Every knob below lives in this file only.
+#
+# SPEED. Prefer `speed_scale` above for whole-cycle changes; the per-state
+# knobs below are for making ONE leg differ from the rest.
+# Each motion state computes
+#     effective_duration = max(duration / speed_scale,
+#                              1.875 * distance / (v_max * speed_scale))
+# and follows a quintic (minimum-jerk) profile over it, so the ACTUAL speed
+# is whichever of the two limits is slower:
+#   * `duration`  - a MINIMUM time, not the speed. Raising it slows a leg
+#                   down; lowering it alone does NOT speed a leg up.
+#   * `v_max`     - JointMove legs, rad/s per joint.
+#   * `v_max_lin` / `v_max_ang` - Cartesian legs, m/s and rad/s.
+# At the current v_max values (0.05) the v_max term dominates on every real
+# leg - e.g. MoveToPick's ~0.47 m translation + large reorientation stretches
+# a configured `duration: 4.0` to well over a minute. So to make trials
+# FASTER you must raise v_max* (and may then also need to lower `duration`);
+# changing `duration` alone will do nothing visible.
+# CEILING: keep v_max (and the joint speeds v_max_lin/v_max_ang imply) under
+# the bridge's delta_max-derived limit - at delta_max=0.002 rad/tick and
+# 100 Hz publishing that is ~0.2 rad/s of real joint motion. Command past it
+# and the real arm silently falls behind the model until model_real_gate
+# trips and blocks publishing (this cost three E-stops before those gates
+# existed - see the launch file's history).
+#
+# DISTANCE / TRAJECTORY SHAPE.
+#   * `waypoints: [[x,y,z], ...]` - Cartesian legs only, which after the
+#     2026-09-07 rewrite means MoveToPick and HoverToPlace. Via-points are
+#     passed through on the way to the target and inherit the target's
+#     orientation.
+#   * HoverToPlace is the one that matters for the study: it is the
+#     participant-facing traverse, and it is Cartesian precisely so that its
+#     path can be reshaped per condition (a via-point bowing the path toward
+#     or away from the person) and so that it yields on contact.
+#   * The remaining JointMove legs (MoveToZero, MoveToSafe, PickUpPos,
+#     MoveUpFromPick, UnloadObj, ReturnToPickPose) interpolate straight in
+#     joint space and have no waypoint support - shape one by converting it
+#     to Cartesian, or by inserting another intermediate pose.
+#   * WATCH WHICH LIMIT BINDS: a leg's duration is set by whichever of
+#     v_max_lin / v_max_ang needs longer. HoverToPlace is angular-limited
+#     (0.968 rad of reorientation vs 0.377 m of travel), so raising
+#     v_max_lin alone does nothing there - raise v_max_ang. Each Cartesian
+#     leg logs both deltas at startup, so check the log rather than assume.
+#
+# COMPLIANCE (how the arm yields to a participant pushing it) is per
+# Cartesian leg: `stiffness`/`damping`/`weight`, the `gains:` block, and
+# `contact_force_threshold` / `clear_hold_time`. Only the Cartesian legs are
+# compliant; JointMove legs are rigid by design.
 
 StatesLibraries:
   - /home/vscode/workspace/install/pick_and_place/lib/mc_states
 
 StatesFiles: []
 IdleKeepState: true
-# SAFETY SCOPE (temporary): hold-in-place push/release test only. Does not
-# move toward Unfold/MoveHome/pick/place at all - captures wherever the arm
-# physically is at startup as the compliance target and holds there. See
-# HoldCurrent below. To restore the full sequence starting from Unfold, set
-# this back to `init: Unfold`.
-init: HoldCurrent
 
+# CYCLE ENTRY CHANGED 2026-09-23: MoveToZero -> MoveToSafe.
+# The cycle now starts by going to MoveToSafe from wherever the arm happens
+# to be (MoveToSafe is a JointMove, so it interpolates from the current
+# configuration), then runs the pick/transfer/unload sequence. MoveToZero is
+# still defined below and simply unreferenced - restore by setting
+# `init: MoveToZero` and re-adding the [MoveToZero, MoveToSafe, ...]
+# transition.
+# Rationale: Zero is straight up, the furthest configuration from every pose
+# the cycle actually uses, which made it a poor reference for the startup
+# wrench tare. Entering at MoveToSafe keeps the arm inside its working range
+# throughout.
+# Park at the gate on launch and move nothing until a trial is published.
+# Each trial's chain BEGINS with its own start pose (start_1 / start_2 /
+# start_3), so there is no longer a single "the" start pose to init to -
+# picking one would silently make it the default condition. Nothing moves
+# until you publish, which is also the safer startup.
+init: TrialGate
 states:
 
   # Push/release sanity check: capture the arm's current pose as the
@@ -44,27 +287,48 @@ states:
     damping: 12.0
     weight: 100.0
     contact_force_threshold: 8.0   # must stay above deadband_force on the bridge
+    # ADDED 2026-09-18 - the channel that actually sees a human contact here.
+    # A live test with a hand in the arm's path produced raw force ~0.86 N
+    # (below the bridge's 1.0 N deadband_force, so it reached the task as
+    # exactly 0.00) but moment ~1.5 Nm. Force-based detection therefore never
+    # fired at any threshold; this one does. 0.00 Nm when clear, ~1.5 Nm when
+    # blocked, so 0.5 leaves wide margin both ways.
+    # RAISED 0.5 -> 2.0 on 2026-09-23, deliberately trading contact
+    # sensitivity for a usable speed range (speed is the studied factor).
+    # What the task actually sees is the POST-deadband estimate, and the
+    # bridge's 1.5 Nm deadband_moment already suppresses the no-contact
+    # baseline completely up to ~speed_scale 2 - which is why 1.0 and 1.5
+    # produced Est. moment 0.00 and never false-triggered. At 2.0 the
+    # baseline grazes the deadband and ~1.26 Nm leaked through, tripping the
+    # old 0.5 threshold. 2.0 clears that leak while a real hand contact
+    # (~1.5 Nm ON TOP of the baseline, so ~2.8 Nm at this speed) still
+    # trips it.
+    # INTERIM VALUE - it rests on one measurement and no payload. Re-measure
+    # with the container attached, see contact_moment_speed_gain below.
+    contact_moment_threshold: 2.0
+    # Speed-tracking term, Nm per rad/s of joint speed (2026-09-23).
+    # The no-contact baseline grows linearly with speed because the bridge's
+    # inverse dynamics has no joint-friction term:
+    #     baseline ~= 0.41 + 11.5 * max|qd|   (measured, R^2 = 0.976)
+    # 11.5 is that measured slope, so the effective threshold stays ~0.5 Nm
+    # above the baseline at EVERY speed. That is what lets speed_scale be
+    # varied as an experimental factor without the compliance behaviour
+    # changing with it - a fixed threshold either false-triggers at high
+    # speed or, if raised enough to avoid that, sits above a real human
+    # contact (1.50 Nm measured) and detects nothing.
+    # RE-MEASURE AFTER ATTACHING THE CONTAINER: the payload shifts the
+    # baseline's intercept (its gravity moment is pose-dependent and the
+    # startup tare only cancels it at the tare pose), and may change this
+    # slope too. Set to 0 for the old fixed-threshold behaviour.
+    contact_moment_speed_gain: 0.0
+    # Wrench-independent backstop: pause + resync if the QP model outruns the
+    # real arm by this much. 60% of the bridge's model_real_gate (0.05 rad),
+    # so it fires before the gate does - past the gate the bridge stops
+    # publishing and the arm cannot recover without a restart.
+    divergence_pause: 0.03
     clear_hold_time: 0.3
     next: HoldCurrent
-    # Softened after live test felt too rigid (defaults: stiffness 800 N/m /
-    # 40 Nm/rad meant deflection = force/800 - a 1N push only earned ~1.25mm).
-    # 4x softer here (kept from the previous round).
-    #
-    # mass raised back from 1->2 (2026-08-19): mass=1 felt jerky at the start
-    # of a push ("brake then go") - likely the virtual compliant target
-    # responding faster than real joint static friction can break away,
-    # getting ahead before the joint catches up. Splitting the difference
-    # between the original default (3) and the too-eager value (1) reduced
-    # that gap without giving back the stiffness softening.
-    #
-    # linear mass/stiffness/damping reverted to match impedance_control's
-    # KinovaImpedance.yaml (2026-08-19): that config was already validated to
-    # move well through the base/shoulder joints, not just the wrist - my
-    # earlier linear stiffness (200) was 2x stiffer than its proven value
-    # (100), which suppressed exactly the translational motion that would
-    # recruit those joints. Angular left as-is (already softer than the old
-    # config's 20, and rotation/wrist motion was already working fine - not
-    # implicated in this complaint). UNTESTED live - retest before trusting it.
+    
     gains:
       mass:
         linear:  [3, 3, 3]
@@ -76,112 +340,550 @@ states:
         linear:  [60, 60, 60]
         angular: [15, 15, 15]
 
-  # Arm is expected to start at the monitoring snapshot pose:
-  #   joints (deg): [119.6, 0.5, 87.9, 174.3, 263.6, 87.9]
-  # Target is the SAME pose converted to radians — so the arm should
-  # barely move. This confirms joint naming and direction are correct
-  # before commanding any real motion, before chaining into the full
-  # pick-and-place cycle below.
-  Unfold:
+ 
+  start_1:
     base: JointMove
-    #target: [-0.6933, 0.0449, -1.4642, 3.0964, 1.5793, -1.3926]
-    target: [-0.5649, -0.0336, -1.6628, -3.1074, 1.3932, -1.9451]
-    duration: 15.0      # very slow — 15 s to move essentially nowhere
-    stiffness: 50.0      # minimal gain — arm will move gently
-    threshold: 0.05     # 0.05 rad (~3°) convergence threshold
-    next: MoveHome
-
-  # Rigid (non-compliant) - fine here since this runs before/after the task,
-  # not while a human is expected to be reaching into the workspace.
-  MoveHome:
-    base: CartesianMove
-    target:
-      ref: home
+    stiffness: 2.0
+    v_max: 0.05
+    # RE-CAPTURED 2026-10-14, container removed. Read directly off
+    # /joint_states with the driver up and the mc_rtc bridge down, so no
+    # dry-run and no risk of motion during capture. Previous value was
+    #     [-2.9995, 0.0027, 2.4176, -0.0587, 0.6477, 0.1337]
+    # joint_1 sits at -3.0312 rad (-173.7 deg), i.e. 6.3 deg from the
+    # -pi wrap boundary, so every leg in or out of this pose crosses it.
+    # That is handled (see angDiff and the reference wrapping in refAt()
+    # in PickPlaceStates.cpp) but it is why those fixes are load-bearing
+    # rather than defensive.
+    target: [-3.0312, 0.1537, 2.3490, -0.1051, 0.9400, 0.2321]
+    # "if the robot is not at the safe pose, go there" - skips instantly when
+    # it already is, rather than holding a no-op reference for the full
+    # duration. Same bar as `threshold` below.
+    skip_if_within: 0.05
     duration: 15.0
-    stiffness: 4.0
-    weight: 1000.0
-    pos_threshold: 0.02
-    settle_timeout: 5.0
-    next: MoveToPick
+    threshold: 0.05
+    # Stall guard: freeze the interpolation clock and hold the model on
+    # the encoders if the real arm falls this far behind, so a physically
+    # blocked joint holds loudly instead of running the model past the
+    # bridge's model_real_gate into an unrecoverable deadlock. See the
+    # note on divergence_pause_ in PickPlaceStates.cpp (JointMove).
+    divergence_pause: 0.03
+    # First leg of the near chain, same shape as start_2/start_3 in the far
+    # chains: the trial drives to its OWN start pose before anything else.
+    next: step_1
 
-  # ── Pick-and-place cycle ─────────────────────────────────────────────
-  # MoveToPick and MoveToPlace are ComplianceCartesianMove: they yield if
-  # the human pushes the arm off its path (trajectory clock pauses until
-  # the wrench clears), then resume toward the same target. MoveToPlace is
-  # the experimentally-relevant leg - `waypoints` sets the trajectory shape
-  # and `duration` sets the average speed, both changeable here without
-  # recompiling for different HRI trial conditions.
-  # SAFETY SCOPE (temporary): MoveToPick is the only compliance behavior
-  # under test right now - it stops at Idle instead of continuing into
-  # CloseGripper/MoveToPlace/OpenGripper/ReturnHome, so a real-hardware run
-  # only ever exercises one ComplianceCartesianMove and never actuates the
-  # gripper or drives toward `place`. To restore the full pick-and-place
-  # loop: set this back to `next: CloseGripper`, uncomment the states below,
-  # and restore the full transitions table (both preserved below).
-  MoveToPick:
+  # ── NEW CYCLE, under construction 2026-10-12 ─────────────────────────
+  # Target shape (poses captured live, one per dry run):
+  #     start_1 -> step_1 -> step_2 -> unload_1 -> step_2 -> step_1 -> start_1
+  # i.e. out through the steps, unload, then retrace the same poses back.
+  #
+  # NOTE ON THE RETRACE: mc_rtc keys transitions on (state, output), so a
+  # state cannot appear twice in one chain with two different successors.
+  # The return legs therefore need their own state entries carrying the SAME
+  # target - step_2_return and step_1_return below - differing only in
+  # `next`. They are duplicates on purpose, not an oversight.
+  #
+  # These states are defined but NOT yet referenced by `transitions:`, so
+  # they are inert and the existing MoveToSafe -> ... -> MoveToSafe loop
+  # still runs unchanged. Wiring happens in one pass once every pose is in.
+  # STILL NEEDED: step_2, unload_1.
+
+  step_1:
+    base: JointMove
+    stiffness: 2.0
+    v_max: 0.05
+    # Captured 2026-10-12 from init_q with the arm placed by hand.
+    # RE-CAPTURED 2026-10-14 off /joint_states, container removed.
+    target: [1.7412, 0.1194, 2.2088, -0.0599, 0.9549, 0.1942]
+    duration: 15.0
+    threshold: 0.05
+    divergence_pause: 0.03
+    next: step_2
+
+  # unload_1 - tip the container by rolling the wrist. JointMove: it is a
+  # single-joint motion with no meaningful Cartesian path.
+  #
+  # RE-CAPTURED 2026-10-14, container removed. Against step_2 the capture
+  # differed on joint_6 by +1.3246 rad and on everything else by <= 0.0005
+  # rad, i.e. encoder noise - so joints 1-5 are taken from step_2 VERBATIM
+  # and only joint_6 is new. That keeps step_2 -> unload_1 -> step_2_return
+  # exactly reversible with no drift accumulating round the cycle.
+  #
+  # Geometry: a pure roll about the tool's own axis. The tool frame does
+  # not translate at all (0.00 mm) and its z-axis tilt stays at 46.11 deg
+  # from straight-down; only the roll changes, by 75.89 deg. Whether that
+  # empties the container depends on how it sits in the gripper, which the
+  # kinematics cannot predict - with the container refitted, if the Legos
+  # do not come out, increase joint_6 further (the joint is continuous, so
+  # there is no limit to work against).
+  #
+  # Leg duration at v_max 0.05: slow 99.3 s, base 49.7 s, fast 19.9 s.
+  # This is the longest leg in the cycle after start_1 <-> step_1; raise
+  # this state's v_max if the unload dwell is tedious during trials.
+  unload_1:
+    base: JointMove
+    stiffness: 2.0
+    v_max: 0.05
+    target: [1.7412, -0.8973, 1.4013, -0.0604, 0.0383, 1.5069]  # = step_2 + joint_6 roll
+    duration: 15.0
+    threshold: 0.05
+    divergence_pause: 0.03
+    next: step_2_return   # defined once the new plan lands
+
+  # step_2 - THE PARTICIPANT-FACING LEG. Cartesian + compliant on purpose:
+  # this is the only state whose path can be reshaped per trial condition
+  # (near/far) and the only one that yields when a participant pushes it.
+  #
+  # Cartesian target derived from the captured joint pose
+  #     [1.7412, -0.8973, 1.4013, -0.0604, 0.0383, 0.1823]
+  # by forward kinematics off src/kinova_6dof.urdf. The FK was validated
+  # against the four (joints -> real tool_frame) pairs already recorded in
+  # snapshots/ - translation agreed to 0.03-0.08 mm on all four, and the
+  # rotation convention was confirmed by matrix reconstruction rather than
+  # by comparing Euler triples (which is branch-ambiguous past |pitch|>pi/2
+  # and has bitten this file before). Reconstruction residual here was
+  # 6e-16, i.e. exact.
+  # GEOMETRY (re-measured 2026-10-14): translation 0.4619 m, rotation
+  # 0.7081 rad (40.6 deg). The ANGULAR term binds at every speed_scale
+  # (26.6 s vs 17.3 s at 1.0, a 54% margin), which is the property the
+  # near/far design needs: moving the endpoint changes the distance but
+  # NOT the orientation delta, so the leg's duration stays constant across
+  # distance conditions and distance does not get confounded with
+  # time-spent-near-participant. The previous geometry was linear-limited
+  # by only 21% and did confound them.
+  # joint_1 is identical at step_1 and step_2 (1.7412), so this leg
+  # involves no base rotation and never crosses the +/-pi branch cut.
+  step_2:
     base: ComplianceCartesianMove
     target:
-      ref: pick
-    waypoints:
-      - [0.40, 0.10, 0.25]   # hover ~10cm above pick_pose before descending
-    duration: 4.0
+      translation: [0.1156, 0.6659, 0.2153]
+      rotation:    [2.3439, -0.1202, -1.5675]
+    waypoints: []   # EXPERIMENT KNOB - proximity to participant
+    duration: 4.0   # MINIMUM only
+    v_max_lin: 0.05 # EXPERIMENT KNOB - m/s
+    v_max_ang: 0.05 # EXPERIMENT KNOB - rad/s
     stiffness: 25.0
     damping: 12.0
     weight: 100.0
-    contact_force_threshold: 8.0   # must stay above deadband_force on the bridge
+    # SENSITIVITY RAISED 2026-10-14. Previously 8.0 N / 0.03 rad, which made
+    # a deliberate shove necessary to trip the pause.
+    # Measured noise floors with the container removed (worst case over a
+    # full cycle, from the RAW wrench and model-vs-real log lines):
+    #     force           0.49 N      <- bridge deadband already blocks <1.0
+    #     moment          0.68 Nm     <- bridge deadband already blocks <1.5
+    #     model-vs-real   0.0016 rad
+    # The bridge's deadband is what rejects noise; anything reaching this
+    # state is already real signal, so an 8 N threshold on top of a 1 N
+    # deadband bought nothing but required force. 2.0 N keeps 4x margin over
+    # the worst noise and is 4x easier to trigger.
+    # contact_moment_threshold stays at 2.0: the 1.5 Nm deadband dominates
+    # it, so lowering it would have little effect without also lowering the
+    # deadband (which lives in the bridge and is shared with
+    # impedance_control).
+    contact_force_threshold: 2.0   # must stay above deadband_force (1.0) on the bridge
+    contact_moment_threshold: 2.0
+    contact_moment_speed_gain: 0.0
+    # 0.03 -> 0.010: purely kinematic, needs no wrench at all. Normal
+    # model-vs-real is 0.0016, so this keeps ~6x margin while needing
+    # only 0.57 deg of hold-back instead of 1.7 deg.
+    divergence_pause: 0.010
     clear_hold_time: 0.3
-    next: Idle
+    settle_timeout: 8.0
+    next: unload_1
+    gains:
+      mass:
+        linear:  [3, 3, 3]
+        angular: [2, 2, 2]
+      stiffness:
+        linear:  [100, 100, 100]
+        angular: [10, 10, 10]
+      damping:
+        linear:  [60, 60, 60]
+        angular: [15, 15, 15]
 
-  # -- disabled for now, see SAFETY SCOPE note above --
-  # CloseGripper:
-  #   base: Gripper
-  #   action: close
-  #   timeout: 2.0
-  #   next: MoveToPlace
+  # step_1_return - the inbound half of the step_1 <-> step_2 traverse, so
+  # also compliant Cartesian. Same physical pose as step_1, but reached as a
+  # Cartesian target rather than a joint target, so the QP may settle on a
+  # slightly different joint solution; start_1 (JointMove) afterwards pins
+  # the configuration exactly.
+  # step_2_return - back to the step_2 pose after tipping. JointMove: only
+  # the OUTBOUND step_1 -> step_2 leg is compliant (confirmed 2026-10-12).
+  # Same physical pose as step_2, expressed as the captured joints so the
+  # arm returns to exactly the configuration it left.
+  step_2_return:
+    base: JointMove
+    stiffness: 2.0
+    v_max: 0.05
+    target: [1.7412, -0.8973, 1.4013, -0.0604, 0.0383, 0.1823]  # = step_2
+    duration: 15.0
+    threshold: 0.05
+    divergence_pause: 0.03
+    next: step_1_return
 
-  # THE experiment-manipulation state: vary `waypoints` for trajectory shape
-  # and `duration` for velocity between trials.
-  # MoveToPlace:
-  #   base: ComplianceCartesianMove
-  #   target:
-  #     ref: place
-  #   waypoints: []   # add via-points here to change the trajectory shape
-  #   duration: 5.0    # shorten/lengthen to change arm velocity
-  #   stiffness: 20.0
-  #   damping: 10.0
-  #   weight: 100.0
-  #   contact_force_threshold: 8.0
-  #   clear_hold_time: 0.3
-  #   next: OpenGripper
+  # step_1_return - the INBOUND half of the step_1 <-> step_2 traverse, so
+  # compliant Cartesian like step_2 (2026-10-12). Both directions of the
+  # participant-facing traverse yield on contact; everything else in the
+  # cycle is JointMove.
+  #
+  # Same physical pose as step_1, but reached as a Cartesian target rather
+  # than a joint target, so the QP may settle on a slightly different joint
+  # solution than the capture. start_1 (JointMove) immediately afterwards
+  # pins the configuration exactly, so that does not accumulate.
+  #
+  # Cartesian pose from FK on the captured step_1 joints
+  #     [1.7412, 0.1194, 2.2088, -0.0599, 0.9549, 0.1942]
+  # FK re-validated 2026-10-14 against the four (joints -> real tool_frame)
+  # pairs in snapshots/: worst translation error 0.081 mm. Reconstruction
+  # residual here 4e-16.
+  step_1_return:
+    base: ComplianceCartesianMove
+    target:
+      translation: [0.0341, 0.2382, 0.3696]
+      rotation:    [3.0366, 0.0316, -1.5809]
+    waypoints: []   # keep [] - see the via-point stop warning in trials:
+    duration: 4.0   # MINIMUM only
+    v_max_lin: 0.05
+    v_max_ang: 0.05
+    stiffness: 25.0
+    damping: 12.0
+    weight: 100.0
+    # SENSITIVITY RAISED 2026-10-14. Previously 8.0 N / 0.03 rad, which made
+    # a deliberate shove necessary to trip the pause.
+    # Measured noise floors with the container removed (worst case over a
+    # full cycle, from the RAW wrench and model-vs-real log lines):
+    #     force           0.49 N      <- bridge deadband already blocks <1.0
+    #     moment          0.68 Nm     <- bridge deadband already blocks <1.5
+    #     model-vs-real   0.0016 rad
+    # The bridge's deadband is what rejects noise; anything reaching this
+    # state is already real signal, so an 8 N threshold on top of a 1 N
+    # deadband bought nothing but required force. 2.0 N keeps 4x margin over
+    # the worst noise and is 4x easier to trigger.
+    # contact_moment_threshold stays at 2.0: the 1.5 Nm deadband dominates
+    # it, so lowering it would have little effect without also lowering the
+    # deadband (which lives in the bridge and is shared with
+    # impedance_control).
+    contact_force_threshold: 2.0   # must stay above deadband_force (1.0) on the bridge
+    contact_moment_threshold: 2.0
+    contact_moment_speed_gain: 0.0
+    # 0.03 -> 0.010: purely kinematic, needs no wrench at all. Normal
+    # model-vs-real is 0.0016, so this keeps ~6x margin while needing
+    # only 0.57 deg of hold-back instead of 1.7 deg.
+    divergence_pause: 0.010
+    clear_hold_time: 0.3
+    settle_timeout: 8.0
+    next: start_1_end
+    gains:
+      mass:
+        linear:  [3, 3, 3]
+        angular: [2, 2, 2]
+      stiffness:
+        linear:  [100, 100, 100]
+        angular: [10, 10, 10]
+      damping:
+        linear:  [60, 60, 60]
+        angular: [15, 15, 15]
 
-  # OpenGripper:
-  #   base: Gripper
-  #   action: open
-  #   timeout: 3.0
-  #   next: ReturnHome
 
-  # ReturnHome:
-  #   base: CartesianMove
-  #   target:
-  #     ref: home
-  #   duration: 4.0
-  #   stiffness: 4.0
-  #   weight: 1000.0
-  #   pos_threshold: 0.02
-  #   settle_timeout: 5.0
-  #   next: Idle
+  # start_1_end - near's return-to-start. Separate state from start_1 for the
+  # same reason start_2_end/start_3_end are: mc_rtc keys transitions on
+  # (state, output), so a state cannot both begin and end a chain.
+  start_1_end:
+    base: JointMove
+    stiffness: 2.0
+    v_max: 0.05
+    target: [-3.0312, 0.1537, 2.3490, -0.1051, 0.9400, 0.2321]   # = start_1
+    duration: 15.0
+    threshold: 0.05
+    divergence_pause: 0.03
+    next: TrialGate
+
+  # ═══════════════════════════════════════════════════════════════════
+  #  far1 CHAIN (2026-10-14) - a SEPARATE set of states, not overrides
+  # ═══════════════════════════════════════════════════════════════════
+  # far1 needs its own start pose, and a start state that runs BEFORE the
+  # trial gate cannot know which trial is coming. Rather than contort the
+  # shared chain, far1 owns its poses outright and TrialGate routes into
+  # this chain via `entry: start_2` in the trials: block. The near chain
+  # above is byte-identical to what it was.
+  #
+  # Yes, this duplicates structure. Deliberate, for now: it keeps the two
+  # conditions independent so a change to one cannot silently alter the
+  # other. If a third condition appears, revisit.
+  #
+  #   TrialGate -> start_2 -> step_1_far1 -> step_2_far1 -> unload_far1
+  #             -> step_2_far1_return -> step_1_far1_return -> start_2_end
+  #             -> TrialGate
+  #
+  # Compliant legs: step_2_far1 and step_1_far1_return (the step_1<->step_2
+  # traverse, both directions), matching near.
+  start_2:
+    base: JointMove
+    stiffness: 2.0
+    v_max: 0.05
+    target: [-3.0683, -0.2699, 1.8801, -0.0026, 0.9525, 0.0948]
+    # goes here from wherever the arm is; skips if already within
+    skip_if_within: 0.05
+    duration: 15.0
+    threshold: 0.05
+    divergence_pause: 0.03
+    next: step_1_far1
+  step_1_far1:
+    base: JointMove
+    stiffness: 2.0
+    v_max: 0.05
+    target: [1.6522, -0.2699, 1.8801, -0.0026, 0.9525, 0.0948]
+    duration: 15.0
+    threshold: 0.05
+    divergence_pause: 0.03
+    next: step_2_far1
+  step_2_far1:
+    base: ComplianceCartesianMove
+    target:
+      translation: [0.1716, 0.6640, 0.2160]
+      rotation:    [2.3900, -0.1685, -1.6945]
+    waypoints: []
+    duration: 4.0
+    v_max_lin: 0.05
+    v_max_ang: 0.05
+    stiffness: 25.0
+    damping: 12.0
+    weight: 100.0
+    contact_force_threshold: 2.0
+    contact_moment_threshold: 2.0
+    contact_moment_speed_gain: 0.0
+    divergence_pause: 0.010
+    clear_hold_time: 0.3
+    settle_timeout: 8.0
+    next: unload_far1
+    gains:
+      mass:      {linear: [3, 3, 3],       angular: [2, 2, 2]}
+      stiffness: {linear: [100, 100, 100], angular: [10, 10, 10]}
+      damping:   {linear: [60, 60, 60],    angular: [15, 15, 15]}
+  unload_far1:
+    base: JointMove
+    stiffness: 2.0
+    v_max: 0.05
+    target: [1.8232, -0.9163, 1.3348, -0.0463, 0.1240, 1.4303]
+    # = step_2_far1 joints with joint_6 rolled +1.3246 rad (75.89 deg),
+    # the same roll near's unload_1 uses
+    duration: 15.0
+    threshold: 0.05
+    divergence_pause: 0.03
+    next: step_2_far1_return
+  step_2_far1_return:
+    base: JointMove
+    stiffness: 2.0
+    v_max: 0.05
+    target: [1.8232, -0.9163, 1.3348, -0.0463, 0.1240, 0.1057]
+    # = step_2_far1's joints
+    duration: 15.0
+    threshold: 0.05
+    divergence_pause: 0.03
+    next: step_1_far1_return
+  step_1_far1_return:
+    base: ComplianceCartesianMove
+    target:
+      translation: [0.0318, 0.3776, 0.3406]
+      rotation:    [3.1025, -0.0011, -1.5588]
+    waypoints: []
+    duration: 4.0
+    v_max_lin: 0.05
+    v_max_ang: 0.05
+    stiffness: 25.0
+    damping: 12.0
+    weight: 100.0
+    contact_force_threshold: 2.0
+    contact_moment_threshold: 2.0
+    contact_moment_speed_gain: 0.0
+    divergence_pause: 0.010
+    clear_hold_time: 0.3
+    settle_timeout: 8.0
+    next: start_2_end
+    gains:
+      mass:      {linear: [3, 3, 3],       angular: [2, 2, 2]}
+      stiffness: {linear: [100, 100, 100], angular: [10, 10, 10]}
+      damping:   {linear: [60, 60, 60],    angular: [15, 15, 15]}
+  start_2_end:
+    base: JointMove
+    stiffness: 2.0
+    v_max: 0.05
+    target: [-3.0683, -0.2699, 1.8801, -0.0026, 0.9525, 0.0948]
+    # same pose as start_2; separate state because mc_rtc keys
+    # transitions on (state, output) and this one returns to the gate
+    duration: 15.0
+    threshold: 0.05
+    divergence_pause: 0.03
+    next: TrialGate
+
+
+  # ═══════════════════════════════════════════════════════════════════
+  #  far2 CHAIN (2026-10-14) - third distance condition, same shape
+  # ═══════════════════════════════════════════════════════════════════
+  #   TrialGate -> start_3 -> step_1_far2 -> step_2_far2 -> unload_far2
+  #             -> step_2_far2_return -> step_1_far2_return -> start_3_end
+  #             -> TrialGate
+  #
+  # Start-pose reach across the three conditions: 0.194 / 0.379 / 0.548 m.
+  # step_2 reach: 0.676 / 0.686 / 0.696 m - the endpoints stay close
+  # together while the start and staging poses spread out. See the geometry
+  # note in the trials: block.
+  #
+  # NOTE step_1_far2 is kept EXACTLY as captured rather than snapped to
+  # start_3's joints the way step_1_far1 was. Its joints 2-5 differ from
+  # start_3 by 3.6-6.2 deg, which is worth 66 mm and 7.5 deg at the tool -
+  # a real pose (it sits 64 mm lower), not capture drift. far1's equivalent
+  # deltas were 0.0003 rad, where snapping cost nothing.
+  start_3:
+    base: JointMove
+    stiffness: 2.0
+    v_max: 0.05
+    target: [-3.0314, -0.5614, 1.4110, -0.1049, 0.9267, 0.2318]
+    # goes here from wherever the arm is; skips if already within
+    skip_if_within: 0.05
+    duration: 15.0
+    threshold: 0.05
+    divergence_pause: 0.03
+    next: step_1_far2
+  step_1_far2:
+    base: JointMove
+    stiffness: 2.0
+    v_max: 0.05
+    target: [1.6243, -0.6464, 1.4741, 0.0037, 0.8512, 0.2310]
+    # as captured - see the note above about NOT snapping this one
+    duration: 15.0
+    threshold: 0.05
+    divergence_pause: 0.03
+    next: step_2_far2
+  step_2_far2:
+    base: ComplianceCartesianMove
+    target:
+      translation: [0.2099, 0.6641, 0.2188]
+      rotation:    [2.4535, -0.2043, -1.5367]
+    waypoints: []
+    duration: 4.0
+    v_max_lin: 0.05
+    v_max_ang: 0.05
+    stiffness: 25.0
+    damping: 12.0
+    weight: 100.0
+    contact_force_threshold: 2.0
+    contact_moment_threshold: 2.0
+    contact_moment_speed_gain: 0.0
+    divergence_pause: 0.010
+    clear_hold_time: 0.3
+    settle_timeout: 8.0
+    next: unload_far2
+    gains:
+      mass:      {linear: [3, 3, 3],       angular: [2, 2, 2]}
+      stiffness: {linear: [100, 100, 100], angular: [10, 10, 10]}
+      damping:   {linear: [60, 60, 60],    angular: [15, 15, 15]}
+  unload_far2:
+    base: JointMove
+    stiffness: 2.0
+    v_max: 0.05
+    target: [1.8730, -0.9377, 1.2502, 0.0361, 0.2409, 1.5556]
+    # = step_2_far2 joints with joint_6 rolled +1.3246 rad (75.89 deg),
+    # the same roll near and far1 use
+    duration: 15.0
+    threshold: 0.05
+    divergence_pause: 0.03
+    next: step_2_far2_return
+  step_2_far2_return:
+    base: JointMove
+    stiffness: 2.0
+    v_max: 0.05
+    target: [1.8730, -0.9377, 1.2502, 0.0361, 0.2409, 0.2310]
+    # = step_2_far2's joints
+    duration: 15.0
+    threshold: 0.05
+    divergence_pause: 0.03
+    next: step_1_far2_return
+  step_1_far2_return:
+    base: ComplianceCartesianMove
+    target:
+      translation: [0.0309, 0.5424, 0.2828]
+      rotation:    [2.9721, -0.0118, -1.3901]
+    waypoints: []
+    duration: 4.0
+    v_max_lin: 0.05
+    v_max_ang: 0.05
+    stiffness: 25.0
+    damping: 12.0
+    weight: 100.0
+    contact_force_threshold: 2.0
+    contact_moment_threshold: 2.0
+    contact_moment_speed_gain: 0.0
+    divergence_pause: 0.010
+    clear_hold_time: 0.3
+    settle_timeout: 8.0
+    next: start_3_end
+    gains:
+      mass:      {linear: [3, 3, 3],       angular: [2, 2, 2]}
+      stiffness: {linear: [100, 100, 100], angular: [10, 10, 10]}
+      damping:   {linear: [60, 60, 60],    angular: [15, 15, 15]}
+  start_3_end:
+    base: JointMove
+    stiffness: 2.0
+    v_max: 0.05
+    target: [-3.0314, -0.5614, 1.4110, -0.1049, 0.9267, 0.2318]
+    # same pose as start_3; separate state because mc_rtc keys
+    # transitions on (state, output)
+    duration: 15.0
+    threshold: 0.05
+    divergence_pause: 0.03
+    next: TrialGate
+
+  # ── Trial gate ───────────────────────────────────────────────────────
+  # The arm parks at start_1 and waits here for a trial name on
+  # /trial_config before running a cycle. See the trials: block at the top.
+  TrialGate:
+    base: Idle
+    # Fallback only - every trial names an `entry:`, so this is unreachable
+    # in practice. Points at a start pose rather than mid-chain so that a
+    # profile missing its `entry:` still begins somewhere sane.
+    next: start_1
 
 transitions:
-  - [HoldCurrent,  HoldCurrent,  HoldCurrent,  Auto]
-  - [Unfold,       MoveHome,     MoveHome,     Auto]
-  - [MoveHome,     MoveToPick,   MoveToPick,   Auto]
-  - [MoveToPick,   Idle,         Idle,         Auto]
-  # -- full pick-and-place loop, disabled for now, see SAFETY SCOPE note above --
-  # - [MoveToPick,   CloseGripper, CloseGripper, Auto]
-  # - [CloseGripper, MoveToPlace,  MoveToPlace,  Auto]
-  # - [MoveToPlace,  OpenGripper,  OpenGripper,  Auto]
-  # - [OpenGripper,  ReturnHome,   ReturnHome,   Auto]
-  # - [ReturnHome,   Idle,         Idle,         Auto]
+  - [HoldCurrent,  HoldCurrent,  HoldCurrent,  Auto]   # standalone impedance hold, not in the cycle
+  # ── The cycle (rebuilt 2026-10-12) ───────────────────────────────────
+  #   start_1        go to the start pose from wherever the arm is
+  #                  (skips instantly if already within skip_if_within)
+  #   TrialGate      park and wait for a trial name on /trial_config
+  #   step_1         joint-space move out
+  #   step_2         COMPLIANT Cartesian traverse  [participant-facing]
+  #   unload_1       tip the container
+  #   step_2_return  back to step_2's pose   (JointMove)
+  #   step_1_return  back to step_1's pose   (JointMove)
+  #   -> start_1, park, wait for the next trial
+  #
+  # Only step_2 is compliant: it is the one leg a participant is near, and
+  # the only one whose endpoint/path the trial profiles reshape.
+  - [TrialGate,      start_1,        start_1,        Auto]   # released by /trial_config
+  - [start_1,        step_1,         step_1,         Auto]
+  - [step_1,         step_2,         step_2,         Auto]
+  - [step_2,         unload_1,       unload_1,       Auto]
+  - [unload_1,       step_2_return,  step_2_return,  Auto]
+  - [step_2_return,  step_1_return,  step_1_return,  Auto]
+  - [step_1_return,  start_1_end,    start_1_end,    Auto]
+  - [start_1_end,    TrialGate,      TrialGate,      Auto]
+  # ── far1 chain (entered from TrialGate via `entry: start_2`) ─────────
+  - [TrialGate,          start_2,            start_2,            Auto]
+  - [start_2,            step_1_far1,        step_1_far1,        Auto]
+  - [step_1_far1,        step_2_far1,        step_2_far1,        Auto]
+  - [step_2_far1,        unload_far1,        unload_far1,        Auto]
+  - [unload_far1,        step_2_far1_return, step_2_far1_return, Auto]
+  - [step_2_far1_return, step_1_far1_return, step_1_far1_return, Auto]
+  - [step_1_far1_return, start_2_end,        start_2_end,        Auto]
+  - [start_2_end,        TrialGate,          TrialGate,          Auto]
+  # ── far2 chain (entered from TrialGate via `entry: start_3`) ─────────
+  - [TrialGate,          start_3,            start_3,            Auto]
+  - [start_3,            step_1_far2,        step_1_far2,        Auto]
+  - [step_1_far2,        step_2_far2,        step_2_far2,        Auto]
+  - [step_2_far2,        unload_far2,        unload_far2,        Auto]
+  - [unload_far2,        step_2_far2_return, step_2_far2_return, Auto]
+  - [step_2_far2_return, step_1_far2_return, step_1_far2_return, Auto]
+  - [step_1_far2_return, start_3_end,        start_3_end,        Auto]
+  - [start_3_end,        TrialGate,          TrialGate,          Auto]
+
 constraints:
   - type: kinematics
   - type: dynamics
