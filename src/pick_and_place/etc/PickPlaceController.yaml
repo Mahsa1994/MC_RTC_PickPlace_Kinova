@@ -75,61 +75,63 @@ place_pose:
 # `targets:` until targetAt() is reworked to arc-length-parameterise the
 # whole polyline under a single quintic.
 trials:
-  # ── DISTANCE conditions, base speed (2026-10-14) ─────────────────────
-  # `near` is the geometry captured inline in the states:, so it needs no
-  # overrides at all. `far1` replaces every pose in the cycle.
+  # ── DISTANCE x SPEED, 9 cells ────────────────────────────────────────
+  # Publish one by name:
+  #     ros2 topic pub --once /trial_config std_msgs/msg/String "data: 'far1_fast'"
   #
-  # A profile applies as one unit, so speed is not crossed in yet - add
-  # near_slow / far1_fast etc. once the geometry is settled. slow/base/fast
-  # below still exist and run the `near` geometry at three speeds.
+  # The two factors are independent and compose cleanly:
+  #   entry:        which chain to run  -> start_1 / start_2 / start_3
+  #   speed_scale:  how fast to run it  -> 0.5 / 1.0 / 2.5
+  # Each chain drives to its OWN start pose first and returns there at the
+  # end, so conditions can be run in any order without a sequence effect.
   #
-  # HOW THE OVERRIDES MAP TO STATES. The state names are slots; the profile
-  # supplies the values. far1 has its own start pose, so `start_1` carries
-  # far1's start_2 - there is no second start state. The arm consequently
-  # parks wherever the last cycle's start pose was, which is intended.
+  # The bare names (near / far1 / far2 / slow / base / fast) are GONE - they
+  # each named only one factor, so a log line reading "trial 'far1'" left the
+  # speed implicit and "trial 'fast'" left the geometry implicit. Every name
+  # now states both, which makes the per-run log self-documenting. Ask if you
+  # want the shorthands back as aliases for the _base cells.
   #
-  #   state           far1 value
-  #   start_1         start_2
-  #   step_1          start_2 with joint_1 only  (pure base rotation)
-  #   step_2          Cartesian, 6 values (see below)
-  #   unload_1        far1 step_2 + 1.3246 rad on joint_6  (same roll as near)
-  #   step_2_return   far1 step_2 joints
-  #   step_1_return   Cartesian, 6 values
-  #
-  # SIX-VALUE TARGETS. `targets:` entries are [x, y, z, roll, pitch, yaw].
-  # Three values would move the endpoint but keep the state's captured
-  # rotation, which is right for sliding one endpoint along a line but wrong
-  # here: far1 is a different arm pose and its tool orientation differs from
-  # near's by 7.87 deg at step_2 and 4.38 deg at step_1. Inheriting near's
-  # would command a pose that was never captured.
-  #
-  # GEOMETRY NOTE, UNRESOLVED. The two conditions very nearly coincide at
-  # step_2 - 0.056 m apart, dy -0.002, reach 0.676 vs 0.686 m. They differ at
-  # start (0.185 m) and step_1 (0.142 m, dy +0.139), and far1's traverse is
-  # SHORTER (0.342 vs 0.462 m). Whether that is the intended manipulation
-  # depends on where the participant sits, which has not been established.
-  # Captured as given; revisit before collecting data.
-  near:
-    speed_scale: 1.0
-    entry: start_1
-    # no overrides - the states: block IS the near geometry
-  far1:
-    speed_scale: 1.0
-    entry: start_2        # routes TrialGate into the far1 chain
-  far2:
-    speed_scale: 1.0
-    entry: start_3        # routes TrialGate into the far2 chain
+  # ⚠ THE VELOCITY GATE MAKES COMPLIANCE SPEED-DEPENDENT. The bridge scales
+  # the estimated wrench down as the arm moves faster (qd_gate 0.05 -> 0.3
+  # rad/s), so the SAME push registers differently per speed: ~100% of it at
+  # slow, ~91% at base, ~48% at fast. A contact that pauses the arm in a slow
+  # trial may not in a fast one. That is a confound between the speed factor
+  # and the compliance behaviour - worth deciding how to handle before
+  # collecting data (widen qd_gate_high, or scale contact_force_threshold
+  # with speed the way stall_lag_enter now is).
 
-  # ── SPEED conditions (near geometry) ─────────────────────────────────
-  slow:
+  # ── near (entry start_1) ──
+  near_slow:
     speed_scale: 0.5
     entry: start_1
-  base:
+  near_base:
     speed_scale: 1.0
     entry: start_1
-  fast:
+  near_fast:
     speed_scale: 2.5
     entry: start_1
+
+  # ── far1 (entry start_2) ──
+  far1_slow:
+    speed_scale: 0.5
+    entry: start_2
+  far1_base:
+    speed_scale: 1.0
+    entry: start_2
+  far1_fast:
+    speed_scale: 2.5
+    entry: start_2
+
+  # ── far2 (entry start_3) ──
+  far2_slow:
+    speed_scale: 0.5
+    entry: start_3
+  far2_base:
+    speed_scale: 1.0
+    entry: start_3
+  far2_fast:
+    speed_scale: 2.5
+    entry: start_3
 
 # ═════════════════════════════════════════════════════════════════════════
 #  speed_scale - THE ONE KNOB TO CHANGE PER TRIAL CONDITION
