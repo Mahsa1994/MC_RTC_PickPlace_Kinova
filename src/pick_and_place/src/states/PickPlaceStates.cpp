@@ -1212,6 +1212,7 @@ struct JointMove : mc_control::fsm::State
   // divergence_pause_ (0.03) or the guard would latch continuously during
   // normal motion.
   double stall_lag_enter_     = -1.0;   // default 3 * divergence_pause_ = 0.09
+                                        // SCALED BY speed_scale at use - see run()
   double stall_clear_lag_     = -1.0;   // default divergence_pause_ / 2 = 0.015
   std::map<std::string, double> q_start_;
 
@@ -1587,7 +1588,22 @@ void start(mc_control::fsm::Controller & ctl) override
     // the threshold - still under the bridge's model_real_gate (0.05), past
     // which it stops publishing and needs a restart.
     const bool can_stall = divergence_pause_ > 0.0 && !ppc(ctl).dryRunValidation();
-    const bool arm_behind = lag > stall_lag_enter_;
+    // stall_lag_enter_ MUST scale with speed: the lag it is testing is the
+    // posture task's steady-state following error, which is proportional to
+    // the reference velocity and therefore to speed_scale. Measured live:
+    //     speed_scale 1.0 -> reference 0.05  rad/s -> lag 0.035-0.041
+    //     speed_scale 2.5 -> reference 0.125 rad/s -> lag 0.090-0.100
+    // a ratio of 2.25 against a speed ratio of 2.5. Pinned at the 1.0 value
+    // (0.09) the threshold sits BELOW normal operation at speed_scale 2.5,
+    // so the guard tripped every time the quintic reached peak velocity
+    // mid-leg and froze the clock for ~2 s each time - felt as the speed
+    // repeatedly dropping and recovering. Scaling keeps the margin at a
+    // constant ~2.2x at every speed.
+    // NOTE this is the ARM-vs-reference branch only; the model-runaway
+    // backstop below stays absolute, because the bridge's model_real_gate
+    // it protects against is itself absolute.
+    const double lag_enter = stall_lag_enter_ * ppc(ctl).speedScale();
+    const bool arm_behind = lag > lag_enter;
     const bool model_runaway = dev > 1.5 * divergence_pause_;
     if(!stalled_ && can_stall && (arm_behind || model_runaway))
     {
@@ -1617,7 +1633,7 @@ void start(mc_control::fsm::Controller & ctl) override
           "{:.2f}s and holding the reference there until the arm is back within {:.4f} rad of "
           "it. Will NOT advance to {} until it moves.",
           name(), arm_behind ? "arm behind" : "model runaway", lag, dev, devjoint,
-          stall_lag_enter_, 1.5 * divergence_pause_, t_elapsed_, effective_duration_,
+          lag_enter, 1.5 * divergence_pause_, t_elapsed_, effective_duration_,
           stall_clear_lag_, next_state_);
     }
 
