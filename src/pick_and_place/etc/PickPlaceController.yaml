@@ -115,6 +115,9 @@ trials:
   far1:
     speed_scale: 1.0
     entry: start_2        # routes TrialGate into the far1 chain
+  far2:
+    speed_scale: 1.0
+    entry: start_3        # routes TrialGate into the far2 chain
 
   # ── SPEED conditions (near geometry) ─────────────────────────────────
   slow:
@@ -687,6 +690,124 @@ states:
     divergence_pause: 0.03
     next: TrialGate
 
+
+  # ═══════════════════════════════════════════════════════════════════
+  #  far2 CHAIN (2026-10-14) - third distance condition, same shape
+  # ═══════════════════════════════════════════════════════════════════
+  #   TrialGate -> start_3 -> step_1_far2 -> step_2_far2 -> unload_far2
+  #             -> step_2_far2_return -> step_1_far2_return -> start_3_end
+  #             -> TrialGate
+  #
+  # Start-pose reach across the three conditions: 0.194 / 0.379 / 0.548 m.
+  # step_2 reach: 0.676 / 0.686 / 0.696 m - the endpoints stay close
+  # together while the start and staging poses spread out. See the geometry
+  # note in the trials: block.
+  #
+  # NOTE step_1_far2 is kept EXACTLY as captured rather than snapped to
+  # start_3's joints the way step_1_far1 was. Its joints 2-5 differ from
+  # start_3 by 3.6-6.2 deg, which is worth 66 mm and 7.5 deg at the tool -
+  # a real pose (it sits 64 mm lower), not capture drift. far1's equivalent
+  # deltas were 0.0003 rad, where snapping cost nothing.
+  start_3:
+    base: JointMove
+    stiffness: 2.0
+    v_max: 0.05
+    target: [-3.0314, -0.5614, 1.4110, -0.1049, 0.9267, 0.2318]
+    # goes here from wherever the arm is; skips if already within
+    skip_if_within: 0.05
+    duration: 15.0
+    threshold: 0.05
+    divergence_pause: 0.03
+    next: step_1_far2
+  step_1_far2:
+    base: JointMove
+    stiffness: 2.0
+    v_max: 0.05
+    target: [1.6243, -0.6464, 1.4741, 0.0037, 0.8512, 0.2310]
+    # as captured - see the note above about NOT snapping this one
+    duration: 15.0
+    threshold: 0.05
+    divergence_pause: 0.03
+    next: step_2_far2
+  step_2_far2:
+    base: ComplianceCartesianMove
+    target:
+      translation: [0.2099, 0.6641, 0.2188]
+      rotation:    [2.4535, -0.2043, -1.5367]
+    waypoints: []
+    duration: 4.0
+    v_max_lin: 0.05
+    v_max_ang: 0.05
+    stiffness: 25.0
+    damping: 12.0
+    weight: 100.0
+    contact_force_threshold: 2.0
+    contact_moment_threshold: 2.0
+    contact_moment_speed_gain: 0.0
+    divergence_pause: 0.010
+    clear_hold_time: 0.3
+    settle_timeout: 8.0
+    next: unload_far2
+    gains:
+      mass:      {linear: [3, 3, 3],       angular: [2, 2, 2]}
+      stiffness: {linear: [100, 100, 100], angular: [10, 10, 10]}
+      damping:   {linear: [60, 60, 60],    angular: [15, 15, 15]}
+  unload_far2:
+    base: JointMove
+    stiffness: 2.0
+    v_max: 0.05
+    target: [1.8730, -0.9377, 1.2502, 0.0361, 0.2409, 1.5556]
+    # = step_2_far2 joints with joint_6 rolled +1.3246 rad (75.89 deg),
+    # the same roll near and far1 use
+    duration: 15.0
+    threshold: 0.05
+    divergence_pause: 0.03
+    next: step_2_far2_return
+  step_2_far2_return:
+    base: JointMove
+    stiffness: 2.0
+    v_max: 0.05
+    target: [1.8730, -0.9377, 1.2502, 0.0361, 0.2409, 0.2310]
+    # = step_2_far2's joints
+    duration: 15.0
+    threshold: 0.05
+    divergence_pause: 0.03
+    next: step_1_far2_return
+  step_1_far2_return:
+    base: ComplianceCartesianMove
+    target:
+      translation: [0.0309, 0.5424, 0.2828]
+      rotation:    [2.9721, -0.0118, -1.3901]
+    waypoints: []
+    duration: 4.0
+    v_max_lin: 0.05
+    v_max_ang: 0.05
+    stiffness: 25.0
+    damping: 12.0
+    weight: 100.0
+    contact_force_threshold: 2.0
+    contact_moment_threshold: 2.0
+    contact_moment_speed_gain: 0.0
+    divergence_pause: 0.010
+    clear_hold_time: 0.3
+    settle_timeout: 8.0
+    next: start_3_end
+    gains:
+      mass:      {linear: [3, 3, 3],       angular: [2, 2, 2]}
+      stiffness: {linear: [100, 100, 100], angular: [10, 10, 10]}
+      damping:   {linear: [60, 60, 60],    angular: [15, 15, 15]}
+  start_3_end:
+    base: JointMove
+    stiffness: 2.0
+    v_max: 0.05
+    target: [-3.0314, -0.5614, 1.4110, -0.1049, 0.9267, 0.2318]
+    # same pose as start_3; separate state because mc_rtc keys
+    # transitions on (state, output)
+    duration: 15.0
+    threshold: 0.05
+    divergence_pause: 0.03
+    next: TrialGate
+
   # ── Trial gate ───────────────────────────────────────────────────────
   # The arm parks at start_1 and waits here for a trial name on
   # /trial_config before running a cycle. See the trials: block at the top.
@@ -725,6 +846,15 @@ transitions:
   - [step_2_far1_return, step_1_far1_return, step_1_far1_return, Auto]
   - [step_1_far1_return, start_2_end,        start_2_end,        Auto]
   - [start_2_end,        TrialGate,          TrialGate,          Auto]
+  # ── far2 chain (entered from TrialGate via `entry: start_3`) ─────────
+  - [TrialGate,          start_3,            start_3,            Auto]
+  - [start_3,            step_1_far2,        step_1_far2,        Auto]
+  - [step_1_far2,        step_2_far2,        step_2_far2,        Auto]
+  - [step_2_far2,        unload_far2,        unload_far2,        Auto]
+  - [unload_far2,        step_2_far2_return, step_2_far2_return, Auto]
+  - [step_2_far2_return, step_1_far2_return, step_1_far2_return, Auto]
+  - [step_1_far2_return, start_3_end,        start_3_end,        Auto]
+  - [start_3_end,        TrialGate,          TrialGate,          Auto]
 
 constraints:
   - type: kinematics
