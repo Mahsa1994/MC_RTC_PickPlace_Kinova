@@ -78,9 +78,18 @@ public:
     // mid-path. That turns a distance manipulation into a distance +
     // smoothness manipulation, which is a confound. Moving the endpoint
     // keeps the leg single-segment and continuous.
-    // Rotation is deliberately NOT overridden - the captured orientation was
-    // physically validated and the same one remains valid nearby.
     std::map<std::string, Eigen::Vector3d> translations;
+    // state name -> replacement endpoint ROTATION [roll, pitch, yaw], same
+    // convention as poseFromConfig(). Added 2026-10-14: translation-only was
+    // fine while a condition just slid the same endpoint along a line, but
+    // far1 is a genuinely different arm pose whose tool orientation differs
+    // from near's by 7.87 deg at step_2 and 4.38 deg at step_1. Inheriting
+    // near's rotation there would command a pose that was never captured and
+    // never physically checked, and would put a systematic orientation
+    // difference between the conditions that nobody asked for.
+    // Optional: a profile may still give 3 values and keep the state's own
+    // rotation, which is what the pure-distance profiles do.
+    std::map<std::string, Eigen::Vector3d> rotations;
     // state name -> replacement joint target for a JointMove leg, so a
     // profile can keep a following joint-space state consistent with a moved
     // Cartesian endpoint (e.g. UnloadObj after HoverToPlace).
@@ -95,6 +104,16 @@ public:
     if(t == trials_.end()) return nullptr;
     auto w = t->second.waypoints.find(state);
     return w == t->second.waypoints.end() ? nullptr : &w->second;
+  }
+
+  /// Endpoint rotation override for `state` ([roll,pitch,yaw]), or nullptr if
+  /// this trial does not set one (the state then keeps its captured rotation).
+  const Eigen::Vector3d * rotationFor(const std::string & state) const
+  {
+    auto t = trials_.find(active_trial_);
+    if(t == trials_.end()) return nullptr;
+    auto w = t->second.rotations.find(state);
+    return w == t->second.rotations.end() ? nullptr : &w->second;
   }
 
   /// Endpoint translation override for `state`, or nullptr if this trial does

@@ -582,14 +582,39 @@ struct ComplianceCartesianMove : mc_control::fsm::State
     // YAML). Preferred over `waypoints` for a distance manipulation: a
     // via-point makes targetAt()'s per-segment quintic stop the arm dead at
     // that point, so bowing the path also changes motion smoothness. Moving
-    // the endpoint keeps the leg single-segment and continuous. Orientation
-    // is left as captured.
+    // the endpoint keeps the leg single-segment and continuous.
+    //
+    // Orientation: a 3-value `targets:` entry moves the position and keeps
+    // the captured rotation (right for a pure distance manipulation along a
+    // line). A 6-value entry replaces the rotation too, which a condition
+    // that is a genuinely different ARM POSE needs - far1's tool orientation
+    // differs from near's by 7.87 deg at step_2, and inheriting near's there
+    // would command a pose that was never captured.
     if(const Eigen::Vector3d * tr = ppc(ctl).translationFor(name()))
     {
       mc_rtc::log::info("[{}] trial '{}' moves endpoint {:.4f} m -> [{:+.4f}, {:+.4f}, {:+.4f}]",
                         name(), ppc(ctl).activeTrial(),
-                        (*tr - final_target.translation()).norm(), (*tr)(0), (*tr)(1), (*tr)(2));
-      final_target = sva::PTransformd(final_target.rotation(), *tr);
+                        (*tr - final_target.translation()).norm(),
+                        (*tr)(0), (*tr)(1), (*tr)(2));
+      Eigen::Matrix3d R = final_target.rotation();
+      if(const Eigen::Vector3d * rp = ppc(ctl).rotationFor(name()))
+      {
+        // Same composition as poseFromConfig(): E = Rz(yaw)Ry(pitch)Rx(roll)
+        const Eigen::Matrix3d R_new =
+          (Eigen::AngleAxisd((*rp)(2), Eigen::Vector3d::UnitZ()) *
+           Eigen::AngleAxisd((*rp)(1), Eigen::Vector3d::UnitY()) *
+           Eigen::AngleAxisd((*rp)(0), Eigen::Vector3d::UnitX())).toRotationMatrix();
+        mc_rtc::log::info("[{}]   and rotation by {:.2f} deg -> [{:+.4f}, {:+.4f}, {:+.4f}]",
+                          name(),
+                          Eigen::AngleAxisd(R_new * R.transpose()).angle() * 180.0 / M_PI,
+                          (*rp)(0), (*rp)(1), (*rp)(2));
+        R = R_new;
+      }
+      else
+      {
+        mc_rtc::log::info("[{}]   rotation kept as captured", name());
+      }
+      final_target = sva::PTransformd(R, *tr);
     }
     sva::PTransformd start_pose   = ctl.robot().frame(ee_frame_).position();
 

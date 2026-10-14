@@ -75,58 +75,61 @@ place_pose:
 # `targets:` until targetAt() is reworked to arc-length-parameterise the
 # whole polyline under a single quintic.
 trials:
-  # ── SPEED factor (works now - all three run the captured 'far' path) ──
-  # Same three levels as the previous design. speed_scale multiplies every
-  # v_max/v_max_lin/v_max_ang and divides every `duration`, so the whole
-  # cycle scales uniformly from one number.
-  #   slow 0.5 -> ~9 min 06 s per cycle
-  #   base 1.0 -> ~4 min 33 s
-  #   fast 2.5 -> ~1 min 49 s
-  # (The two unload legs dominate: joint_6 swings 87.6 deg at v_max 0.05.)
+  # ── DISTANCE conditions, base speed (2026-10-14) ─────────────────────
+  # `near` is the geometry captured inline in the states:, so it needs no
+  # overrides at all. `far1` replaces every pose in the cycle.
+  #
+  # A profile applies as one unit, so speed is not crossed in yet - add
+  # near_slow / far1_fast etc. once the geometry is settled. slow/base/fast
+  # below still exist and run the `near` geometry at three speeds.
+  #
+  # HOW THE OVERRIDES MAP TO STATES. The state names are slots; the profile
+  # supplies the values. far1 has its own start pose, so `start_1` carries
+  # far1's start_2 - there is no second start state. The arm consequently
+  # parks wherever the last cycle's start pose was, which is intended.
+  #
+  #   state           far1 value
+  #   start_1         start_2
+  #   step_1          start_2 with joint_1 only  (pure base rotation)
+  #   step_2          Cartesian, 6 values (see below)
+  #   unload_1        far1 step_2 + 1.3246 rad on joint_6  (same roll as near)
+  #   step_2_return   far1 step_2 joints
+  #   step_1_return   Cartesian, 6 values
+  #
+  # SIX-VALUE TARGETS. `targets:` entries are [x, y, z, roll, pitch, yaw].
+  # Three values would move the endpoint but keep the state's captured
+  # rotation, which is right for sliding one endpoint along a line but wrong
+  # here: far1 is a different arm pose and its tool orientation differs from
+  # near's by 7.87 deg at step_2 and 4.38 deg at step_1. Inheriting near's
+  # would command a pose that was never captured.
+  #
+  # GEOMETRY NOTE, UNRESOLVED. The two conditions very nearly coincide at
+  # step_2 - 0.056 m apart, dy -0.002, reach 0.676 vs 0.686 m. They differ at
+  # start (0.185 m) and step_1 (0.142 m, dy +0.139), and far1's traverse is
+  # SHORTER (0.342 vs 0.462 m). Whether that is the intended manipulation
+  # depends on where the participant sits, which has not been established.
+  # Captured as given; revisit before collecting data.
+  near:
+    speed_scale: 1.0
+    # no overrides - the states: block IS the near geometry
+  far1:
+    speed_scale: 1.0
+    joint_targets:
+      start_1:       [-3.0683, -0.2699, 1.8801, -0.0026, 0.9525, 0.0948]
+      step_1:        [ 1.6522, -0.2699, 1.8801, -0.0026, 0.9525, 0.0948]
+      unload_1:      [ 1.8232, -0.9163, 1.3348, -0.0463, 0.1240, 1.4303]
+      step_2_return: [ 1.8232, -0.9163, 1.3348, -0.0463, 0.1240, 0.1057]
+    targets:
+      step_2:        [0.1716, 0.6640, 0.2160,  2.3900, -0.1685, -1.6945]
+      step_1_return: [0.0318, 0.3776, 0.3406,  3.1025, -0.0011, -1.5588]
+
+  # ── SPEED conditions (near geometry) ─────────────────────────────────
   slow:
     speed_scale: 0.5
   base:
     speed_scale: 1.0
   fast:
-    # ⚠ 2.5 IS KNOWN TO JUDDER on start_1 (live, 2026-10-12). The commanded
-    # peak reaches ~0.166 rad/s, the arm tops out near 0.153, and the 7%
-    # shortfall accumulates into the 0.03 stall guard every ~70 ms, giving a
-    # visible brake-and-go. Lower this to ~1.5 for a usable fast condition,
-    # or raise the tracking ceiling first (see below) and re-test at 2.5.
-    #
-    # Raising the ceiling: the bridge clamps each command to within
-    # delta_max of the measured position (currently 0.004 rad in
-    # pick_place_real.launch.py), which caps real joint speed. Going to
-    # 0.006 should buy proportionally more headroom - but it is a SAFETY
-    # clamp on how far a command may lead the arm, so raise it one step at
-    # a time and watch model-vs-real, and keep it well under
-    # model_real_gate (0.05), past which the bridge stops publishing
-    # entirely and needs a restart.
     speed_scale: 2.5
-
-  # ── DISTANCE factor - NOT USABLE YET ─────────────────────────────────
-  # 'far' is the captured geometry, so it needs no override and is simply
-  # what every profile above already runs. 'near' and 'baseline' need their
-  # step_2 / step_1_return endpoints captured before they mean anything -
-  # until then they would be identical to 'far' and would silently produce
-  # three copies of the same condition.
-  #
-  # Once captured, cross them with speed to get the 9 cells, e.g.
-  #   slow_near:
-  #     speed_scale: 0.5
-  #     targets:
-  #       step_2:        [x, y, z]
-  #       step_1_return: [x, y, z]   # keep the inbound half symmetric
-  # BOTH compliant legs need the override, or the arm would go out on the
-  # near path and come back on the far one.
-  #
-  # ALSO PENDING: the step_1 <-> step_2 leg is currently LINEAR-limited
-  # (6.36 s vs 5.02 s angular at speed_scale 2.5), so moving the endpoint
-  # changes the leg's DURATION as well as its distance - distance would be
-  # confounded with time-spent-near-participant. Fix before collecting
-  # data: drop v_max_ang to ~0.03 on both compliant states so the angular
-  # term binds at every distance and duration stays constant, the property
-  # the previous design relied on.
 
 # ═════════════════════════════════════════════════════════════════════════
 #  speed_scale - THE ONE KNOB TO CHANGE PER TRIAL CONDITION

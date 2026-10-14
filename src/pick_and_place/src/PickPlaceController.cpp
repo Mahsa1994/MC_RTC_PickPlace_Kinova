@@ -102,8 +102,14 @@ try : mc_control::fsm::Controller(rm, dt, config)
         {
           std::vector<double> v = tg(st);
           if(v.size() >= 3) tp.translations[st] = Eigen::Vector3d(v[0], v[1], v[2]);
-          else mc_rtc::log::error("[PickPlaceController] trial '{}' target for '{}' needs 3 "
-                                  "values, got {} - ignored", name, st, v.size());
+          // 6 values = translation AND rotation [roll,pitch,yaw]; 3 = move the
+          // endpoint but keep the state's captured orientation.
+          if(v.size() >= 6) tp.rotations[st] = Eigen::Vector3d(v[3], v[4], v[5]);
+          if(v.size() != 3 && v.size() != 6)
+            mc_rtc::log::error("[PickPlaceController] trial '{}' target for '{}' needs 3 "
+                               "(x,y,z) or 6 (x,y,z,roll,pitch,yaw) values, got {} - "
+                               "{}", name, st, v.size(),
+                               v.size() >= 3 ? "extra values ignored" : "ignored");
         }
       }
       if(t.has("joint_targets"))    // JointMove target overrides
