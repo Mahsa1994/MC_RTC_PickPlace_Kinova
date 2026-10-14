@@ -454,10 +454,28 @@ states:
     stiffness: 25.0
     damping: 12.0
     weight: 100.0
-    contact_force_threshold: 8.0   # must stay above deadband_force on the bridge
+    # SENSITIVITY RAISED 2026-10-14. Previously 8.0 N / 0.03 rad, which made
+    # a deliberate shove necessary to trip the pause.
+    # Measured noise floors with the container removed (worst case over a
+    # full cycle, from the RAW wrench and model-vs-real log lines):
+    #     force           0.49 N      <- bridge deadband already blocks <1.0
+    #     moment          0.68 Nm     <- bridge deadband already blocks <1.5
+    #     model-vs-real   0.0016 rad
+    # The bridge's deadband is what rejects noise; anything reaching this
+    # state is already real signal, so an 8 N threshold on top of a 1 N
+    # deadband bought nothing but required force. 2.0 N keeps 4x margin over
+    # the worst noise and is 4x easier to trigger.
+    # contact_moment_threshold stays at 2.0: the 1.5 Nm deadband dominates
+    # it, so lowering it would have little effect without also lowering the
+    # deadband (which lives in the bridge and is shared with
+    # impedance_control).
+    contact_force_threshold: 2.0   # must stay above deadband_force (1.0) on the bridge
     contact_moment_threshold: 2.0
     contact_moment_speed_gain: 0.0
-    divergence_pause: 0.03
+    # 0.03 -> 0.010: purely kinematic, needs no wrench at all. Normal
+    # model-vs-real is 0.0016, so this keeps ~6x margin while needing
+    # only 0.57 deg of hold-back instead of 1.7 deg.
+    divergence_pause: 0.010
     clear_hold_time: 0.3
     settle_timeout: 8.0
     next: unload_1
@@ -518,10 +536,28 @@ states:
     stiffness: 25.0
     damping: 12.0
     weight: 100.0
-    contact_force_threshold: 8.0   # must stay above deadband_force on the bridge
+    # SENSITIVITY RAISED 2026-10-14. Previously 8.0 N / 0.03 rad, which made
+    # a deliberate shove necessary to trip the pause.
+    # Measured noise floors with the container removed (worst case over a
+    # full cycle, from the RAW wrench and model-vs-real log lines):
+    #     force           0.49 N      <- bridge deadband already blocks <1.0
+    #     moment          0.68 Nm     <- bridge deadband already blocks <1.5
+    #     model-vs-real   0.0016 rad
+    # The bridge's deadband is what rejects noise; anything reaching this
+    # state is already real signal, so an 8 N threshold on top of a 1 N
+    # deadband bought nothing but required force. 2.0 N keeps 4x margin over
+    # the worst noise and is 4x easier to trigger.
+    # contact_moment_threshold stays at 2.0: the 1.5 Nm deadband dominates
+    # it, so lowering it would have little effect without also lowering the
+    # deadband (which lives in the bridge and is shared with
+    # impedance_control).
+    contact_force_threshold: 2.0   # must stay above deadband_force (1.0) on the bridge
     contact_moment_threshold: 2.0
     contact_moment_speed_gain: 0.0
-    divergence_pause: 0.03
+    # 0.03 -> 0.010: purely kinematic, needs no wrench at all. Normal
+    # model-vs-real is 0.0016, so this keeps ~6x margin while needing
+    # only 0.57 deg of hold-back instead of 1.7 deg.
+    divergence_pause: 0.010
     clear_hold_time: 0.3
     settle_timeout: 8.0
     next: start_1
