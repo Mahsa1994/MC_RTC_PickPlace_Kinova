@@ -1201,10 +1201,18 @@ struct JointMove : mc_control::fsm::State
   bool   skipped_             = false;
   bool   stalled_             = false;
   double stall_time_          = 0.0;
-  // Exit threshold for the stall guard, measured as the REAL arm's distance
-  // from the frozen reference (see the note in run()). <= 0 means "derive
-  // from divergence_pause_" and is resolved in configure().
-  double stall_clear_lag_     = -1.0;
+  // Stall-guard thresholds on the REAL arm's distance from the reference
+  // (see the note in run()). <= 0 means "derive from divergence_pause_",
+  // resolved in configure().
+  //
+  // These must straddle the STEADY-STATE following error, which is not
+  // small: measured live at speed_scale 1.0 the arm sits 0.035-0.041 rad
+  // behind its reference while tracking perfectly well (100%+ by the
+  // bridge's own VEL diagnostic). Entry therefore cannot be anywhere near
+  // divergence_pause_ (0.03) or the guard would latch continuously during
+  // normal motion.
+  double stall_lag_enter_     = -1.0;   // default 3 * divergence_pause_ = 0.09
+  double stall_clear_lag_     = -1.0;   // default divergence_pause_ / 2 = 0.015
   std::map<std::string, double> q_start_;
 
   int tick_ = 0;
@@ -1218,11 +1226,15 @@ struct JointMove : mc_control::fsm::State
     if(config.has("v_max"))     v_max_     = config("v_max");
     if(config.has("skip_if_within")) skip_if_within_ = config("skip_if_within");
     if(config.has("divergence_pause")) divergence_pause_ = config("divergence_pause");
+    if(config.has("stall_lag_enter")) stall_lag_enter_ = config("stall_lag_enter");
     if(config.has("stall_clear_lag")) stall_clear_lag_ = config("stall_clear_lag");
-    // Default to a third of the entry threshold: wide enough that the arm
-    // reaches it in a fraction of a second, tight enough that the clock does
-    // not restart while a real gap remains. Hysteresis ratio 3:1.
-    if(stall_clear_lag_ <= 0.0) stall_clear_lag_ = divergence_pause_ / 3.0;
+    // Entry well above the ~0.04 steady-state following error so normal
+    // motion never trips it; exit below it, which is reachable only because
+    // the reference is frozen while latched and the arm can actually close
+    // the gap. A genuinely blocked joint crosses 0.09 within ~2 s at the
+    // 0.05 rad/s these legs run at.
+    if(stall_lag_enter_ <= 0.0) stall_lag_enter_ = 3.0 * divergence_pause_;
+    if(stall_clear_lag_ <= 0.0) stall_clear_lag_ = divergence_pause_ / 2.0;
     if(config.has("next"))      next_state_ = static_cast<std::string>(config("next"));
 
     // target: [v1, v2, ... v6]  (array form only — simplest and most common)
@@ -1549,8 +1561,35 @@ void start(mc_control::fsm::Controller & ctl) override
       }
     }
 
+    // LATCH CRITERION (reworked 2026-10-12, second pass).
+    //
+    // The guard means "the real arm is not following". That is `lag` - how
+    // far the ARM is from the reference - NOT `dev`, which is how far the
+    // MODEL is from the arm. Those differ whenever the model overshoots its
+    // own reference, which it routinely does for a tick or two around the
+    // +/-pi crossing, and gating on `dev` alone made every trip so far a
+    // false positive:
+    //     trip         dev       lag
+    //     run A      0.0301    0.0034
+    //     run B      0.0303    0.0074
+    //                0.0307    0.0015
+    //                0.0303    0.0031
+    //                0.0306    0.0078
+    //                0.0301    0.0121
+    // The arm was never more than 12 mrad behind - it was tracking at
+    // 100%+. Each false trip then resynced, which steps the model by ~0.03
+    // and is itself a disturbance: commanded velocity jumped 0.0255 ->
+    // 0.1590 rad/s, the model overshot the reference by 0.035, and the task
+    // dragged it back (err climbing 0.0478 -> 0.0576). Brake, lurch, drift -
+    // precisely the roughness reported near start_1.
+    //
+    // So: latch on `lag`. `dev` is kept only as a runaway backstop, at 1.5x
+    // the threshold - still under the bridge's model_real_gate (0.05), past
+    // which it stops publishing and needs a restart.
     const bool can_stall = divergence_pause_ > 0.0 && !ppc(ctl).dryRunValidation();
-    if(!stalled_ && can_stall && dev > divergence_pause_)
+    const bool arm_behind = lag > stall_lag_enter_;
+    const bool model_runaway = dev > 1.5 * divergence_pause_;
+    if(!stalled_ && can_stall && (arm_behind || model_runaway))
     {
       stalled_    = true;
       stall_time_ = 0.0;
@@ -1573,12 +1612,13 @@ void start(mc_control::fsm::Controller & ctl) override
       // (~0.03), comfortably under the bridge's model_real_gate of 0.05.
       resyncControlToReal(ctl);
       mc_rtc::log::error(
-          "[{}] STALLED - real arm not following: model-vs-real {:.4f} rad on '{}' "
-          "(limit {:.4f}). Freezing the trajectory clock at {:.2f}s of {:.2f}s and holding the "
-          "reference there until the arm is back within {:.4f} rad of it "
-          "(currently {:.4f} rad behind). Will NOT advance to {} until it moves.",
-          name(), dev, devjoint, divergence_pause_, t_elapsed_, effective_duration_,
-          stall_clear_lag_, lag, next_state_);
+          "[{}] STALLED ({}): arm is {:.4f} rad behind the reference, model-vs-real {:.4f} rad "
+          "on '{}' (thresholds {:.4f} / {:.4f}). Freezing the trajectory clock at {:.2f}s of "
+          "{:.2f}s and holding the reference there until the arm is back within {:.4f} rad of "
+          "it. Will NOT advance to {} until it moves.",
+          name(), arm_behind ? "arm behind" : "model runaway", lag, dev, devjoint,
+          stall_lag_enter_, 1.5 * divergence_pause_, t_elapsed_, effective_duration_,
+          stall_clear_lag_, next_state_);
     }
 
     if(stalled_)
