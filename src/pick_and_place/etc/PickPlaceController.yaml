@@ -335,15 +335,16 @@ states:
     base: JointMove
     stiffness: 2.0
     v_max: 0.05
-    # START POSE RE-CAPTURED 2026-10-12 ("start_1"). Taken from the init_q
-    # line of a dry run with the arm physically placed in the new start
-    # pose. Previous value was
-    #     [-0.0000, -0.3424, 0.9991, 0.0002, 0.0939, 0.0000]
-    # The big change is joint_1: 0.0 -> -2.9995 rad (-171.8 deg), i.e. the
-    # whole workspace has been moved round the base. joint_1 is continuous
-    # so this is inside limits, but see the warning below about the rest of
-    # the cycle still pointing at the OLD workspace.
-    target: [-2.9995, 0.0027, 2.4176, -0.0587, 0.6477, 0.1337]
+    # RE-CAPTURED 2026-10-14, container removed. Read directly off
+    # /joint_states with the driver up and the mc_rtc bridge down, so no
+    # dry-run and no risk of motion during capture. Previous value was
+    #     [-2.9995, 0.0027, 2.4176, -0.0587, 0.6477, 0.1337]
+    # joint_1 sits at -3.0312 rad (-173.7 deg), i.e. 6.3 deg from the
+    # -pi wrap boundary, so every leg in or out of this pose crosses it.
+    # That is handled (see angDiff and the reference wrapping in refAt()
+    # in PickPlaceStates.cpp) but it is why those fixes are load-bearing
+    # rather than defensive.
+    target: [-3.0312, 0.1537, 2.3490, -0.1051, 0.9400, 0.2321]
     # "if the robot is not at the safe pose, go there" - skips instantly when
     # it already is, rather than holding a no-op reference for the full
     # duration. Same bar as `threshold` below.
@@ -381,33 +382,38 @@ states:
     stiffness: 2.0
     v_max: 0.05
     # Captured 2026-10-12 from init_q with the arm placed by hand.
-    target: [1.6002, -0.0410, 2.3984, -0.0535, 0.5983, 0.1218]
+    # RE-CAPTURED 2026-10-14 off /joint_states, container removed.
+    target: [1.7412, 0.1194, 2.2088, -0.0599, 0.9549, 0.1942]
     duration: 15.0
     threshold: 0.05
     divergence_pause: 0.03
     next: step_2
 
-  # unload_1 - tip the container. JointMove: it is a wrist motion with no
-  # meaningful Cartesian path, same reasoning as the old UnloadObj.
+  # unload_1 - tip the container by rolling the wrist. JointMove: it is a
+  # single-joint motion with no meaningful Cartesian path.
   #
-  # Captured 2026-10-12. NOTE: three joints differ from step_2, not one -
-  #     joint_2  -0.8798 -> -0.8061  (+0.0737)
-  #     joint_5  +0.5983 -> +0.3999  (-0.1984, -11.4 deg)
-  #     joint_6  +0.1219 -> +1.6502  (+1.5283, +87.6 deg)
-  # joint_6 is the roll about the TOOL's own axis, so on its own it would
-  # spin the gripper 87.6 deg while leaving the tool at exactly the same
-  # point and the same 25.20 deg tilt. The joint_2/joint_5 contribution is
-  # what actually tips and lifts: as captured the tool rises 67.5 mm and the
-  # tilt goes 25.20 -> 40.73 deg. Keeping the capture verbatim, since lift +
-  # tilt is precisely what the earlier UnloadObj tuning found was needed to
-  # get the Legos out. To make it a pure roll instead, use
-  #     [1.6002, -0.8798, 1.2252, -0.0535, 0.5983, 1.6502]
-  # i.e. step_2's joints with joint_6 replaced.
+  # RE-CAPTURED 2026-10-14, container removed. Against step_2 the capture
+  # differed on joint_6 by +1.3246 rad and on everything else by <= 0.0005
+  # rad, i.e. encoder noise - so joints 1-5 are taken from step_2 VERBATIM
+  # and only joint_6 is new. That keeps step_2 -> unload_1 -> step_2_return
+  # exactly reversible with no drift accumulating round the cycle.
+  #
+  # Geometry: a pure roll about the tool's own axis. The tool frame does
+  # not translate at all (0.00 mm) and its z-axis tilt stays at 46.11 deg
+  # from straight-down; only the roll changes, by 75.89 deg. Whether that
+  # empties the container depends on how it sits in the gripper, which the
+  # kinematics cannot predict - with the container refitted, if the Legos
+  # do not come out, increase joint_6 further (the joint is continuous, so
+  # there is no limit to work against).
+  #
+  # Leg duration at v_max 0.05: slow 99.3 s, base 49.7 s, fast 19.9 s.
+  # This is the longest leg in the cycle after start_1 <-> step_1; raise
+  # this state's v_max if the unload dwell is tedious during trials.
   unload_1:
     base: JointMove
     stiffness: 2.0
     v_max: 0.05
-    target: [1.6002, -0.8061, 1.2255, -0.0535, 0.3999, 1.6502]
+    target: [1.7412, -0.8973, 1.4013, -0.0604, 0.0383, 1.5069]  # = step_2 + joint_6 roll
     duration: 15.0
     threshold: 0.05
     divergence_pause: 0.03
@@ -418,7 +424,7 @@ states:
   # (near/far) and the only one that yields when a participant pushes it.
   #
   # Cartesian target derived from the captured joint pose
-  #     [1.6002, -0.8798, 1.2252, -0.0535, 0.5983, 0.1219]
+  #     [1.7412, -0.8973, 1.4013, -0.0604, 0.0383, 0.1823]
   # by forward kinematics off src/kinova_6dof.urdf. The FK was validated
   # against the four (joints -> real tool_frame) pairs already recorded in
   # snapshots/ - translation agreed to 0.03-0.08 mm on all four, and the
@@ -426,12 +432,21 @@ states:
   # by comparing Euler triples (which is branch-ambiguous past |pitch|>pi/2
   # and has bitten this file before). Reconstruction residual here was
   # 6e-16, i.e. exact.
-  # Traverse length step_1 -> step_2 is 0.4237 m.
+  # GEOMETRY (re-measured 2026-10-14): translation 0.4619 m, rotation
+  # 0.7081 rad (40.6 deg). The ANGULAR term binds at every speed_scale
+  # (26.6 s vs 17.3 s at 1.0, a 54% margin), which is the property the
+  # near/far design needs: moving the endpoint changes the distance but
+  # NOT the orientation delta, so the leg's duration stays constant across
+  # distance conditions and distance does not get confounded with
+  # time-spent-near-participant. The previous geometry was linear-limited
+  # by only 21% and did confound them.
+  # joint_1 is identical at step_1 and step_2 (1.7412), so this leg
+  # involves no base rotation and never crosses the +/-pi branch cut.
   step_2:
     base: ComplianceCartesianMove
     target:
-      translation: [0.0156, 0.6575, 0.2345]
-      rotation:    [2.7021, 0.0176, -1.5198]
+      translation: [0.1156, 0.6659, 0.2153]
+      rotation:    [2.3439, -0.1202, -1.5675]
     waypoints: []   # EXPERIMENT KNOB - proximity to participant
     duration: 4.0   # MINIMUM only
     v_max_lin: 0.05 # EXPERIMENT KNOB - m/s
@@ -470,7 +485,7 @@ states:
     base: JointMove
     stiffness: 2.0
     v_max: 0.05
-    target: [1.6002, -0.8798, 1.2252, -0.0535, 0.5983, 0.1219]  # = step_2
+    target: [1.7412, -0.8973, 1.4013, -0.0604, 0.0383, 0.1823]  # = step_2
     duration: 15.0
     threshold: 0.05
     divergence_pause: 0.03
@@ -487,13 +502,15 @@ states:
   # pins the configuration exactly, so that does not accumulate.
   #
   # Cartesian pose from FK on the captured step_1 joints
-  #     [1.6002, -0.0410, 2.3984, -0.0535, 0.5983, 0.1218]
-  # (same validated FK as step_2 - reconstruction residual 5e-16).
+  #     [1.7412, 0.1194, 2.2088, -0.0599, 0.9549, 0.1942]
+  # FK re-validated 2026-10-14 against the four (joints -> real tool_frame)
+  # pairs in snapshots/: worst translation error 0.081 mm. Reconstruction
+  # residual here 4e-16.
   step_1_return:
     base: ComplianceCartesianMove
     target:
-      translation: [0.0033, 0.2373, 0.2880]
-      rotation:    [3.0363, 0.0271, -1.5224]
+      translation: [0.0341, 0.2382, 0.3696]
+      rotation:    [3.0366, 0.0316, -1.5809]
     waypoints: []   # keep [] - see the via-point stop warning in trials:
     duration: 4.0   # MINIMUM only
     v_max_lin: 0.05
