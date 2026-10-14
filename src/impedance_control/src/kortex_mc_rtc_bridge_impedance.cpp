@@ -646,8 +646,29 @@ private:
           sane = false;
         }
 
-        // --- Per-cycle clamp around measured position ---
-        q_cmd = std::clamp(q_cmd, enc_q[k] - delta_max_, enc_q[k] + delta_max_);
+        // --- Per-cycle clamp around measured position (wrap-aware) ---
+        // q_cmd comes from the MODEL, which integrates freely and for a
+        // continuous joint routinely sits outside [-pi, pi]. enc_q is the
+        // DRIVER's value, always wrapped into [-pi, pi]. A raw clamp
+        // therefore compares two different branches the moment the joint
+        // crosses the cut: the difference reads ~2*pi, the clamp saturates
+        // on whichever bound that lands past, and from then on the bridge
+        // commands maximum allowed lead every tick instead of tracking the
+        // model - until something re-wraps the model.
+        //
+        // Seen live 2026-10-14 on start_1 -> step_1 at speed_scale 2.5:
+        // model-vs-real went 0.0016 -> 0.0160 -> 0.0450 as joint_1 crossed
+        // -pi, tripping the model-runaway backstop (0.0450) within 10% of
+        // the bridge's own gate (0.05). It recovered only because the stall
+        // guard's resync re-wrapped the model, 0.23 s later - felt as a
+        // speed hitch at the crossing.
+        //
+        // Taking the shortest signed difference and rebuilding the command
+        // around enc_q also publishes in the ENCODER's branch, so the JTC
+        // never sees a 2*pi step in its command stream.
+        const double lead = std::clamp(angDiffBridge(q_cmd, enc_q[k]),
+                                       -delta_max_, delta_max_);
+        q_cmd = enc_q[k] + lead;
 
         pt.positions.push_back(q_cmd);
         pt.velocities.push_back(qd_cmd);
