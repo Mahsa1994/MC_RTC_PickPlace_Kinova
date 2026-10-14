@@ -111,6 +111,7 @@ trials:
   # Captured as given; revisit before collecting data.
   near:
     speed_scale: 1.0
+    entry: start_1
     # no overrides - the states: block IS the near geometry
   far1:
     speed_scale: 1.0
@@ -122,10 +123,13 @@ trials:
   # ── SPEED conditions (near geometry) ─────────────────────────────────
   slow:
     speed_scale: 0.5
+    entry: start_1
   base:
     speed_scale: 1.0
+    entry: start_1
   fast:
     speed_scale: 2.5
+    entry: start_1
 
 # ═════════════════════════════════════════════════════════════════════════
 #  speed_scale - THE ONE KNOB TO CHANGE PER TRIAL CONDITION
@@ -257,7 +261,12 @@ IdleKeepState: true
 # the cycle actually uses, which made it a poor reference for the startup
 # wrench tare. Entering at MoveToSafe keeps the arm inside its working range
 # throughout.
-init: start_1
+# Park at the gate on launch and move nothing until a trial is published.
+# Each trial's chain BEGINS with its own start pose (start_1 / start_2 /
+# start_3), so there is no longer a single "the" start pose to init to -
+# picking one would silently make it the default condition. Nothing moves
+# until you publish, which is also the safer startup.
+init: TrialGate
 states:
 
   # Push/release sanity check: capture the arm's current pose as the
@@ -356,9 +365,9 @@ states:
     # bridge's model_real_gate into an unrecoverable deadlock. See the
     # note on divergence_pause_ in PickPlaceStates.cpp (JointMove).
     divergence_pause: 0.03
-    # GATE MOVED HERE 2026-09-30: the arm parks at the safe pose and waits for
-    # a trial, instead of running one cycle unprompted on launch.
-    next: TrialGate
+    # First leg of the near chain, same shape as start_2/start_3 in the far
+    # chains: the trial drives to its OWN start pose before anything else.
+    next: step_1
 
   # ── NEW CYCLE, under construction 2026-10-12 ─────────────────────────
   # Target shape (poses captured live, one per dry run):
@@ -559,7 +568,7 @@ states:
     divergence_pause: 0.010
     clear_hold_time: 0.3
     settle_timeout: 8.0
-    next: start_1
+    next: start_1_end
     gains:
       mass:
         linear:  [3, 3, 3]
@@ -571,6 +580,19 @@ states:
         linear:  [60, 60, 60]
         angular: [15, 15, 15]
 
+
+  # start_1_end - near's return-to-start. Separate state from start_1 for the
+  # same reason start_2_end/start_3_end are: mc_rtc keys transitions on
+  # (state, output), so a state cannot both begin and end a chain.
+  start_1_end:
+    base: JointMove
+    stiffness: 2.0
+    v_max: 0.05
+    target: [-3.0312, 0.1537, 2.3490, -0.1051, 0.9400, 0.2321]   # = start_1
+    duration: 15.0
+    threshold: 0.05
+    divergence_pause: 0.03
+    next: TrialGate
 
   # ═══════════════════════════════════════════════════════════════════
   #  far1 CHAIN (2026-10-14) - a SEPARATE set of states, not overrides
@@ -813,7 +835,10 @@ states:
   # /trial_config before running a cycle. See the trials: block at the top.
   TrialGate:
     base: Idle
-    next: step_1
+    # Fallback only - every trial names an `entry:`, so this is unreachable
+    # in practice. Points at a start pose rather than mid-chain so that a
+    # profile missing its `entry:` still begins somewhere sane.
+    next: start_1
 
 transitions:
   - [HoldCurrent,  HoldCurrent,  HoldCurrent,  Auto]   # standalone impedance hold, not in the cycle
@@ -830,13 +855,14 @@ transitions:
   #
   # Only step_2 is compliant: it is the one leg a participant is near, and
   # the only one whose endpoint/path the trial profiles reshape.
-  - [start_1,        TrialGate,      TrialGate,      Auto]
-  - [TrialGate,      step_1,         step_1,         Auto]   # released by /trial_config
+  - [TrialGate,      start_1,        start_1,        Auto]   # released by /trial_config
+  - [start_1,        step_1,         step_1,         Auto]
   - [step_1,         step_2,         step_2,         Auto]
   - [step_2,         unload_1,       unload_1,       Auto]
   - [unload_1,       step_2_return,  step_2_return,  Auto]
   - [step_2_return,  step_1_return,  step_1_return,  Auto]
-  - [step_1_return,  start_1,        start_1,        Auto]
+  - [step_1_return,  start_1_end,    start_1_end,    Auto]
+  - [start_1_end,    TrialGate,      TrialGate,      Auto]
   # ── far1 chain (entered from TrialGate via `entry: start_2`) ─────────
   - [TrialGate,          start_2,            start_2,            Auto]
   - [start_2,            step_1_far1,        step_1_far1,        Auto]
