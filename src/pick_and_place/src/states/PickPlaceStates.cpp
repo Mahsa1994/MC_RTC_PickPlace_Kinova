@@ -1358,6 +1358,29 @@ void start(mc_control::fsm::Controller & ctl) override
     for(const auto & j : ctl.robot().mb().joints())
       mc_rtc::log::info("[{}]   '{}' (dof={})", name(), j.name(), j.dof());
 
+    // ── Trial joint-target override ──────────────────────────────────
+    // Restore the YAML baseline first, then let the active trial replace
+    // it. Must happen HERE, in start(), not in configure(): the profile can
+    // change between trials, and the wrap below rewrites target_joints_ in
+    // place so a one-shot assignment would leak the previous trial's wrap
+    // into the next one.
+    //
+    // BUG 2026-10-14: this block existed but sat inside a COMMENTED-OUT
+    // duplicate of start() further up this file, so trial `joint_targets:`
+    // had never taken effect for any JointMove state. Caught when far1's
+    // start_1 drove to near's pose: the log showed
+    //     'joint_1' current=1.6528  target=3.2520
+    // i.e. near's start_1 (-3.0312 + 2*pi), with neither the override line
+    // nor the "Our target_joints_" line that this block prints.
+    if(!target_joints_yaml_.empty()) target_joints_ = target_joints_yaml_;
+    if(const std::vector<double> * jt = ppc(ctl).jointTargetFor(name()))
+    {
+      for(size_t i = 0; i < jt->size(); ++i)
+        target_joints_["joint_" + std::to_string(i + 1)] = {(*jt)[i]};
+      mc_rtc::log::info("[{}] trial '{}' overrides joint target", name(),
+                        ppc(ctl).activeTrial());
+    }
+
     // ── FIX: wrap each target angle to within π of the current q ─────
     // Prevents commanding a 360° detour when the bridge seeds joints in
     // a different wrap than the YAML value (e.g. +263° → −97°).
