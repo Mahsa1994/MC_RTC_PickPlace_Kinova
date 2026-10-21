@@ -483,23 +483,45 @@ states:
   # far1 and far2 land within 2 s of near. The cycle therefore comes back
   # to roughly its pre-carry-angle length.
   #
-  # MARGIN, and what to watch. Following error is proportional to
-  # commanded velocity, and commanded velocity here is v_max * speed_scale
-  # - so doubling v_max halves the margin on both of this state's guards,
-  # at every speed. The guards are:
-  #     lag   > 3 * divergence_pause * speed_scale  = 0.090 * scale
-  #     dev   > 1.5 * divergence_pause              = 0.045, NOT scaled
-  # Peak wrist velocity at the fast condition goes 0.125 -> 0.250 rad/s.
-  # Measured lag is about 0.75 * velocity, so fast now sits near 0.19
-  # against a 0.225 threshold - roughly 1.2x, down from 2.4x. slow and
-  # base keep 5x+ and are not a concern.
+  # MARGIN (corrected 2026-10-21, after the first run braked). What the
+  # guard calls "lag" is mostly the POSTURE TASK's own following error,
+  # not the arm: the reference is fed as a position target only (no
+  # velocity feedforward), so at stiffness 2.0 the model trails a moving
+  # reference by ~1.41 s * velocity, and the real arm then follows the
+  # model almost exactly (model-vs-real <= 0.005 in the log). Lag is
+  # therefore proportional to v_max * speed_scale, while the threshold
+  # 3 * divergence_pause * speed_scale scales with speed_scale only - so
+  # doubling v_max doubled the lag at EVERY speed against an unchanged
+  # threshold.
   #
-  # If a *_fast trial starts logging a stall latch or CLOCK PAUSED on an
-  # unload or step_2*_return leg, the fix is divergence_pause 0.03 -> 0.06
-  # on these same six states, which restores exactly today's margin. That
-  # is deliberately NOT bundled in here: v_max and the threshold pull on
-  # the same quantity, and changing both at once is what made the
-  # delta_max / divergence_pause pass unreadable on 2026-10-19.
+  # Simulated (q'' = K(r-q) - D q', K 2.0, D 2 sqrt K) and checked against
+  # the far1_fast log: stall length 2.73 s vs 2.77 logged, post-resume lag
+  # within 0.002 rad at every logged point, re-stall at 8.34 s vs 8.31.
+  # Peak lag on these legs at v_max 0.10, against the threshold:
+  #             peak lag   old 0.09*scale   stalls   new 0.18*scale  stalls
+  #     slow     0.071        0.045         40-42       0.090          0
+  #     base     0.141        0.090         18-19       0.180          0
+  #     fast     0.349        0.225           7         0.450          0
+  # i.e. braking in every condition, worst at slow. 0.18 gives 1.28x,
+  # which is exactly the margin every other JointMove leg runs on at
+  # v_max 0.05 - not more.
+  #
+  # FIX: stall_lag_enter 0.18 (2x the 0.09 default) on these same six
+  # states, which restores the 1.28x margin exactly. Deliberately NOT done
+  # by raising divergence_pause instead: that also moves the model-runaway
+  # backstop (1.5 * divergence_pause = 0.045) to 0.09, ABOVE the bridge's
+  # model_real_gate (0.05) - the bridge would then stop publishing before
+  # the guard fired, which is the deadlock the guard exists to prevent.
+  # stall_lag_enter moves only the arm-behind trigger; the 0.045 backstop
+  # and the 0.015 release threshold are untouched.
+  #
+  # If these legs still brake, look at which branch the log names:
+  #     STALLED (arm behind)    -> this threshold; raising it further is
+  #                                safe, since a truly blocked wrist makes
+  #                                the model run ahead of the arm and the
+  #                                0.045 model-runaway backstop catches it
+  #     STALLED (model runaway) -> the 0.045 backstop, which cannot go up
+  #                                (bridge gate); bring v_max down instead
   unload_1:
     base: JointMove
     stiffness: 2.0
@@ -508,6 +530,7 @@ states:
     duration: 15.0
     threshold: 0.05
     divergence_pause: 0.03
+    stall_lag_enter: 0.18   # 2x the 0.09 default, tracks the 2x v_max - see the wrist-speed note above unload_1
     next: step_2_return   # defined once the new plan lands
 
   # step_2 - THE PARTICIPANT-FACING LEG. Cartesian + compliant on purpose:
@@ -598,6 +621,7 @@ states:
     duration: 15.0
     threshold: 0.05
     divergence_pause: 0.03
+    stall_lag_enter: 0.18   # 2x the 0.09 default, tracks the 2x v_max - see the wrist-speed note above unload_1
     next: step_1_return
 
   # step_1_return - the INBOUND half of the step_1 <-> step_2 traverse, so
@@ -749,6 +773,7 @@ states:
     duration: 15.0
     threshold: 0.05
     divergence_pause: 0.03
+    stall_lag_enter: 0.18   # 2x the 0.09 default, tracks the 2x v_max - see the wrist-speed note above unload_1
     next: step_2_far1_return
   step_2_far1_return:
     base: JointMove
@@ -759,6 +784,7 @@ states:
     duration: 15.0
     threshold: 0.05
     divergence_pause: 0.03
+    stall_lag_enter: 0.18   # 2x the 0.09 default, tracks the 2x v_max - see the wrist-speed note above unload_1
     next: step_1_far1_return
   step_1_far1_return:
     base: ComplianceCartesianMove
@@ -867,6 +893,7 @@ states:
     duration: 15.0
     threshold: 0.05
     divergence_pause: 0.03
+    stall_lag_enter: 0.18   # 2x the 0.09 default, tracks the 2x v_max - see the wrist-speed note above unload_1
     next: step_2_far2_return
   step_2_far2_return:
     base: JointMove
@@ -877,6 +904,7 @@ states:
     duration: 15.0
     threshold: 0.05
     divergence_pause: 0.03
+    stall_lag_enter: 0.18   # 2x the 0.09 default, tracks the 2x v_max - see the wrist-speed note above unload_1
     next: step_1_far2_return
   step_1_far2_return:
     base: ComplianceCartesianMove
