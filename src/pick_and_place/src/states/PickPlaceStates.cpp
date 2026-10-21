@@ -1217,6 +1217,19 @@ struct JointMove : mc_control::fsm::State
   // real-tracking ceiling (~0.2 rad/s @ delta_max=0.002, 100Hz publish);
   // override in YAML per-launch-config if delta_max changes.
   double v_max_      = 0.05;
+  // ADDED 2026-10-21: `use_speed_scale: false` makes this state ignore the
+  // trial's speed_scale and always run at its own v_max/duration. For legs
+  // whose speed is a throughput choice rather than part of the experimental
+  // manipulation - the unload wrist roll - and which at speed_scale 2.5
+  // would otherwise ask for more than the ~0.17 rad/s a joint can track
+  // through the bridge (delta_max 0.006 / ~34 ms response). Both uses of
+  // the scale below (duration and stall threshold) go through scale(), so
+  // they can never disagree. Default true: every other state is unchanged.
+  bool use_speed_scale_ = true;
+  double scale(mc_control::fsm::Controller & ctl) const
+  {
+    return use_speed_scale_ ? ppc(ctl).speedScale() : 1.0;
+  }
   // ADDED 2026-09-07: if every joint is already within this many rad of
   // `target` when the state starts, skip the move entirely and advance
   // immediately instead of holding a no-op reference for the full
@@ -1283,6 +1296,7 @@ struct JointMove : mc_control::fsm::State
     if(config.has("weight"))    weight_    = config("weight");
     if(config.has("threshold")) threshold_ = config("threshold");
     if(config.has("v_max"))     v_max_     = config("v_max");
+    if(config.has("use_speed_scale")) use_speed_scale_ = config("use_speed_scale");
     if(config.has("skip_if_within")) skip_if_within_ = config("skip_if_within");
     if(config.has("divergence_pause")) divergence_pause_ = config("divergence_pause");
     if(config.has("stall_lag_enter")) stall_lag_enter_ = config("stall_lag_enter");
@@ -1428,7 +1442,7 @@ void start(mc_control::fsm::Controller & ctl) override
     // so a leg pinned by it (MoveUpFromPick is, at 15s vs its 14s v_max term)
     // would otherwise ignore the scale entirely and the cycle would not
     // actually speed up. Clamped to [0.1, 3.0] by the controller.
-    const double sc_ = ppc(ctl).speedScale();
+    const double sc_ = scale(ctl);
     effective_duration_ = std::max(duration_ / sc_,
                                    1.875 * max_abs_delta / std::max(v_max_ * sc_, 1e-6));
 
@@ -1458,9 +1472,10 @@ void start(mc_control::fsm::Controller & ctl) override
     mc_rtc::log::info(
         "[{}] Joint-space move started - effective duration {:.2f}s (min {:.2f}s), "
         "v_max={:.4f} rad/s, max |delta|={:.4f} rad -> peak velocity {:.4f} rad/s "
-        "[speed_scale {:.2f}x; configured v_max {:.4f}, min {:.2f}s]",
+        "[speed_scale {:.2f}x{}; configured v_max {:.4f}, min {:.2f}s]",
         name(), effective_duration_, duration_ / sc_, v_max_ * sc_, max_abs_delta,
-        1.875 * max_abs_delta / effective_duration_, sc_, v_max_, duration_);
+        1.875 * max_abs_delta / effective_duration_, sc_,
+        use_speed_scale_ ? "" : " FIXED - trial speed ignored", v_max_, duration_);
 
     // CARTESIAN POSE SNAPSHOT (2026-08-26, safe under dry_run - reads
     // realRobot() only, no motion). JointMove has no Cartesian awareness of
@@ -1636,7 +1651,7 @@ void start(mc_control::fsm::Controller & ctl) override
     // NOTE this is the ARM-vs-reference branch only; the model-runaway
     // backstop below stays absolute, because the bridge's model_real_gate
     // it protects against is itself absolute.
-    const double lag_enter = stall_lag_enter_ * ppc(ctl).speedScale();
+    const double lag_enter = stall_lag_enter_ * scale(ctl);
     const bool arm_behind = lag > lag_enter;
     const bool model_runaway = dev > 1.5 * divergence_pause_;
     if(!stalled_ && can_stall && (arm_behind || model_runaway))

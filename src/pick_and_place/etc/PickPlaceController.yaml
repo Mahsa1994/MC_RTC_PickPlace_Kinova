@@ -368,13 +368,11 @@ states:
   # only because that is the branch FK returns, and +pi == -pi once
   # poseFromConfig builds the matrix.
   #
-  # CONSEQUENCE - THE UNLOAD LEG ROUGHLY DOUBLES. The roll is now taken
-  # against the new carry angle, so unload is a 165-172 deg roll instead
-  # of 75.9 deg: at v_max 0.05 / speed_scale 1.0 the leg goes 50 s -> 111
-  # s, and it is paid twice (out and back), so ~+2 min per cycle and the
-  # base cycle goes from about 4:25 to about 6:30. Raise v_max on the
-  # three unload states if that dwell is too long - it is a free knob,
-  # the leg is a single-joint move with no Cartesian path to respect.
+  # CONSEQUENCE - A LONGER UNLOAD ROLL. The roll is now taken against the
+  # new carry angle, so unload is a 165-172 deg roll instead of 75.9 deg.
+  # Its speed is handled separately: the six roll states run at a fixed
+  # 0.14 rad/s in every trial, ~40 s per roll - see the wrist-roll-speed
+  # note above unload_1.
   #
   # The compliant step_1 <-> step_2 legs are NOT affected: rolling both
   # ends about the tool axis is a similarity transform on the relative
@@ -467,70 +465,58 @@ states:
   # there is no limit to work against).
   #
   # ── WRIST ROLL SPEED (2026-10-21) ────────────────────────────────────
-  # v_max 0.05 -> 0.10 on the SIX states where joint_6 actually turns:
+  # The SIX states where joint_6 turns - the unload roll out and back:
   #     unload_1   unload_far1   unload_far2
   #     step_2_return   step_2_far1_return   step_2_far2_return
-  # Since the carry angle was unified, joint_6 is constant at -1.4534
-  # everywhere else in the cycle, so those six are the complete set. Each
-  # of them is a PURE joint_6 move - joints 1-5 are identical at step_2
-  # and unload - so raising the state's single v_max raises the wrist and
-  # nothing else, even though v_max is not per-joint.
+  # run at a FIXED 0.14 rad/s peak in every trial (`use_speed_scale:
+  # false`), so slow/base/fast all unload identically. Each is a pure
+  # joint_6 move (joints 1-5 equal at step_2 and unload), so this changes
+  # the wrist and nothing else. Every other leg is untouched: v_max 0.05,
+  # still scaled by the trial's speed_scale.
   #
-  # Leg duration, near (2.9603 rad roll):
-  #     slow 111 s    base 55.5 s    fast 22.2 s
-  #     (was 222 / 111 / 44 at v_max 0.05 with this roll; 99.3 / 49.7 /
-  #      19.9 at v_max 0.05 with the old 1.3246 roll)
-  # far1 and far2 land within 2 s of near. The cycle therefore comes back
-  # to roughly its pre-carry-angle length.
+  # Roll time, every trial: near 39.6 s, far1 38.6 s, far2 40.3 s.
+  # (Was 111 / 56 / 22 s at slow/base/fast with v_max 0.10 scaled - and
+  # the fast value never happened, see below.)
   #
-  # MARGIN (corrected 2026-10-21, after the first run braked). What the
-  # guard calls "lag" is mostly the POSTURE TASK's own following error,
-  # not the arm: the reference is fed as a position target only (no
-  # velocity feedforward), so at stiffness 2.0 the model trails a moving
-  # reference by ~1.41 s * velocity, and the real arm then follows the
-  # model almost exactly (model-vs-real <= 0.005 in the log). Lag is
-  # therefore proportional to v_max * speed_scale, while the threshold
-  # 3 * divergence_pause * speed_scale scales with speed_scale only - so
-  # doubling v_max doubled the lag at EVERY speed against an unchanged
-  # threshold.
+  # WHY FIXED, AND WHY 0.14. Two ceilings, both measured live:
+  #  1. The bridge. Each published command may lead the encoder by at
+  #     most delta_max (0.006 rad), and joint_6 trails its command by
+  #     ~34 ms, so no joint can sustain more than ~0.006/0.034 = 0.17 rad/s.
+  #     far1_fast at v_max 0.10 asked for 0.25: the real wrist saturated at
+  #     0.16-0.18 while the model kept going, model-vs-real climbed 0.0056
+  #     -> 0.0451, and the runaway backstop froze the leg - stop-go.
+  #     0.14 is the fastest speed that log shows tracking cleanly
+  #     (commanded 0.1416, real 0.1410, 100%), needing a 0.0048 lead -
+  #     1.26x under the clamp.
+  #  2. The stall guard. Its "lag" is mostly the posture task's own
+  #     following error (position target only, no velocity feedforward, so
+  #     ~1.41 s * velocity at stiffness 2.0). Simulated against the
+  #     far1_fast log - stall length 2.73 vs 2.77 s, post-resume lag within
+  #     0.002 rad at all seven logged points - peak lag at 0.14 rad/s is
+  #     0.197. stall_lag_enter 0.25 gives 0 stalls at 1.27x, the same
+  #     margin every other JointMove leg runs on (0.18 stalled 3x/roll).
+  #     With use_speed_scale false the threshold is NOT multiplied by the
+  #     trial scale - JointMove::scale() feeds both the duration and this
+  #     threshold, so they cannot disagree. The 0.045 model-runaway
+  #     backstop is unchanged and still sits under the bridge's 0.05 gate.
   #
-  # Simulated (q'' = K(r-q) - D q', K 2.0, D 2 sqrt K) and checked against
-  # the far1_fast log: stall length 2.73 s vs 2.77 logged, post-resume lag
-  # within 0.002 rad at every logged point, re-stall at 8.34 s vs 8.31.
-  # Peak lag on these legs at v_max 0.10, against the threshold:
-  #             peak lag   old 0.09*scale   stalls   new 0.18*scale  stalls
-  #     slow     0.071        0.045         40-42       0.090          0
-  #     base     0.141        0.090         18-19       0.180          0
-  #     fast     0.349        0.225           7         0.450          0
-  # i.e. braking in every condition, worst at slow. 0.18 gives 1.28x,
-  # which is exactly the margin every other JointMove leg runs on at
-  # v_max 0.05 - not more.
-  #
-  # FIX: stall_lag_enter 0.18 (2x the 0.09 default) on these same six
-  # states, which restores the 1.28x margin exactly. Deliberately NOT done
-  # by raising divergence_pause instead: that also moves the model-runaway
-  # backstop (1.5 * divergence_pause = 0.045) to 0.09, ABOVE the bridge's
-  # model_real_gate (0.05) - the bridge would then stop publishing before
-  # the guard fired, which is the deadlock the guard exists to prevent.
-  # stall_lag_enter moves only the arm-behind trigger; the 0.045 backstop
-  # and the 0.015 release threshold are untouched.
-  #
-  # If these legs still brake, look at which branch the log names:
-  #     STALLED (arm behind)    -> this threshold; raising it further is
-  #                                safe, since a truly blocked wrist makes
-  #                                the model run ahead of the arm and the
-  #                                0.045 model-runaway backstop catches it
-  #     STALLED (model runaway) -> the 0.045 backstop, which cannot go up
-  #                                (bridge gate); bring v_max down instead
+  # If these legs ever brake again, the log names the branch:
+  #     STALLED (arm behind)    -> stall_lag_enter; raising it is safe,
+  #                                the 0.045 backstop still catches a
+  #                                genuinely blocked wrist
+  #     STALLED (model runaway) -> the bridge ceiling; lower v_max (e.g.
+  #                                with the container loaded, if the wrist
+  #                                responds slower than 34 ms)
   unload_1:
     base: JointMove
     stiffness: 2.0
-    v_max: 0.10   # 0.05 -> 0.10 on 2026-10-21, see the wrist-speed note above unload_1
+    v_max: 0.14   # rad/s peak, FIXED in every trial - see the wrist-speed note above unload_1
+    use_speed_scale: false   # unload roll ignores slow/base/fast
     target: [1.7412, -0.8973, 1.4013, -0.0604, 0.0383, 1.5069]  # = step_2 + joint_6 roll
     duration: 15.0
     threshold: 0.05
     divergence_pause: 0.03
-    stall_lag_enter: 0.18   # 2x the 0.09 default, tracks the 2x v_max - see the wrist-speed note above unload_1
+    stall_lag_enter: 0.25   # sized for 0.14 rad/s at scale 1.0 - see the wrist-speed note above unload_1
     next: step_2_return   # defined once the new plan lands
 
   # step_2 - THE PARTICIPANT-FACING LEG. Cartesian + compliant on purpose:
@@ -616,12 +602,13 @@ states:
   step_2_return:
     base: JointMove
     stiffness: 2.0
-    v_max: 0.10   # 0.05 -> 0.10 on 2026-10-21, see the wrist-speed note above unload_1
+    v_max: 0.14   # rad/s peak, FIXED in every trial - see the wrist-speed note above unload_1
+    use_speed_scale: false   # unload roll ignores slow/base/fast
     target: [1.7412, -0.8973, 1.4013, -0.0604, 0.0383, -1.4534]  # = step_2
     duration: 15.0
     threshold: 0.05
     divergence_pause: 0.03
-    stall_lag_enter: 0.18   # 2x the 0.09 default, tracks the 2x v_max - see the wrist-speed note above unload_1
+    stall_lag_enter: 0.25   # sized for 0.14 rad/s at scale 1.0 - see the wrist-speed note above unload_1
     next: step_1_return
 
   # step_1_return - the INBOUND half of the step_1 <-> step_2 traverse, so
@@ -766,25 +753,27 @@ states:
   unload_far1:
     base: JointMove
     stiffness: 2.0
-    v_max: 0.10   # 0.05 -> 0.10 on 2026-10-21, see the wrist-speed note above unload_1
+    v_max: 0.14   # rad/s peak, FIXED in every trial - see the wrist-speed note above unload_1
+    use_speed_scale: false   # unload roll ignores slow/base/fast
     target: [1.8232, -0.9163, 1.3348, -0.0463, 0.1240, 1.4303]
     # joint_6 unchanged from the capture; reached from the -1.4534 carry
     # angle it is now a +2.8837 rad (165.2 deg) roll, as near's unload_1
     duration: 15.0
     threshold: 0.05
     divergence_pause: 0.03
-    stall_lag_enter: 0.18   # 2x the 0.09 default, tracks the 2x v_max - see the wrist-speed note above unload_1
+    stall_lag_enter: 0.25   # sized for 0.14 rad/s at scale 1.0 - see the wrist-speed note above unload_1
     next: step_2_far1_return
   step_2_far1_return:
     base: JointMove
     stiffness: 2.0
-    v_max: 0.10   # 0.05 -> 0.10 on 2026-10-21, see the wrist-speed note above unload_1
+    v_max: 0.14   # rad/s peak, FIXED in every trial - see the wrist-speed note above unload_1
+    use_speed_scale: false   # unload roll ignores slow/base/fast
     target: [1.8232, -0.9163, 1.3348, -0.0463, 0.1240, -1.4534]
     # = step_2_far1's joints
     duration: 15.0
     threshold: 0.05
     divergence_pause: 0.03
-    stall_lag_enter: 0.18   # 2x the 0.09 default, tracks the 2x v_max - see the wrist-speed note above unload_1
+    stall_lag_enter: 0.25   # sized for 0.14 rad/s at scale 1.0 - see the wrist-speed note above unload_1
     next: step_1_far1_return
   step_1_far1_return:
     base: ComplianceCartesianMove
@@ -886,25 +875,27 @@ states:
   unload_far2:
     base: JointMove
     stiffness: 2.0
-    v_max: 0.10   # 0.05 -> 0.10 on 2026-10-21, see the wrist-speed note above unload_1
+    v_max: 0.14   # rad/s peak, FIXED in every trial - see the wrist-speed note above unload_1
+    use_speed_scale: false   # unload roll ignores slow/base/fast
     target: [1.8730, -0.9377, 1.2502, 0.0361, 0.2409, 1.5556]
     # joint_6 unchanged from the capture; reached from the -1.4534 carry
     # angle it is now a +3.0090 rad (172.4 deg) roll, as near and far1
     duration: 15.0
     threshold: 0.05
     divergence_pause: 0.03
-    stall_lag_enter: 0.18   # 2x the 0.09 default, tracks the 2x v_max - see the wrist-speed note above unload_1
+    stall_lag_enter: 0.25   # sized for 0.14 rad/s at scale 1.0 - see the wrist-speed note above unload_1
     next: step_2_far2_return
   step_2_far2_return:
     base: JointMove
     stiffness: 2.0
-    v_max: 0.10   # 0.05 -> 0.10 on 2026-10-21, see the wrist-speed note above unload_1
+    v_max: 0.14   # rad/s peak, FIXED in every trial - see the wrist-speed note above unload_1
+    use_speed_scale: false   # unload roll ignores slow/base/fast
     target: [1.8730, -0.9377, 1.2502, 0.0361, 0.2409, -1.4534]
     # = step_2_far2's joints
     duration: 15.0
     threshold: 0.05
     divergence_pause: 0.03
-    stall_lag_enter: 0.18   # 2x the 0.09 default, tracks the 2x v_max - see the wrist-speed note above unload_1
+    stall_lag_enter: 0.25   # sized for 0.14 rad/s at scale 1.0 - see the wrist-speed note above unload_1
     next: step_1_far2_return
   step_1_far2_return:
     base: ComplianceCartesianMove
