@@ -341,28 +341,49 @@ states:
         angular: [15, 15, 15]
 
  
-  # ── START-POSE WRIST ANGLE (2026-10-21) ──────────────────────────────
-  # joint_6 in ALL THREE start poses (and their _end twins) is now
-  # -1.4534 rad, replacing the captured 0.2321 / 0.0948 / 0.2318. This is
-  # the orientation the gripper presents at the human-side start pose; it
-  # was set by hand on the arm and read off /joint_states during a far2
-  # run. The three captures had drifted apart by up to 7.8 deg, so they
-  # are unified on one value - the start presentation should be identical
-  # across conditions, since distance and speed are the only factors
-  # meant to vary.
+  # ── CARRY WRIST ANGLE (2026-10-21) ───────────────────────────────────
+  # joint_6 is now -1.4534 rad everywhere the arm CARRIES the container,
+  # replacing the per-pose captures (0.0948 ... 0.2321). It was set by
+  # hand on the arm and read off /joint_states during a far2 run. The
+  # captures had drifted apart by up to 7.8 deg; they are unified on one
+  # value so the presentation is identical across conditions, since
+  # distance and speed are the only factors meant to vary.
   #
-  # NOT changed: step_1*, step_2* and the unload* roll. unload stays at
-  # its captured absolute angle (step_2 joints + 1.3246 rad), so the tip
-  # geometry is untouched. The wrist therefore rolls ~1.685 rad on the
-  # start -> step_1 leg instead of on the way INTO start. That is nearly
-  # free: joint_1 already moves 1.51-1.63 rad (wrapped) on that leg and
-  # set the duration, so the new joint_6 delta lengthens it by +9.1%
-  # (near), +0.0% (far1, joint_1 still dominates) and +3.5% (far2),
-  # while the standalone 25 s wrist move at trial start disappears.
+  # Applied to, in all three chains:
+  #     start_*        start_*_end        (joint targets)
+  #     step_1*        step_2*_return     (joint targets)
+  #     step_2*        step_1*_return     (Cartesian - see below)
+  # NOT applied to unload_1 / unload_far1 / unload_far2: those keep their
+  # captured ABSOLUTE angles, so the tool orientation at the tip instant
+  # is bit-for-bit what it always was.
   #
-  # The _end states must carry the same value or the cycle does not
-  # close: the arm would park at the old angle and re-roll on every
-  # trial, which is the 25 s move this change removes.
+  # CARTESIAN STATES. step_2* and step_1*_return hold a tool pose, not
+  # joints, so the new angle goes in as the FK of the same joints with
+  # joint_6 = -1.4534. joint_6 is the last joint and tool_frame sits on
+  # its axis, so this is a pure roll: translation is unchanged to 0.0000
+  # mm and only the YAW term of the rotation moves. The old values were
+  # re-derived first and matched what was stored to 0.036-0.062 mm, which
+  # is what confirms the joint sets quoted in the comments below are the
+  # right ones. Yaw now lands near +/-pi; the sign differs between states
+  # only because that is the branch FK returns, and +pi == -pi once
+  # poseFromConfig builds the matrix.
+  #
+  # CONSEQUENCE - THE UNLOAD LEG ROUGHLY DOUBLES. The roll is now taken
+  # against the new carry angle, so unload is a 165-172 deg roll instead
+  # of 75.9 deg: at v_max 0.05 / speed_scale 1.0 the leg goes 50 s -> 111
+  # s, and it is paid twice (out and back), so ~+2 min per cycle and the
+  # base cycle goes from about 4:25 to about 6:30. Raise v_max on the
+  # three unload states if that dwell is too long - it is a free knob,
+  # the leg is a single-joint move with no Cartesian path to respect.
+  #
+  # The compliant step_1 <-> step_2 legs are NOT affected: rolling both
+  # ends about the tool axis is a similarity transform on the relative
+  # rotation, so their orientation delta moves by <= 0.003 rad (< 0.4%)
+  # and their duration is unchanged.
+  #
+  # The _end and _return states must carry the same value or the cycle
+  # does not close: the arm would park at the old angle and re-roll on
+  # every trial, which is the 25 s move this change removes.
 
   start_1:
     base: JointMove
@@ -416,7 +437,7 @@ states:
     v_max: 0.05
     # Captured 2026-10-12 from init_q with the arm placed by hand.
     # RE-CAPTURED 2026-10-14 off /joint_states, container removed.
-    target: [1.7412, 0.1194, 2.2088, -0.0599, 0.9549, 0.1942]
+    target: [1.7412, 0.1194, 2.2088, -0.0599, 0.9549, -1.4534]
     duration: 15.0
     threshold: 0.05
     divergence_pause: 0.03
@@ -431,6 +452,12 @@ states:
   # and only joint_6 is new. That keeps step_2 -> unload_1 -> step_2_return
   # exactly reversible with no drift accumulating round the cycle.
   #
+  # 2026-10-21: joint_6 here is UNCHANGED (still the captured absolute
+  # angle), but the carry angle it is reached from is now -1.4534, so the
+  # roll itself is +2.9603 rad (169.6 deg) rather than +1.3246 (75.89).
+  # The orientation at the tip instant is identical to before; only how
+  # far the wrist travels to get there has changed.
+  #
   # Geometry: a pure roll about the tool's own axis. The tool frame does
   # not translate at all (0.00 mm) and its z-axis tilt stays at 46.11 deg
   # from straight-down; only the roll changes, by 75.89 deg. Whether that
@@ -439,7 +466,8 @@ states:
   # do not come out, increase joint_6 further (the joint is continuous, so
   # there is no limit to work against).
   #
-  # Leg duration at v_max 0.05: slow 99.3 s, base 49.7 s, fast 19.9 s.
+  # Leg duration at v_max 0.05, with the 2026-10-21 carry angle:
+  # slow 222 s, base 111 s, fast 44 s (was 99.3 / 49.7 / 19.9).
   # This is the longest leg in the cycle after start_1 <-> step_1; raise
   # this state's v_max if the unload dwell is tedious during trials.
   unload_1:
@@ -457,7 +485,7 @@ states:
   # (near/far) and the only one that yields when a participant pushes it.
   #
   # Cartesian target derived from the captured joint pose
-  #     [1.7412, -0.8973, 1.4013, -0.0604, 0.0383, 0.1823]
+  #     [1.7412, -0.8973, 1.4013, -0.0604, 0.0383, -1.4534]   (j6 2026-10-21)
   # by forward kinematics off src/kinova_6dof.urdf. The FK was validated
   # against the four (joints -> real tool_frame) pairs already recorded in
   # snapshots/ - translation agreed to 0.03-0.08 mm on all four, and the
@@ -479,7 +507,7 @@ states:
     base: ComplianceCartesianMove
     target:
       translation: [0.1156, 0.6659, 0.2153]
-      rotation:    [2.3439, -0.1202, -1.5675]
+      rotation:    [2.3439, -0.1202, 3.0799]
     waypoints: []   # EXPERIMENT KNOB - proximity to participant
     duration: 4.0   # MINIMUM only
     v_max_lin: 0.05 # EXPERIMENT KNOB - m/s
@@ -536,7 +564,7 @@ states:
     base: JointMove
     stiffness: 2.0
     v_max: 0.05
-    target: [1.7412, -0.8973, 1.4013, -0.0604, 0.0383, 0.1823]  # = step_2
+    target: [1.7412, -0.8973, 1.4013, -0.0604, 0.0383, -1.4534]  # = step_2
     duration: 15.0
     threshold: 0.05
     divergence_pause: 0.03
@@ -553,7 +581,7 @@ states:
   # pins the configuration exactly, so that does not accumulate.
   #
   # Cartesian pose from FK on the captured step_1 joints
-  #     [1.7412, 0.1194, 2.2088, -0.0599, 0.9549, 0.1942]
+  #     [1.7412, 0.1194, 2.2088, -0.0599, 0.9549, -1.4534]   (j6 2026-10-21)
   # FK re-validated 2026-10-14 against the four (joints -> real tool_frame)
   # pairs in snapshots/: worst translation error 0.081 mm. Reconstruction
   # residual here 4e-16.
@@ -561,7 +589,7 @@ states:
     base: ComplianceCartesianMove
     target:
       translation: [0.0341, 0.2382, 0.3696]
-      rotation:    [3.0366, 0.0316, -1.5809]
+      rotation:    [3.0366, 0.0316, 3.0547]
     waypoints: []   # keep [] - see the via-point stop warning in trials:
     duration: 4.0   # MINIMUM only
     v_max_lin: 0.05
@@ -653,10 +681,7 @@ states:
     base: JointMove
     stiffness: 2.0
     v_max: 0.05
-    target: [1.6522, -0.2699, 1.8801, -0.0026, 0.9525, 0.0948]
-    # joint_6 deliberately NOT shifted with start_2 - see the start-pose
-    # wrist-angle note above start_1. The snap that made this pose a pure
-    # base rotation off start_2 now holds for joints 2-5 only.
+    target: [1.6522, -0.2699, 1.8801, -0.0026, 0.9525, -1.4534]
     duration: 15.0
     threshold: 0.05
     divergence_pause: 0.03
@@ -665,7 +690,7 @@ states:
     base: ComplianceCartesianMove
     target:
       translation: [0.1716, 0.6640, 0.2160]
-      rotation:    [2.3900, -0.1685, -1.6945]
+      rotation:    [2.3900, -0.1685, 3.0296]
     waypoints: []
     duration: 4.0
     v_max_lin: 0.05
@@ -689,8 +714,8 @@ states:
     stiffness: 2.0
     v_max: 0.05
     target: [1.8232, -0.9163, 1.3348, -0.0463, 0.1240, 1.4303]
-    # = step_2_far1 joints with joint_6 rolled +1.3246 rad (75.89 deg),
-    # the same roll near's unload_1 uses
+    # joint_6 unchanged from the capture; reached from the -1.4534 carry
+    # angle it is now a +2.8837 rad (165.2 deg) roll, as near's unload_1
     duration: 15.0
     threshold: 0.05
     divergence_pause: 0.03
@@ -699,7 +724,7 @@ states:
     base: JointMove
     stiffness: 2.0
     v_max: 0.05
-    target: [1.8232, -0.9163, 1.3348, -0.0463, 0.1240, 0.1057]
+    target: [1.8232, -0.9163, 1.3348, -0.0463, 0.1240, -1.4534]
     # = step_2_far1's joints
     duration: 15.0
     threshold: 0.05
@@ -709,7 +734,7 @@ states:
     base: ComplianceCartesianMove
     target:
       translation: [0.0318, 0.3776, 0.3406]
-      rotation:    [3.1025, -0.0011, -1.5588]
+      rotation:    [3.1025, -0.0011, -3.1070]
     waypoints: []
     duration: 4.0
     v_max_lin: 0.05
@@ -773,7 +798,7 @@ states:
     base: JointMove
     stiffness: 2.0
     v_max: 0.05
-    target: [1.6243, -0.6464, 1.4741, 0.0037, 0.8512, 0.2310]
+    target: [1.6243, -0.6464, 1.4741, 0.0037, 0.8512, -1.4534]
     # as captured - see the note above about NOT snapping this one
     duration: 15.0
     threshold: 0.05
@@ -783,7 +808,7 @@ states:
     base: ComplianceCartesianMove
     target:
       translation: [0.2099, 0.6641, 0.2188]
-      rotation:    [2.4535, -0.2043, -1.5367]
+      rotation:    [2.4535, -0.2043, 3.0621]
     waypoints: []
     duration: 4.0
     v_max_lin: 0.05
@@ -807,8 +832,8 @@ states:
     stiffness: 2.0
     v_max: 0.05
     target: [1.8730, -0.9377, 1.2502, 0.0361, 0.2409, 1.5556]
-    # = step_2_far2 joints with joint_6 rolled +1.3246 rad (75.89 deg),
-    # the same roll near and far1 use
+    # joint_6 unchanged from the capture; reached from the -1.4534 carry
+    # angle it is now a +3.0090 rad (172.4 deg) roll, as near and far1
     duration: 15.0
     threshold: 0.05
     divergence_pause: 0.03
@@ -817,7 +842,7 @@ states:
     base: JointMove
     stiffness: 2.0
     v_max: 0.05
-    target: [1.8730, -0.9377, 1.2502, 0.0361, 0.2409, 0.2310]
+    target: [1.8730, -0.9377, 1.2502, 0.0361, 0.2409, -1.4534]
     # = step_2_far2's joints
     duration: 15.0
     threshold: 0.05
@@ -827,7 +852,7 @@ states:
     base: ComplianceCartesianMove
     target:
       translation: [0.0309, 0.5424, 0.2828]
-      rotation:    [2.9721, -0.0118, -1.3901]
+      rotation:    [2.9721, -0.0118, -3.0745]
     waypoints: []
     duration: 4.0
     v_max_lin: 0.05
