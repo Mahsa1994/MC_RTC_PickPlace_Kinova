@@ -81,7 +81,12 @@ trials:
   #
   # The two factors are independent and compose cleanly:
   #   entry:        which chain to run  -> start_1 / start_2 / start_3
-  #   speed_scale:  how fast to run it  -> 0.5 / 1.0 / 2.5
+  #   speed_scale:  how fast to run it  -> 1.0 / 1.6 / 2.5
+  #                 (raised from 0.5 / 1.0 / 2.5 on 2026-10-21: slow 2x and
+  #                 base 1.6x faster. fast unchanged - 2.5 is already at the
+  #                 ~0.17 rad/s the arm can track through the bridge, so a
+  #                 higher fast needs bridge work, not a bigger number here.
+  #                 Each level is ~1.6x the one below.)
   # Each chain drives to its OWN start pose first and returns there at the
   # end, so conditions can be run in any order without a sequence effect.
   #
@@ -93,8 +98,9 @@ trials:
   #
   # ⚠ THE VELOCITY GATE MAKES COMPLIANCE SPEED-DEPENDENT. The bridge scales
   # the estimated wrench down as the arm moves faster (qd_gate 0.05 -> 0.3
-  # rad/s), so the SAME push registers differently per speed: ~100% of it at
-  # slow, ~91% at base, ~48% at fast. A contact that pauses the arm in a slow
+  # rad/s), so the SAME push registers differently per speed: ~91% of it at
+  # slow, ~74% at base, ~48% at fast (near's compliant leg at its peak, for
+  # the 1.0 / 1.6 / 2.5 scales). A contact that pauses the arm in a slow
   # trial may not in a fast one. That is a confound between the speed factor
   # and the compliance behaviour - worth deciding how to handle before
   # collecting data (widen qd_gate_high, or scale contact_force_threshold
@@ -102,10 +108,10 @@ trials:
 
   # ── near (entry start_1) ──
   near_slow:
-    speed_scale: 0.5
+    speed_scale: 1.0
     entry: start_1
   near_base:
-    speed_scale: 1.0
+    speed_scale: 1.6
     entry: start_1
   near_fast:
     speed_scale: 2.5
@@ -113,10 +119,10 @@ trials:
 
   # ── far1 (entry start_2) ──
   far1_slow:
-    speed_scale: 0.5
+    speed_scale: 1.0
     entry: start_2
   far1_base:
-    speed_scale: 1.0
+    speed_scale: 1.6
     entry: start_2
   far1_fast:
     speed_scale: 2.5
@@ -124,10 +130,10 @@ trials:
 
   # ── far2 (entry start_3) ──
   far2_slow:
-    speed_scale: 0.5
+    speed_scale: 1.0
     entry: start_3
   far2_base:
-    speed_scale: 1.0
+    speed_scale: 1.6
     entry: start_3
   far2_fast:
     speed_scale: 2.5
