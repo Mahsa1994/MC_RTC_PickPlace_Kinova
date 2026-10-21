@@ -240,6 +240,18 @@ private:
                         fs.name(), fs.parentBody());
     }
 
+    // Streaming-hold handshake (2026-10-21) for controller states that drive
+    // the JTC directly - pick_and_place's DirectJointMove. We publish our
+    // dry_run so such a state never moves the arm when we would not, and an
+    // acknowledgement it waits on before sending anything. Inert for any
+    // controller that never sets KortexBridge::HoldStreaming.
+    {
+      auto & ds = gc_->controller().datastore();
+      if (!ds.has("KortexBridge::DryRun")) ds.make<bool>("KortexBridge::DryRun", dry_run_);
+      else ds.get<bool>("KortexBridge::DryRun") = dry_run_;
+      if (!ds.has("KortexBridge::StreamingHeld")) ds.make<bool>("KortexBridge::StreamingHeld", false);
+    }
+
     // enable  mc_rtc controller execution
     gc_->running = true;
 
@@ -608,6 +620,26 @@ private:
 
     if (gc_->run() && comms_ok)
     {
+      // --- Streaming hold: a controller state is driving the JTC directly ---
+      // Each of our single-point messages would REPLACE its trajectory in the
+      // JTC, so publish nothing while it asks, and acknowledge through
+      // StreamingHeld so it only sends once we have actually stopped. Checked
+      // every tick, before decimation, so the acknowledgement is never late.
+      {
+        auto & ds = gc_->controller().datastore();
+        const bool hold = ds.has("KortexBridge::HoldStreaming") &&
+                          ds.get<bool>("KortexBridge::HoldStreaming");
+        if (ds.has("KortexBridge::StreamingHeld"))
+          ds.get<bool>("KortexBridge::StreamingHeld") = hold;
+        if (hold)
+        {
+          static int hold_log = 0;
+          if (hold_log++ % 2000 == 0)
+            mc_rtc::log::info("[KortexBridge] streaming held - a controller state is driving the JTC directly");
+          return;
+        }
+      }
+
       // --- Decimate: mc_rtc runs at 1 kHz, publish at ~100 Hz ---
       if (++pub_count_ % pub_decim_ != 0) return;
 

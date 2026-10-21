@@ -165,6 +165,12 @@ try : mc_control::fsm::Controller(rm, dt, config)
     gripper_action_client_ = rclcpp_action::create_client<control_msgs::action::ParallelGripperCommand>(
         nh_, "/robotiq_gripper_controller/gripper_cmd");
 
+    // DirectJointMove (2026-10-21): one complete trajectory straight to the
+    // JTC while the bridge holds its own streaming. Same topic and depth as
+    // the bridge's publisher - the two are never active at the same time.
+    traj_pub_ = nh_->create_publisher<trajectory_msgs::msg::JointTrajectory>(
+        "/joint_trajectory_controller/joint_trajectory", 1);
+
     // Trial selection on OUR OWN node - see the note in the header. mc_rtc's
     // node is never spun, so a subscription there is visible to `ros2 topic
     // info` but its callback never fires. This node is spun from run().

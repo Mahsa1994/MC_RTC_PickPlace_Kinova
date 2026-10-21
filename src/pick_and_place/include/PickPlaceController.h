@@ -20,6 +20,7 @@
 #include <control_msgs/action/parallel_gripper_command.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <std_msgs/msg/string.hpp>
+#include <trajectory_msgs/msg/joint_trajectory.hpp>
 //#include <control_msgs/action/gripper_command.hpp>
 #endif
 
@@ -314,6 +315,40 @@ public:
 #endif
   }
 
+  /// Send ONE complete, timed trajectory straight to the
+  /// joint_trajectory_controller - the way a conventional controller moves -
+  /// instead of streaming it through mc_rtc and the bridge. Used only by
+  /// DirectJointMove, which first has the bridge hold its own streaming.
+  /// `times` are seconds from receipt; each point carries position, velocity
+  /// and acceleration for joint_1..joint_6, in that order. Returns false, and
+  /// sends nothing, when ROS is unavailable.
+  bool sendJointTrajectory(const std::vector<double> & times,
+                           const std::vector<std::vector<double>> & q,
+                           const std::vector<std::vector<double>> & qd,
+                           const std::vector<std::vector<double>> & qdd)
+  {
+#ifdef MC_RTC_HAS_ROS_SUPPORT
+    if(!traj_pub_) return false;
+    trajectory_msgs::msg::JointTrajectory msg;   // header.stamp 0 = start on receipt
+    msg.joint_names = {"joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"};
+    msg.points.reserve(times.size());
+    for(size_t i = 0; i < times.size(); ++i)
+    {
+      trajectory_msgs::msg::JointTrajectoryPoint p;
+      p.positions       = q[i];
+      p.velocities      = qd[i];
+      p.accelerations   = qdd[i];
+      p.time_from_start = rclcpp::Duration::from_seconds(times[i]);
+      msg.points.push_back(p);
+    }
+    traj_pub_->publish(msg);
+    return true;
+#else
+    (void)times; (void)q; (void)qd; (void)qdd;
+    return false;
+#endif
+  }
+
 private:
   sva::PTransformd home_pose_;
   sva::PTransformd pick_pose_;
@@ -350,6 +385,9 @@ private:
   // This node is spun explicitly from run(), so its callbacks do fire.
   rclcpp::Node::SharedPtr trial_node_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr trial_sub_;
+  // DirectJointMove's path to the arm. On mc_rtc's node: publishing needs no
+  // spinning (see above), only subscriptions and action clients do.
+  rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr traj_pub_;
   int trial_spin_tick_ = 0;
 
 

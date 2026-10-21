@@ -13,6 +13,7 @@
   <depend>control_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
+  <depend>trajectory_msgs</depend>
 
   <!-- launch files run impedance_control's wrench-aware bridge
        (kortex_mc_rtc_bridge_impedance) instead of this package's own

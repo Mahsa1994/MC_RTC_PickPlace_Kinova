@@ -2001,6 +2001,405 @@ struct Idle : mc_control::fsm::State
 };
 
 // ════════════════════════════════════════════════════════════════════════════
+//  DirectJointMove — a joint move executed by the JTC, not streamed (2026-10-21)
+// ════════════════════════════════════════════════════════════════════════════
+// Every other motion state STREAMS: mc_rtc recomputes the reference each
+// tick and the bridge sends the joint_trajectory_controller one point every
+// 10 ms, never more than delta_max (0.006 rad) ahead of the MEASURED
+// position. The arm answers each command ~34 ms late, so that leash caps any
+// joint near 0.006 / 0.034 = 0.17 rad/s - on purpose: before it existed the
+// model ran away from the arm three times. Right for the compliant legs,
+// which must keep reacting; wrong for a large, pre-planned move nobody
+// interacts with, like the 170 deg unload wrist roll (~26 s even cruising).
+//
+// This state does what a conventional controller does: it plans the whole
+// move up front and sends it ONCE, as a single timed JointTrajectory with
+// position/velocity/acceleration on every point, and the JTC plays it back
+// at its own rate. The limit becomes the actuator (URDF: 1.22 rad/s for
+// joint_6), not the leash.
+//
+// Handshake with the bridge, through the controller datastore:
+//   KortexBridge::HoldStreaming  (set here)  the bridge publishes nothing while
+//                                            true - each of its single-point
+//                                            messages would REPLACE this
+//                                            trajectory in the JTC
+//   KortexBridge::StreamingHeld  (bridge)    acknowledgement; nothing is sent
+//                                            before it reads true
+//   KortexBridge::DryRun         (bridge)    its dry_run - this state never moves
+//                                            the arm when the bridge would not
+// If the bridge does not publish those keys (impedance_control not rebuilt)
+// the state REFUSES and holds: it never sends a trajectory the bridge would
+// fight. Under dry_run (bridge or dry_run_validation) it animates the model
+// along the same plan instead, so the chain still walks through in RViz.
+//
+// While the JTC drives, the model is glued to the encoders every tick, so
+// when streaming resumes the bridge's first command is the arm's own
+// position - no jump. That per-tick resync is safe HERE only because the
+// bridge is not publishing (in JointMove it capped the commanded lead and
+// deadlocked the arm). mc_rtc's stall guard is not running, so this state
+// has its own: if the real arm falls more than track_tolerance off the plan
+// - blocked, or the Kinova faulted - it stops the JTC where the arm is,
+// hands control back to the bridge, and holds without advancing.
+//
+// Speed is FIXED: speed_scale is ignored. The profile is a smooth
+// trapezoid - ramp over the first `accel_fraction` of the move, cruise at
+// v_max, ramp down over the last - with zero acceleration and jerk at both
+// ends (quintic smoothstep ramps).
+struct DirectJointMove : mc_control::fsm::State
+{
+  static constexpr const char * kHold   = "KortexBridge::HoldStreaming";
+  static constexpr const char * kHeld   = "KortexBridge::StreamingHeld";
+  static constexpr const char * kDryRun = "KortexBridge::DryRun";
+
+  // Config
+  std::vector<double> target_;          // joint_1..joint_6
+  double v_max_          = 0.5;   // rad/s, peak velocity of the joint that moves furthest
+  double accel_fraction_ = 0.25;  // share of the move spent ramping up (and again down)
+  double min_duration_   = 1.0;   // s
+  double threshold_      = 0.03;  // rad, REAL arm within this of target -> done
+  double track_tol_      = 0.15;  // rad, REAL arm this far off the plan -> abort
+  double settle_timeout_ = 5.0;   // s after the plan ends before complaining
+  double sample_dt_      = 0.05;  // s between points sent to the JTC
+  std::string next_state_;
+
+  // Runtime
+  enum class Phase { Refused, Simulating, WaitHold, Running, Settling, Aborted };
+  Phase phase_ = Phase::Refused;
+  std::vector<double> q0_, dq_;   // start, and signed shortest-path delta
+  double T_ = 0.0, t_ = 0.0, wait_ = 0.0, settle_ = 0.0, dt_ = 0.001;
+  double next_log_ = 0.0, next_complaint_ = 0.0;
+
+  void configure(const mc_rtc::Configuration & config) override
+  {
+    if(config.has("target"))
+    {
+      std::vector<double> v = config("target");
+      target_ = v;
+    }
+    if(config.has("v_max"))           v_max_          = config("v_max");
+    if(config.has("accel_fraction"))  accel_fraction_ = config("accel_fraction");
+    if(config.has("min_duration"))    min_duration_   = config("min_duration");
+    if(config.has("threshold"))       threshold_      = config("threshold");
+    if(config.has("track_tolerance")) track_tol_      = config("track_tolerance");
+    if(config.has("settle_timeout"))  settle_timeout_ = config("settle_timeout");
+    if(config.has("next"))            next_state_     = static_cast<std::string>(config("next"));
+    accel_fraction_ = std::clamp(accel_fraction_, 0.05, 0.5);
+    // Sanity bound, not a tuning value: 82% of the URDF limit for the small
+    // actuators (1.2218 rad/s, joints 4-6).
+    if(v_max_ > 1.0 || v_max_ <= 0.0)
+    {
+      mc_rtc::log::error("[DirectJointMove] v_max {:.3f} outside (0, 1.0] rad/s - clamped", v_max_);
+      v_max_ = std::clamp(v_max_, 0.01, 1.0);
+    }
+  }
+
+  // Smooth trapezoid on u in [0,1]: s, ds/du, d2s/du2. Same shape as
+  // JointMove's accel_fraction profile.
+  static void profile(double u, double b, double & s, double & ds, double & dds)
+  {
+    u = std::clamp(u, 0.0, 1.0);
+    auto I  = [](double x) { return x * x * x * x * (2.5 - 3.0 * x + x * x); };   // integral of S
+    auto S  = [](double x) { return x * x * x * (10.0 - 15.0 * x + 6.0 * x * x); }; // smoothstep
+    auto dS = [](double x) { return 30.0 * x * x * (1.0 - x) * (1.0 - x); };         // its slope
+    const double k = 1.0 / (1.0 - b);
+    if(u <= b)
+    {
+      const double x = u / b;
+      s = b * I(x) * k; ds = S(x) * k; dds = dS(x) * k / b;
+    }
+    else if(u <= 1.0 - b)
+    {
+      s = (0.5 * b + (u - b)) * k; ds = k; dds = 0.0;
+    }
+    else
+    {
+      const double y = (1.0 - u) / b;
+      s = 1.0 - b * I(y) * k; ds = S(y) * k; dds = -dS(y) * k / b;
+    }
+  }
+
+  static std::string jointName(size_t k) { return "joint_" + std::to_string(k + 1); }
+
+  std::vector<double> planAt(double t) const
+  {
+    double s, ds, dds;
+    profile(T_ > 1e-9 ? t / T_ : 1.0, accel_fraction_, s, ds, dds);
+    std::vector<double> q(6);
+    for(size_t k = 0; k < 6; ++k) q[k] = q0_[k] + dq_[k] * s;
+    return q;
+  }
+
+  // Max |a_k - b_k| over the six joints, wrap-aware.
+  double maxErr(const mc_rbdyn::Robot & robot, const std::vector<double> & ref) const
+  {
+    double e = 0.0;
+    for(size_t k = 0; k < 6; ++k)
+    {
+      const auto idx = robot.jointIndexByName(jointName(k));
+      e = std::max(e, std::abs(angDiff(robot.mbc().q[idx][0], ref[k])));
+    }
+    return e;
+  }
+
+  void setPosture(mc_control::fsm::Controller & ctl, const std::vector<double> & q)
+  {
+    if(auto pt = ctl.getPostureTask(ctl.robot().name()))
+    {
+      std::map<std::string, std::vector<double>> tgt;
+      for(size_t k = 0; k < 6; ++k) tgt[jointName(k)] = {q[k]};
+      pt->target(tgt);
+    }
+  }
+
+  // Model := real arm, and the posture task holds it there.
+  void glue(mc_control::fsm::Controller & ctl)
+  {
+    resyncControlToReal(ctl);
+    std::vector<double> q(6);
+    for(size_t k = 0; k < 6; ++k)
+      q[k] = ctl.robot().mbc().q[ctl.robot().jointIndexByName(jointName(k))][0];
+    setPosture(ctl, q);
+  }
+
+  std::vector<double> target() const
+  {
+    std::vector<double> q(6);
+    for(size_t k = 0; k < 6; ++k) q[k] = q0_[k] + dq_[k];
+    return q;
+  }
+
+  bool sendPlan(mc_control::fsm::Controller & ctl)
+  {
+    const int n = std::max(1, static_cast<int>(std::ceil(T_ / sample_dt_)));
+    std::vector<double> times;
+    std::vector<std::vector<double>> Q, QD, QDD;
+    times.reserve(n); Q.reserve(n); QD.reserve(n); QDD.reserve(n);
+    for(int i = 1; i <= n; ++i)
+    {
+      const double t = T_ * static_cast<double>(i) / n;
+      double s, ds, dds;
+      profile(t / T_, accel_fraction_, s, ds, dds);
+      std::vector<double> q(6), qd(6), qdd(6);
+      for(size_t k = 0; k < 6; ++k)
+      {
+        q[k]   = q0_[k] + dq_[k] * s;
+        qd[k]  = dq_[k] * ds / T_;
+        qdd[k] = dq_[k] * dds / (T_ * T_);
+      }
+      times.push_back(t); Q.push_back(q); QD.push_back(qd); QDD.push_back(qdd);
+    }
+    return ppc(ctl).sendJointTrajectory(times, Q, QD, QDD);
+  }
+
+  // Stop the JTC where the arm IS and give control back to the bridge,
+  // which then streams the model - glued to the arm - i.e. holds.
+  void abort(mc_control::fsm::Controller & ctl, const char * why, double err)
+  {
+    glue(ctl);
+    std::vector<double> q(6);
+    for(size_t k = 0; k < 6; ++k)
+      q[k] = ctl.robot().mbc().q[ctl.robot().jointIndexByName(jointName(k))][0];
+    const std::vector<double> zero(6, 0.0);
+    ppc(ctl).sendJointTrajectory({0.2}, {q}, {zero}, {zero});
+    ctl.datastore().get<bool>(kHold) = false;
+    phase_ = Phase::Aborted;
+    next_complaint_ = 5.0;
+    mc_rtc::log::error("[{}] ABORTED at {:.2f}s of {:.2f}s: {} ({:.4f} rad, tolerance {:.4f}). "
+                       "Stopped the arm where it is and handed back to the bridge. Will NOT "
+                       "advance to {} - check the arm, then restart the trial.",
+                       name(), t_, T_, why, err, track_tol_, next_state_);
+  }
+
+  void start(mc_control::fsm::Controller & ctl) override
+  {
+    dt_ = ctl.solver().dt();
+    t_ = wait_ = settle_ = 0.0;
+    next_log_ = 0.0;
+    next_complaint_ = 5.0;
+    auto & ds = ctl.datastore();
+    if(!ds.has(kHold)) ds.make<bool>(kHold, false);
+
+    // Plan from the REAL arm, the shortest way round for continuous joints.
+    // The WHOLE current pose is captured before any check can fail: every
+    // refusal path below holds the posture task at q0_, so a partially
+    // filled q0_ would hold the unfilled joints at ZERO - and the bridge
+    // would stream the arm there. dq_ stays zero unless the plan is valid.
+    resyncControlToReal(ctl);
+    q0_.assign(6, 0.0);
+    dq_.assign(6, 0.0);
+    for(size_t k = 0; k < 6; ++k)
+      q0_[k] = angDiff(ctl.realRobot().mbc().q[ctl.realRobot().jointIndexByName(jointName(k))][0], 0.0);
+    setPosture(ctl, q0_);
+    bool ok = target_.size() == 6;
+    if(!ok)
+      mc_rtc::log::error("[{}] needs `target` with 6 joint values, got {}", name(), target_.size());
+    double max_abs = 0.0;
+    mc_rtc::log::info("[{}] Joint current_q vs target (after wrap):", name());
+    for(size_t k = 0; ok && k < 6; ++k)
+    {
+      const std::string jn = jointName(k);
+      dq_[k] = angDiff(target_[k], q0_[k]);
+      mc_rtc::log::info("[{}]   '{}' current={:.4f}  target={:.4f}  delta={:.4f}",
+                        name(), jn, q0_[k], q0_[k] + dq_[k], dq_[k]);
+      // The JTC is fed absolute angles. Keep every point inside [-pi, pi] so
+      // a continuous joint is never asked across the branch cut, where a JTC
+      // without wraparound would take the long way. Each joint moves
+      // monotonically, so checking the end is enough. (Never the case for
+      // the unload roll: carry -1.45, unload +1.43..+1.56.)
+      if(std::abs(q0_[k] + dq_[k]) > M_PI)
+      {
+        mc_rtc::log::error("[{}] '{}' would cross the +/-pi branch cut ({:.4f} -> {:.4f}) - "
+                           "refusing rather than risk the long way round",
+                           name(), jn, q0_[k], q0_[k] + dq_[k]);
+        ok = false;
+      }
+      max_abs = std::max(max_abs, std::abs(dq_[k]));
+    }
+    T_ = std::max(min_duration_, max_abs / (v_max_ * (1.0 - accel_fraction_)));
+
+    if(!ok)
+    {
+      dq_.assign(6, 0.0);
+      phase_ = Phase::Refused;
+      return;
+    }
+    mc_rtc::log::info("[{}] DIRECT JTC move: max |delta| {:.4f} rad in {:.2f}s - peak {:.3f} rad/s, "
+                      "ramps over the first and last {:.0f}% ({:.2f}s each). speed_scale ignored.",
+                      name(), max_abs, T_, v_max_, 100.0 * accel_fraction_, accel_fraction_ * T_);
+
+    if(ppc(ctl).dryRunValidation() || (ds.has(kDryRun) && ds.get<bool>(kDryRun)))
+    {
+      phase_ = Phase::Simulating;
+      mc_rtc::log::warning("[{}] dry run - NOT sending to the JTC; animating the model along the "
+                           "same plan instead", name());
+      return;
+    }
+    if(!ds.has(kHeld) || !ds.has(kDryRun))
+    {
+      phase_ = Phase::Refused;
+      mc_rtc::log::error("[{}] REFUSED: the bridge does not support the streaming hold (no '{}' / "
+                         "'{}' in the datastore). Rebuild impedance_control - the bridge lives "
+                         "there. Holding here; nothing was sent.", name(), kHeld, kDryRun);
+      return;
+    }
+    ds.get<bool>(kHold) = true;
+    phase_ = Phase::WaitHold;
+  }
+
+  bool run(mc_control::fsm::Controller & ctl) override
+  {
+    auto & ds = ctl.datastore();
+    switch(phase_)
+    {
+      case Phase::Refused:
+      case Phase::Aborted:
+        settle_ += dt_;
+        if(settle_ >= next_complaint_)
+        {
+          next_complaint_ += 5.0;
+          mc_rtc::log::error("[{}] still holding after {}. Restart the trial once resolved.",
+                             name(), phase_ == Phase::Refused ? "a refusal" : "an abort");
+        }
+        return false;
+
+      case Phase::Simulating:
+      {
+        t_ += dt_;
+        setPosture(ctl, planAt(std::min(t_, T_)));
+        if(t_ >= T_ && (maxErr(ctl.robot(), target()) < threshold_ || t_ > T_ + settle_timeout_))
+        {
+          mc_rtc::log::success("[{}] dry run complete ({:.2f}s) -> {}", name(), t_, next_state_);
+          output(next_state_);
+          return true;
+        }
+        return false;
+      }
+
+      case Phase::WaitHold:
+        glue(ctl);
+        wait_ += dt_;
+        if(ds.get<bool>(kHeld))
+        {
+          if(!sendPlan(ctl))
+          {
+            ds.get<bool>(kHold) = false;
+            phase_ = Phase::Refused;
+            mc_rtc::log::error("[{}] REFUSED: no ROS publisher for the JTC (stub mode?). "
+                               "Holding here; nothing was sent.", name());
+            return false;
+          }
+          mc_rtc::log::info("[{}] bridge streaming held after {:.0f} ms - trajectory sent to the JTC",
+                            name(), 1000.0 * wait_);
+          t_ = 0.0;
+          phase_ = Phase::Running;
+        }
+        else if(wait_ > 0.5)
+        {
+          ds.get<bool>(kHold) = false;
+          phase_ = Phase::Refused;
+          mc_rtc::log::error("[{}] REFUSED: the bridge never acknowledged the streaming hold "
+                             "(0.5 s). Holding here; nothing was sent.", name());
+        }
+        return false;
+
+      case Phase::Running:
+      {
+        glue(ctl);
+        t_ += dt_;
+        const double err = maxErr(ctl.realRobot(), planAt(std::min(t_, T_)));
+        if(err > track_tol_)
+        {
+          abort(ctl, "the arm fell off the plan", err);
+          return false;
+        }
+        if(t_ >= next_log_)
+        {
+          next_log_ += 0.5;
+          mc_rtc::log::info("[{}] {:.2f}/{:.2f}s | arm-vs-plan {:.4f} rad", name(), t_, T_, err);
+        }
+        if(t_ >= T_) phase_ = Phase::Settling;
+        return false;
+      }
+
+      case Phase::Settling:
+      {
+        glue(ctl);
+        t_ += dt_;
+        settle_ += dt_;
+        const double err = maxErr(ctl.realRobot(), target());
+        if(err < threshold_)
+        {
+          ds.get<bool>(kHold) = false;   // model == arm, so the bridge resumes with no jump
+          mc_rtc::log::success("[{}] done in {:.2f}s (planned {:.2f}s), {:.4f} rad from target -> {}",
+                               name(), t_, T_, err, next_state_);
+          output(next_state_);
+          return true;
+        }
+        if(err > track_tol_)
+        {
+          abort(ctl, "the arm stopped short of the target", err);
+          return false;
+        }
+        if(settle_ >= next_complaint_)
+        {
+          next_complaint_ += 5.0;
+          mc_rtc::log::error("[{}] {:.0f}s past the plan and still {:.4f} rad from target "
+                             "(needs < {:.4f})", name(), settle_, err, threshold_);
+        }
+        return false;
+      }
+    }
+    return false;
+  }
+
+  void teardown(mc_control::fsm::Controller & ctl) override
+  {
+    // Never leave the bridge muted, whatever path led out of this state.
+    if(ctl.datastore().has(kHold)) ctl.datastore().get<bool>(kHold) = false;
+  }
+};
+
+// ════════════════════════════════════════════════════════════════════════════
 //  State factory — ONE extern "C" block for all state classes.
 // ════════════════════════════════════════════════════════════════════════════
 extern "C"
@@ -2008,7 +2407,8 @@ extern "C"
   __attribute__((visibility("default")))
   void MC_RTC_FSM_STATE(std::vector<std::string> & names)
   {
-    names = {"CartesianMove", "ComplianceCartesianMove", "JointMove", "Gripper", "Idle"};
+    names = {"CartesianMove", "ComplianceCartesianMove", "JointMove", "Gripper", "Idle",
+             "DirectJointMove"};
   }
 
   __attribute__((visibility("default")))
@@ -2019,6 +2419,7 @@ extern "C"
     if(name == "JointMove")               return new JointMove();
     if(name == "Gripper")                 return new Gripper();
     if(name == "Idle")                    return new Idle();
+    if(name == "DirectJointMove")         return new DirectJointMove();
     return nullptr;
   }
 

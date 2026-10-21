@@ -376,9 +376,9 @@ states:
   #
   # CONSEQUENCE - A LONGER UNLOAD ROLL. The roll is now taken against the
   # new carry angle, so unload is a 165-172 deg roll instead of 75.9 deg.
-  # Its speed is handled separately: the six roll states run at a fixed
-  # 0.14 rad/s in every trial, ~40 s per roll - see the wrist-roll-speed
-  # note above unload_1.
+  # Its speed is handled separately: the six roll states are sent to the
+  # JTC in one go, ~8 s per roll in every trial - see the wrist-roll note
+  # above unload_1.
   #
   # The compliant step_1 <-> step_2 legs are NOT affected: rolling both
   # ends about the tool axis is a similarity transform on the relative
@@ -470,73 +470,54 @@ states:
   # do not come out, increase joint_6 further (the joint is continuous, so
   # there is no limit to work against).
   #
-  # ── WRIST ROLL SPEED (2026-10-21) ────────────────────────────────────
+  # ── WRIST ROLL: SENT TO THE JTC IN ONE GO (2026-10-21) ───────────────
   # The SIX states where joint_6 turns - the unload roll out and back:
   #     unload_1   unload_far1   unload_far2
   #     step_2_return   step_2_far1_return   step_2_far2_return
-  # run at a FIXED 0.14 rad/s peak in every trial (`use_speed_scale:
-  # false`), so slow/base/fast all unload identically. Each is a pure
-  # joint_6 move (joints 1-5 equal at step_2 and unload), so this changes
-  # the wrist and nothing else. Every other leg is untouched: v_max 0.05,
-  # still scaled by the trial's speed_scale.
+  # are DirectJointMove: the whole move is planned up front and sent ONCE to
+  # the joint_trajectory_controller as a timed trajectory, the way a
+  # conventional controller moves, instead of being streamed through mc_rtc
+  # and the bridge. Targets and angles are unchanged; only how the arm is
+  # driven there changed. Every other leg still streams, with every guard.
   #
-  # CRUISE PROFILE (2026-10-21, `accel_fraction: 0.15`). The default
-  # quintic accelerates for the whole first half and decelerates for the
-  # whole second half, touching its peak for an instant - its average is
-  # 1/1.875 of the peak. These legs are long only because the peak is
-  # capped (see below), so they ramp up over the first 15%, CRUISE at
-  # 0.14 rad/s, and ramp down over the last 15%: same peak, same bridge
-  # lead, 37% less time. Ramps use the quintic smoothstep, so acceleration
-  # and jerk are still zero at both ends; peak acceleration 0.07 rad/s^2
-  # (~4 deg/s^2), up from 0.011 for the quintic.
+  # WHY. Streaming is on a leash: the bridge never lets a command lead the
+  # measured position by more than delta_max (0.006 rad), and joint_6
+  # answers ~34 ms late, so no joint can sustain more than ~0.17 rad/s that
+  # way (measured live: far1_fast at 0.25 commanded saturated at 0.16-0.18
+  # and the runaway guard tripped). Streamed, the best this roll managed
+  # was ~40 s (quintic) or ~26 s (cruise profile). Sent whole, the limit is
+  # the actuator: 1.22 rad/s for joint_6 per the URDF.
   #
-  # Roll time, every trial (planned / incl. settling, simulated):
-  #     near 24.9 / 26.2 s    far1 24.2 / 25.6 s    far2 25.3 / 26.6 s
-  # down from 39.6 / 38.6 / 40.3 s with the quintic - about 27 s per cycle,
-  # since the roll happens out and back. Same stall-guard margin (peak lag
-  # 0.198 vs 0.25) and bridge lead (0.0048 vs 0.006) as before: the peak
-  # speed did not change, only how long the wrist spends at it.
+  # SPEED. v_max 0.5 rad/s (41% of the actuator limit), ramps over the first
+  # and last 25%, cruise between; zero acceleration and jerk at both ends.
+  # FIXED in every trial - speed_scale is ignored. Roll time:
+  #     near 7.9 s    far1 7.7 s    far2 8.0 s     (was ~26 s, ~40 s before)
+  # Peak acceleration 0.475 rad/s^2 (27 deg/s^2). Raise v_max for faster
+  # (DirectJointMove caps it at 1.0 rad/s); raise accel_fraction for
+  # gentler starts and stops at the cost of a little time.
   #
-  # WHY FIXED, AND WHY 0.14. Two ceilings, both measured live:
-  #  1. The bridge. Each published command may lead the encoder by at
-  #     most delta_max (0.006 rad), and joint_6 trails its command by
-  #     ~34 ms, so no joint can sustain more than ~0.006/0.034 = 0.17 rad/s.
-  #     far1_fast at v_max 0.10 asked for 0.25: the real wrist saturated at
-  #     0.16-0.18 while the model kept going, model-vs-real climbed 0.0056
-  #     -> 0.0451, and the runaway backstop froze the leg - stop-go.
-  #     0.14 is the fastest speed that log shows tracking cleanly
-  #     (commanded 0.1416, real 0.1410, 100%), needing a 0.0048 lead -
-  #     1.26x under the clamp.
-  #  2. The stall guard. Its "lag" is mostly the posture task's own
-  #     following error (position target only, no velocity feedforward, so
-  #     ~1.41 s * velocity at stiffness 2.0). Simulated against the
-  #     far1_fast log - stall length 2.73 vs 2.77 s, post-resume lag within
-  #     0.002 rad at all seven logged points - peak lag at 0.14 rad/s is
-  #     0.197. stall_lag_enter 0.25 gives 0 stalls at 1.27x, the same
-  #     margin every other JointMove leg runs on (0.18 stalled 3x/roll).
-  #     With use_speed_scale false the threshold is NOT multiplied by the
-  #     trial scale - JointMove::scale() feeds both the duration and this
-  #     threshold, so they cannot disagree. The 0.045 model-runaway
-  #     backstop is unchanged and still sits under the bridge's 0.05 gate.
+  # SAFETY. The bridge pauses its own streaming for the duration (it would
+  # otherwise overwrite the trajectory every 10 ms) and confirms it has, via
+  # the datastore, before anything is sent. While the JTC drives, mc_rtc's
+  # model is glued to the encoders, so streaming resumes with no jump.
+  # mc_rtc's stall guard is not watching; DirectJointMove has its own: if
+  # the arm is more than track_tolerance (0.15 rad) off the plan - blocked,
+  # or the Kinova faulted - it stops the arm where it is, hands back to the
+  # bridge, and holds without advancing. Under dry_run it sends nothing and
+  # animates the model instead. If the bridge has not been rebuilt it
+  # REFUSES and holds - rebuild impedance_control as well as pick_and_place.
   #
-  # If these legs ever brake again, the log names the branch:
-  #     STALLED (arm behind)    -> stall_lag_enter; raising it is safe,
-  #                                the 0.045 backstop still catches a
-  #                                genuinely blocked wrist
-  #     STALLED (model runaway) -> the bridge ceiling; lower v_max (e.g.
-  #                                with the container loaded, if the wrist
-  #                                responds slower than 34 ms)
+  # FALLBACK. Commit 7a4c2a6 has these six as streamed JointMove legs with
+  # the cruise profile (v_max 0.14, accel_fraction 0.15, ~26 s) - known to
+  # run, if the direct path ever misbehaves.
+
   unload_1:
-    base: JointMove
-    stiffness: 2.0
-    v_max: 0.14   # rad/s peak, FIXED in every trial - see the wrist-speed note above unload_1
-    use_speed_scale: false   # unload roll ignores slow/base/fast
-    accel_fraction: 0.15     # ramp 15%, cruise at peak, ramp 15% - see the wrist-speed note above unload_1
+    base: DirectJointMove   # sent to the JTC in one go - see the wrist-roll note above unload_1
     target: [1.7412, -0.8973, 1.4013, -0.0604, 0.0383, 1.5069]  # = step_2 + joint_6 roll
-    duration: 15.0
-    threshold: 0.05
-    divergence_pause: 0.03
-    stall_lag_enter: 0.25   # sized for 0.14 rad/s at scale 1.0 - see the wrist-speed note above unload_1
+    v_max: 0.5              # rad/s peak, FIXED in every trial
+    accel_fraction: 0.25    # ramp 25%, cruise at v_max, ramp 25%
+    threshold: 0.03         # rad, real arm within this of target -> done
+    track_tolerance: 0.15   # rad, real arm this far off the plan -> stop and hold
     next: step_2_return   # defined once the new plan lands
 
   # step_2 - THE PARTICIPANT-FACING LEG. Cartesian + compliant on purpose:
@@ -620,16 +601,12 @@ states:
   # Same physical pose as step_2, expressed as the captured joints so the
   # arm returns to exactly the configuration it left.
   step_2_return:
-    base: JointMove
-    stiffness: 2.0
-    v_max: 0.14   # rad/s peak, FIXED in every trial - see the wrist-speed note above unload_1
-    use_speed_scale: false   # unload roll ignores slow/base/fast
-    accel_fraction: 0.15     # ramp 15%, cruise at peak, ramp 15% - see the wrist-speed note above unload_1
+    base: DirectJointMove   # sent to the JTC in one go - see the wrist-roll note above unload_1
     target: [1.7412, -0.8973, 1.4013, -0.0604, 0.0383, -1.4534]  # = step_2
-    duration: 15.0
-    threshold: 0.05
-    divergence_pause: 0.03
-    stall_lag_enter: 0.25   # sized for 0.14 rad/s at scale 1.0 - see the wrist-speed note above unload_1
+    v_max: 0.5              # rad/s peak, FIXED in every trial
+    accel_fraction: 0.25    # ramp 25%, cruise at v_max, ramp 25%
+    threshold: 0.03         # rad, real arm within this of target -> done
+    track_tolerance: 0.15   # rad, real arm this far off the plan -> stop and hold
     next: step_1_return
 
   # step_1_return - the INBOUND half of the step_1 <-> step_2 traverse, so
@@ -772,31 +749,23 @@ states:
       stiffness: {linear: [100, 100, 100], angular: [10, 10, 10]}
       damping:   {linear: [60, 60, 60],    angular: [15, 15, 15]}
   unload_far1:
-    base: JointMove
-    stiffness: 2.0
-    v_max: 0.14   # rad/s peak, FIXED in every trial - see the wrist-speed note above unload_1
-    use_speed_scale: false   # unload roll ignores slow/base/fast
-    accel_fraction: 0.15     # ramp 15%, cruise at peak, ramp 15% - see the wrist-speed note above unload_1
+    base: DirectJointMove   # sent to the JTC in one go - see the wrist-roll note above unload_1
     target: [1.8232, -0.9163, 1.3348, -0.0463, 0.1240, 1.4303]
     # joint_6 unchanged from the capture; reached from the -1.4534 carry
     # angle it is now a +2.8837 rad (165.2 deg) roll, as near's unload_1
-    duration: 15.0
-    threshold: 0.05
-    divergence_pause: 0.03
-    stall_lag_enter: 0.25   # sized for 0.14 rad/s at scale 1.0 - see the wrist-speed note above unload_1
+    v_max: 0.5              # rad/s peak, FIXED in every trial
+    accel_fraction: 0.25    # ramp 25%, cruise at v_max, ramp 25%
+    threshold: 0.03         # rad, real arm within this of target -> done
+    track_tolerance: 0.15   # rad, real arm this far off the plan -> stop and hold
     next: step_2_far1_return
   step_2_far1_return:
-    base: JointMove
-    stiffness: 2.0
-    v_max: 0.14   # rad/s peak, FIXED in every trial - see the wrist-speed note above unload_1
-    use_speed_scale: false   # unload roll ignores slow/base/fast
-    accel_fraction: 0.15     # ramp 15%, cruise at peak, ramp 15% - see the wrist-speed note above unload_1
+    base: DirectJointMove   # sent to the JTC in one go - see the wrist-roll note above unload_1
     target: [1.8232, -0.9163, 1.3348, -0.0463, 0.1240, -1.4534]
     # = step_2_far1's joints
-    duration: 15.0
-    threshold: 0.05
-    divergence_pause: 0.03
-    stall_lag_enter: 0.25   # sized for 0.14 rad/s at scale 1.0 - see the wrist-speed note above unload_1
+    v_max: 0.5              # rad/s peak, FIXED in every trial
+    accel_fraction: 0.25    # ramp 25%, cruise at v_max, ramp 25%
+    threshold: 0.03         # rad, real arm within this of target -> done
+    track_tolerance: 0.15   # rad, real arm this far off the plan -> stop and hold
     next: step_1_far1_return
   step_1_far1_return:
     base: ComplianceCartesianMove
@@ -896,31 +865,23 @@ states:
       stiffness: {linear: [100, 100, 100], angular: [10, 10, 10]}
       damping:   {linear: [60, 60, 60],    angular: [15, 15, 15]}
   unload_far2:
-    base: JointMove
-    stiffness: 2.0
-    v_max: 0.14   # rad/s peak, FIXED in every trial - see the wrist-speed note above unload_1
-    use_speed_scale: false   # unload roll ignores slow/base/fast
-    accel_fraction: 0.15     # ramp 15%, cruise at peak, ramp 15% - see the wrist-speed note above unload_1
+    base: DirectJointMove   # sent to the JTC in one go - see the wrist-roll note above unload_1
     target: [1.8730, -0.9377, 1.2502, 0.0361, 0.2409, 1.5556]
     # joint_6 unchanged from the capture; reached from the -1.4534 carry
     # angle it is now a +3.0090 rad (172.4 deg) roll, as near and far1
-    duration: 15.0
-    threshold: 0.05
-    divergence_pause: 0.03
-    stall_lag_enter: 0.25   # sized for 0.14 rad/s at scale 1.0 - see the wrist-speed note above unload_1
+    v_max: 0.5              # rad/s peak, FIXED in every trial
+    accel_fraction: 0.25    # ramp 25%, cruise at v_max, ramp 25%
+    threshold: 0.03         # rad, real arm within this of target -> done
+    track_tolerance: 0.15   # rad, real arm this far off the plan -> stop and hold
     next: step_2_far2_return
   step_2_far2_return:
-    base: JointMove
-    stiffness: 2.0
-    v_max: 0.14   # rad/s peak, FIXED in every trial - see the wrist-speed note above unload_1
-    use_speed_scale: false   # unload roll ignores slow/base/fast
-    accel_fraction: 0.15     # ramp 15%, cruise at peak, ramp 15% - see the wrist-speed note above unload_1
+    base: DirectJointMove   # sent to the JTC in one go - see the wrist-roll note above unload_1
     target: [1.8730, -0.9377, 1.2502, 0.0361, 0.2409, -1.4534]
     # = step_2_far2's joints
-    duration: 15.0
-    threshold: 0.05
-    divergence_pause: 0.03
-    stall_lag_enter: 0.25   # sized for 0.14 rad/s at scale 1.0 - see the wrist-speed note above unload_1
+    v_max: 0.5              # rad/s peak, FIXED in every trial
+    accel_fraction: 0.25    # ramp 25%, cruise at v_max, ramp 25%
+    threshold: 0.03         # rad, real arm within this of target -> done
+    track_tolerance: 0.15   # rad, real arm this far off the plan -> stop and hold
     next: step_1_far2_return
   step_1_far2_return:
     base: ComplianceCartesianMove

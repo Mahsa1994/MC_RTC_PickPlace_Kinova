@@ -91,6 +91,7 @@ ament_target_dependencies(PickPlaceController
   rclcpp_action
   control_msgs
   sensor_msgs
+  trajectory_msgs
 )
 
 ament_target_dependencies(PickPlaceStates
@@ -98,6 +99,7 @@ ament_target_dependencies(PickPlaceStates
   rclcpp_action
   control_msgs
   sensor_msgs
+  trajectory_msgs
 )
 
 install(TARGETS kortex_mc_rtc_bridge
