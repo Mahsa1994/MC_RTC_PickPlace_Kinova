@@ -1230,6 +1230,31 @@ struct JointMove : mc_control::fsm::State
   {
     return use_speed_scale_ ? ppc(ctl).speedScale() : 1.0;
   }
+  // ADDED 2026-10-21: `accel_fraction: b` (0 < b <= 0.5) swaps the quintic
+  // for a smooth trapezoid - speed ramps up over the first b of the move,
+  // CRUISES at peak, and ramps down over the last b. The quintic spends the
+  // whole move accelerating or decelerating and touches its peak for an
+  // instant (peak/average 1.875); the cruise profile holds the peak, so at
+  // the SAME peak velocity - which is what the bridge limits - the move is
+  // shorter by a factor 1/(1.875 (1 - b)): 37% at b = 0.15. The ramps follow
+  // the quintic smoothstep, so acceleration and jerk are still zero at both
+  // ends. For legs that are long purely because they are slow at the
+  // bridge's ceiling - the unload wrist roll. Default 0: the quintic,
+  // unchanged, for every other state.
+  double accel_fraction_ = 0.0;
+  double shapeS(double u) const
+  {
+    if(accel_fraction_ <= 0.0) return quinticS(u);
+    const double b = accel_fraction_;
+    u = std::clamp(u, 0.0, 1.0);
+    // integral of the smoothstep 10x^3 - 15x^4 + 6x^5 from 0 to x
+    auto I = [](double x) { return x * x * x * x * (2.5 - 3.0 * x + x * x); };
+    if(u <= b)       return b * I(u / b) / (1.0 - b);
+    if(u <= 1.0 - b) return (0.5 * b + (u - b)) / (1.0 - b);
+    return 1.0 - b * I((1.0 - u) / b) / (1.0 - b);
+  }
+  // peak / average velocity of the active profile
+  double peakRatio() const { return accel_fraction_ > 0.0 ? 1.0 / (1.0 - accel_fraction_) : 1.875; }
   // ADDED 2026-09-07: if every joint is already within this many rad of
   // `target` when the state starts, skip the move entirely and advance
   // immediately instead of holding a no-op reference for the full
@@ -1297,6 +1322,7 @@ struct JointMove : mc_control::fsm::State
     if(config.has("threshold")) threshold_ = config("threshold");
     if(config.has("v_max"))     v_max_     = config("v_max");
     if(config.has("use_speed_scale")) use_speed_scale_ = config("use_speed_scale");
+    if(config.has("accel_fraction"))  accel_fraction_ = std::clamp(static_cast<double>(config("accel_fraction")), 0.0, 0.5);
     if(config.has("skip_if_within")) skip_if_within_ = config("skip_if_within");
     if(config.has("divergence_pause")) divergence_pause_ = config("divergence_pause");
     if(config.has("stall_lag_enter")) stall_lag_enter_ = config("stall_lag_enter");
@@ -1444,7 +1470,7 @@ void start(mc_control::fsm::Controller & ctl) override
     // actually speed up. Clamped to [0.1, 3.0] by the controller.
     const double sc_ = scale(ctl);
     effective_duration_ = std::max(duration_ / sc_,
-                                   1.875 * max_abs_delta / std::max(v_max_ * sc_, 1e-6));
+                                   peakRatio() * max_abs_delta / std::max(v_max_ * sc_, 1e-6));
 
     prev_weight_    = pt->weight();
     prev_stiffness_ = pt->stiffness();
@@ -1474,8 +1500,12 @@ void start(mc_control::fsm::Controller & ctl) override
         "v_max={:.4f} rad/s, max |delta|={:.4f} rad -> peak velocity {:.4f} rad/s "
         "[speed_scale {:.2f}x{}; configured v_max {:.4f}, min {:.2f}s]",
         name(), effective_duration_, duration_ / sc_, v_max_ * sc_, max_abs_delta,
-        1.875 * max_abs_delta / effective_duration_, sc_,
+        peakRatio() * max_abs_delta / effective_duration_, sc_,
         use_speed_scale_ ? "" : " FIXED - trial speed ignored", v_max_, duration_);
+    if(accel_fraction_ > 0.0)
+      mc_rtc::log::info("[{}] cruise profile: ramps over the first and last {:.0f}% ({:.2f}s each), "
+                        "holds the peak in between", name(), 100.0 * accel_fraction_,
+                        accel_fraction_ * effective_duration_);
 
     // CARTESIAN POSE SNAPSHOT (2026-08-26, safe under dry_run - reads
     // realRobot() only, no motion). JointMove has no Cartesian awareness of
@@ -1541,7 +1571,7 @@ void start(mc_control::fsm::Controller & ctl) override
     // Interpolated reference at a given clock value.
     auto refAt = [&](double t) {
       double u = effective_duration_ > 1e-6 ? t / effective_duration_ : 1.0;
-      double sq = quinticS(u);
+      double sq = shapeS(u);
       const auto & mq = ctl.robot().mbc().q;
       std::map<std::string, std::vector<double>> r;
       for(const auto & kv : target_joints_)

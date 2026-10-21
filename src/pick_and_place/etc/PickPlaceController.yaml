@@ -480,9 +480,22 @@ states:
   # the wrist and nothing else. Every other leg is untouched: v_max 0.05,
   # still scaled by the trial's speed_scale.
   #
-  # Roll time, every trial: near 39.6 s, far1 38.6 s, far2 40.3 s.
-  # (Was 111 / 56 / 22 s at slow/base/fast with v_max 0.10 scaled - and
-  # the fast value never happened, see below.)
+  # CRUISE PROFILE (2026-10-21, `accel_fraction: 0.15`). The default
+  # quintic accelerates for the whole first half and decelerates for the
+  # whole second half, touching its peak for an instant - its average is
+  # 1/1.875 of the peak. These legs are long only because the peak is
+  # capped (see below), so they ramp up over the first 15%, CRUISE at
+  # 0.14 rad/s, and ramp down over the last 15%: same peak, same bridge
+  # lead, 37% less time. Ramps use the quintic smoothstep, so acceleration
+  # and jerk are still zero at both ends; peak acceleration 0.07 rad/s^2
+  # (~4 deg/s^2), up from 0.011 for the quintic.
+  #
+  # Roll time, every trial (planned / incl. settling, simulated):
+  #     near 24.9 / 26.2 s    far1 24.2 / 25.6 s    far2 25.3 / 26.6 s
+  # down from 39.6 / 38.6 / 40.3 s with the quintic - about 27 s per cycle,
+  # since the roll happens out and back. Same stall-guard margin (peak lag
+  # 0.198 vs 0.25) and bridge lead (0.0048 vs 0.006) as before: the peak
+  # speed did not change, only how long the wrist spends at it.
   #
   # WHY FIXED, AND WHY 0.14. Two ceilings, both measured live:
   #  1. The bridge. Each published command may lead the encoder by at
@@ -518,6 +531,7 @@ states:
     stiffness: 2.0
     v_max: 0.14   # rad/s peak, FIXED in every trial - see the wrist-speed note above unload_1
     use_speed_scale: false   # unload roll ignores slow/base/fast
+    accel_fraction: 0.15     # ramp 15%, cruise at peak, ramp 15% - see the wrist-speed note above unload_1
     target: [1.7412, -0.8973, 1.4013, -0.0604, 0.0383, 1.5069]  # = step_2 + joint_6 roll
     duration: 15.0
     threshold: 0.05
@@ -610,6 +624,7 @@ states:
     stiffness: 2.0
     v_max: 0.14   # rad/s peak, FIXED in every trial - see the wrist-speed note above unload_1
     use_speed_scale: false   # unload roll ignores slow/base/fast
+    accel_fraction: 0.15     # ramp 15%, cruise at peak, ramp 15% - see the wrist-speed note above unload_1
     target: [1.7412, -0.8973, 1.4013, -0.0604, 0.0383, -1.4534]  # = step_2
     duration: 15.0
     threshold: 0.05
@@ -761,6 +776,7 @@ states:
     stiffness: 2.0
     v_max: 0.14   # rad/s peak, FIXED in every trial - see the wrist-speed note above unload_1
     use_speed_scale: false   # unload roll ignores slow/base/fast
+    accel_fraction: 0.15     # ramp 15%, cruise at peak, ramp 15% - see the wrist-speed note above unload_1
     target: [1.8232, -0.9163, 1.3348, -0.0463, 0.1240, 1.4303]
     # joint_6 unchanged from the capture; reached from the -1.4534 carry
     # angle it is now a +2.8837 rad (165.2 deg) roll, as near's unload_1
@@ -774,6 +790,7 @@ states:
     stiffness: 2.0
     v_max: 0.14   # rad/s peak, FIXED in every trial - see the wrist-speed note above unload_1
     use_speed_scale: false   # unload roll ignores slow/base/fast
+    accel_fraction: 0.15     # ramp 15%, cruise at peak, ramp 15% - see the wrist-speed note above unload_1
     target: [1.8232, -0.9163, 1.3348, -0.0463, 0.1240, -1.4534]
     # = step_2_far1's joints
     duration: 15.0
@@ -883,6 +900,7 @@ states:
     stiffness: 2.0
     v_max: 0.14   # rad/s peak, FIXED in every trial - see the wrist-speed note above unload_1
     use_speed_scale: false   # unload roll ignores slow/base/fast
+    accel_fraction: 0.15     # ramp 15%, cruise at peak, ramp 15% - see the wrist-speed note above unload_1
     target: [1.8730, -0.9377, 1.2502, 0.0361, 0.2409, 1.5556]
     # joint_6 unchanged from the capture; reached from the -1.4534 carry
     # angle it is now a +3.0090 rad (172.4 deg) roll, as near and far1
@@ -896,6 +914,7 @@ states:
     stiffness: 2.0
     v_max: 0.14   # rad/s peak, FIXED in every trial - see the wrist-speed note above unload_1
     use_speed_scale: false   # unload roll ignores slow/base/fast
+    accel_fraction: 0.15     # ramp 15%, cruise at peak, ramp 15% - see the wrist-speed note above unload_1
     target: [1.8730, -0.9377, 1.2502, 0.0361, 0.2409, -1.4534]
     # = step_2_far2's joints
     duration: 15.0
