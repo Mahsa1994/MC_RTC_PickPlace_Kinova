@@ -341,6 +341,29 @@ states:
         angular: [15, 15, 15]
 
  
+  # ── START-POSE WRIST ANGLE (2026-10-21) ──────────────────────────────
+  # joint_6 in ALL THREE start poses (and their _end twins) is now
+  # -1.4534 rad, replacing the captured 0.2321 / 0.0948 / 0.2318. This is
+  # the orientation the gripper presents at the human-side start pose; it
+  # was set by hand on the arm and read off /joint_states during a far2
+  # run. The three captures had drifted apart by up to 7.8 deg, so they
+  # are unified on one value - the start presentation should be identical
+  # across conditions, since distance and speed are the only factors
+  # meant to vary.
+  #
+  # NOT changed: step_1*, step_2* and the unload* roll. unload stays at
+  # its captured absolute angle (step_2 joints + 1.3246 rad), so the tip
+  # geometry is untouched. The wrist therefore rolls ~1.685 rad on the
+  # start -> step_1 leg instead of on the way INTO start. That is nearly
+  # free: joint_1 already moves 1.51-1.63 rad (wrapped) on that leg and
+  # set the duration, so the new joint_6 delta lengthens it by +9.1%
+  # (near), +0.0% (far1, joint_1 still dominates) and +3.5% (far2),
+  # while the standalone 25 s wrist move at trial start disappears.
+  #
+  # The _end states must carry the same value or the cycle does not
+  # close: the arm would park at the old angle and re-roll on every
+  # trial, which is the 25 s move this change removes.
+
   start_1:
     base: JointMove
     stiffness: 2.0
@@ -354,7 +377,7 @@ states:
     # That is handled (see angDiff and the reference wrapping in refAt()
     # in PickPlaceStates.cpp) but it is why those fixes are load-bearing
     # rather than defensive.
-    target: [-3.0312, 0.1537, 2.3490, -0.1051, 0.9400, 0.2321]
+    target: [-3.0312, 0.1537, 2.3490, -0.1051, 0.9400, -1.4534]
     # "if the robot is not at the safe pose, go there" - skips instantly when
     # it already is, rather than holding a no-op reference for the full
     # duration. Same bar as `threshold` below.
@@ -590,7 +613,7 @@ states:
     base: JointMove
     stiffness: 2.0
     v_max: 0.05
-    target: [-3.0312, 0.1537, 2.3490, -0.1051, 0.9400, 0.2321]   # = start_1
+    target: [-3.0312, 0.1537, 2.3490, -0.1051, 0.9400, -1.4534]   # = start_1
     duration: 15.0
     threshold: 0.05
     divergence_pause: 0.03
@@ -619,7 +642,7 @@ states:
     base: JointMove
     stiffness: 2.0
     v_max: 0.05
-    target: [-3.0683, -0.2699, 1.8801, -0.0026, 0.9525, 0.0948]
+    target: [-3.0683, -0.2699, 1.8801, -0.0026, 0.9525, -1.4534]
     # goes here from wherever the arm is; skips if already within
     skip_if_within: 0.05
     duration: 15.0
@@ -631,6 +654,9 @@ states:
     stiffness: 2.0
     v_max: 0.05
     target: [1.6522, -0.2699, 1.8801, -0.0026, 0.9525, 0.0948]
+    # joint_6 deliberately NOT shifted with start_2 - see the start-pose
+    # wrist-angle note above start_1. The snap that made this pose a pure
+    # base rotation off start_2 now holds for joints 2-5 only.
     duration: 15.0
     threshold: 0.05
     divergence_pause: 0.03
@@ -706,7 +732,7 @@ states:
     base: JointMove
     stiffness: 2.0
     v_max: 0.05
-    target: [-3.0683, -0.2699, 1.8801, -0.0026, 0.9525, 0.0948]
+    target: [-3.0683, -0.2699, 1.8801, -0.0026, 0.9525, -1.4534]
     # same pose as start_2; separate state because mc_rtc keys
     # transitions on (state, output) and this one returns to the gate
     duration: 15.0
@@ -736,7 +762,7 @@ states:
     base: JointMove
     stiffness: 2.0
     v_max: 0.05
-    target: [-3.0314, -0.5614, 1.4110, -0.1049, 0.9267, 0.2318]
+    target: [-3.0314, -0.5614, 1.4110, -0.1049, 0.9267, -1.4534]
     # goes here from wherever the arm is; skips if already within
     skip_if_within: 0.05
     duration: 15.0
@@ -824,7 +850,7 @@ states:
     base: JointMove
     stiffness: 2.0
     v_max: 0.05
-    target: [-3.0314, -0.5614, 1.4110, -0.1049, 0.9267, 0.2318]
+    target: [-3.0314, -0.5614, 1.4110, -0.1049, 0.9267, -1.4534]
     # same pose as start_3; separate state because mc_rtc keys
     # transitions on (state, output)
     duration: 15.0
