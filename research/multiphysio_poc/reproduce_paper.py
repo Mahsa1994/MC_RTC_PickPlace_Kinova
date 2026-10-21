@@ -45,6 +45,8 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 import argparse
 import json
 import multiprocessing as mp
+import pickle
+import sys
 import time
 import warnings
 from pathlib import Path
@@ -255,7 +257,11 @@ def main():
     ap.add_argument("--out", default=None, help="optional JSON dump of every table cell")
     ap.add_argument("--max-subjects", type=int, default=None,
                     help="only hold out the first N subjects per source (quick smoke test, not comparable)")
+    ap.add_argument("--cache", default="results/reproduce_paper_fits.pkl",
+                    help="every finished LOSO fit is appended here; a rerun skips fits already in it "
+                         "(the full run takes ~2 h, mostly the default RF regressor on EEG/voice)")
     args = ap.parse_args()
+    sys.stdout.reconfigure(line_buffering=True)
 
     feat_dir = Path(args.data_dir) / "raw" / "features"
     lab = load_labels(feat_dir)
@@ -291,16 +297,37 @@ def main():
     # biggest jobs first so the pool doesn't finish on a long tail
     cost = {"eeg": 40, "voice": 30, "physio": 3, "trialfusion": 1}
     jobs.sort(key=lambda j: -(cost[j[0]] * (3 if j[4] == "RF" and j[1] == "features" else 1)))
-    print(f"{len(jobs)} LOSO fits on {args.workers} workers")
+    results = load_cache(args.cache)
+    todo = [j for j in jobs if j not in results]
+    print(f"{len(jobs)} LOSO fits, {len(jobs) - len(todo)} cached in {args.cache}, "
+          f"{len(todo)} to run on {args.workers} workers")
     t0 = time.time()
-    results = {}
-    with mp.get_context("fork").Pool(args.workers) as pool:
-        for i, (job, res) in enumerate(pool.imap_unordered(run_job, jobs, chunksize=2), 1):
-            results[job] = res
-            if i % 200 == 0 or i == len(jobs):
-                print(f"  {i}/{len(jobs)} fits done ({time.time() - t0:.0f}s)", flush=True)
+    if todo:
+        Path(args.cache).parent.mkdir(parents=True, exist_ok=True)
+        with mp.get_context("fork").Pool(args.workers) as pool, open(args.cache, "ab") as cache:
+            for i, (job, res) in enumerate(pool.imap_unordered(run_job, todo, chunksize=2), 1):
+                results[job] = res
+                pickle.dump((job, res), cache)
+                cache.flush()
+                if i % 200 == 0 or i == len(todo):
+                    print(f"  {i}/{len(todo)} fits done ({time.time() - t0:.0f}s)")
 
-    report(results, args)
+    report({j: results[j] for j in jobs}, args)
+
+
+def load_cache(path):
+    """{job: result} from the append-only pickle stream written by main();
+    a truncated last record (killed mid-write) is ignored."""
+    results = {}
+    if Path(path).exists():
+        with open(path, "rb") as f:
+            while True:
+                try:
+                    job, res = pickle.load(f)
+                except (EOFError, pickle.UnpicklingError):
+                    break
+                results[job] = res
+    return results
 
 
 def collect(results, source, features, target, kind, model, smoothed):

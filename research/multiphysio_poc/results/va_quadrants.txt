@@ -1,0 +1,54 @@
+548 trials with physio + AUs, 39 participants; features: hrv 72, eda 132, au 40; quadrant balance {'HV-LA calm/relaxed': 0.354, 'LV-HA stressed': 0.297, 'LV-LA sad/bored': 0.19, 'HV-HA happy/excited': 0.159}
+  done: HR+EDA / linear
+  done: HR+EDA / random forest
+  done: HR+EDA / gradient boosting
+  done: AUs / linear
+  done: AUs / random forest
+  done: AUs / gradient boosting
+  done: HR+EDA+AUs / linear
+  done: HR+EDA+AUs / random forest
+  done: HR+EDA+AUs / gradient boosting
+  done: task identity / linear
+
+=== quadrant results (mean +/- std over repeats; chance macro-F1 = 0.25) ===
+                                          macro_f1  macro_f1_std  bal_acc  valence_bal_acc  arousal_bal_acc  v_within_spearman  a_within_spearman
+features      model             approach                                                                                                         
+AUs           gradient boosting a            0.306         0.020    0.306            0.545            0.582                NaN                NaN
+                                b            0.313         0.015    0.313            0.553            0.598              0.107              0.282
+              linear            a            0.289         0.013    0.297            0.534            0.588                NaN                NaN
+                                b            0.316         0.016    0.317            0.528            0.582              0.084              0.227
+              random forest     a            0.287         0.014    0.302            0.526            0.616                NaN                NaN
+                                b            0.332         0.017    0.331            0.546            0.636              0.099              0.307
+HR+EDA        gradient boosting a            0.278         0.004    0.281            0.538            0.549                NaN                NaN
+                                b            0.301         0.018    0.302            0.541            0.577              0.098              0.222
+              linear            a            0.302         0.017    0.304            0.528            0.569                NaN                NaN
+                                b            0.301         0.013    0.302            0.542            0.590              0.051              0.238
+              random forest     a            0.269         0.010    0.292            0.550            0.559                NaN                NaN
+                                b            0.302         0.011    0.309            0.541            0.592              0.041              0.216
+HR+EDA+AUs    gradient boosting a            0.279         0.013    0.282            0.534            0.561                NaN                NaN
+                                b            0.313         0.019    0.313            0.532            0.607              0.066              0.298
+              linear            a            0.302         0.020    0.304            0.512            0.586                NaN                NaN
+                                b            0.312         0.016    0.313            0.535            0.588              0.049              0.281
+              random forest     a            0.268         0.006    0.296            0.532            0.597                NaN                NaN
+                                b            0.321         0.007    0.322            0.535            0.619              0.062              0.328
+task identity linear            a            0.392         0.009    0.394            0.634            0.664                NaN                NaN
+                                b            0.372         0.020    0.382            0.640            0.653              0.374              0.464
+
+(b) beats (a) in 8/9 sensor feature-set x model combos, mean difference +0.026 macro-F1
+
+best (a): ('AUs', 'gradient boosting')  macro-F1 0.306
+best (b): ('AUs', 'random forest')  macro-F1 0.332
+per-participant macro-F1, best (a) vs best (b): 0.251 vs 0.261, (b) better for 19/39 participants, Wilcoxon p = 0.852
+confusion (rows = true, row-normalized) best (a):
+                     calm  happy  sad/bored  stressed
+HV-LA calm/relaxed   0.48   0.14       0.17      0.21
+HV-HA happy/excited  0.31   0.23       0.15      0.31
+LV-LA sad/bored      0.38   0.13       0.25      0.23
+LV-HA stressed       0.34   0.15       0.18      0.33
+confusion (rows = true, row-normalized) best (b):
+                     calm  happy  sad/bored  stressed
+HV-LA calm/relaxed   0.40   0.10       0.33      0.17
+HV-HA happy/excited  0.29   0.22       0.20      0.30
+LV-LA sad/bored      0.40   0.12       0.23      0.24
+LV-HA stressed       0.28   0.17       0.18      0.37
+figures -> results/va_quadrants_f1.png, va_quadrants_confusion.png

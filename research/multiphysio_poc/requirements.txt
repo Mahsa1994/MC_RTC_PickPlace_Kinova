@@ -2,3 +2,4 @@ pandas
 numpy
 scikit-learn
 torch
+xgboost  # reproduce_paper.py / paper_diagnostics.py only

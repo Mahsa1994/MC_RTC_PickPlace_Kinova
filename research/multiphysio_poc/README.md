@@ -72,6 +72,14 @@ net, and a deep temporal model over the per-window bio/EEG sequences. Reads
 `data/raw/features/{bio_features_60s,eeg_features_5s}.csv` directly.
 `--deep-models fusion|temporal` and `--targets` shrink it for quick runs.
 
+`reproduce_paper.py` and `paper_diagnostics.py` (see "Reproducing the
+dataset paper" below) need `xgboost`. The system Python refuses pip
+installs, so they run from a venv that reuses the system packages:
+`python3 -m venv --system-site-packages ~/.venvs/mphrc && ~/.venvs/mphrc/bin/pip install xgboost`,
+then `~/.venvs/mphrc/bin/python reproduce_paper.py --out results/reproduce_paper.json`
+(~2 h on 18 cores; every fit is cached in `results/reproduce_paper_fits.pkl`,
+so a rerun resumes) and `~/.venvs/mphrc/bin/python paper_diagnostics.py --workers 4` (~30 min).
+
 ## What this validated
 
 The pipeline runs end-to-end on the real dataset: download -> per-trial
@@ -510,6 +518,165 @@ old features.
   still the task-identity baseline (Arousal 0.440, Dominance 0.388).
   Distillation results (Step 4) would not change with a deep teacher, so
   they weren't rerun.
+
+## Reproducing the dataset paper (2026-10)
+
+Goal: check the authors' own baselines (Bussolan et al., *Robotics* 2025 /
+[arXiv 2510.00703](https://arxiv.org/abs/2510.00703); code at
+[automation-robotics-machines/MultiPhysio-HRC](https://github.com/automation-robotics-machines/MultiPhysio-HRC))
+and whether we can match or beat them.
+
+**What they did:**
+- **Targets:** STAI-Y1 (stress) and NASA-TLX (cognitive load), *not* the
+  SAM V/A/D used everywhere else in this PoC. Both are in our `labels.csv`.
+- **Samples:** one row per feature window, each labelled with its trial's
+  score: physio 60 s (n=250 features), EEG 5 s (n=88), voice per speech
+  segment (n=439). Each modality is modelled separately; no fusion, no AUs.
+- **Normalization:** features and labels min-max normalized within each
+  subject.
+- **Classes:** 3 classes per subject: Low < mu - sd/2 <= Medium <= mu + sd/2 < High.
+- **Models:** RandomForest / AdaBoost / XGBoost, out-of-the-box.
+- **Evaluation:** leave-one-subject-out (LOSO), mean +/- std over subjects.
+
+Published physio results: RMSE 0.20 / 0.19 (STAI / NASA) and F1 0.30-0.33 /
+0.38-0.39. EEG and voice: RMSE ~0.30-0.34, F1 0.34-0.41.
+
+**Why their exact numbers can't be reproduced:**
+- The repo publishes **feature extraction only**. The baseline notebooks,
+  `examples/minimal_pipeline.py` and `docs/benchmarks.md` that its README
+  lists are not in it.
+- The dataset version the paper used (Zenodo record 17225571, "v1") was
+  **deleted on 2025-12-19**. The current record (18668043, Feb 2026) has
+  different labels: the paper reports NASA mu 39.56 / max 91.11 and STAI
+  mu 31.86 / max 55; the released `labels.csv` gives 29.0 / 81.67 and
+  34.5 / 76, and no subset of it matches.
+- The paper doesn't report a trivial baseline, the F1 averaging method, or
+  any hyperparameters.
+
+**What we ran:**
+- `reproduce_paper.py`: their stated protocol on the released features, plus:
+  - trivial baselines (train mean, majority class);
+  - a **task-identity-only** model (one-hot task name -> RF);
+  - trial smoothing (average window predictions over each trial);
+  - late fusion (average the physio/EEG/voice predictions);
+  - early fusion (per-trial physio + EEG + voice + AU features).
+- `paper_diagnostics.py`: the physio rows under alternative evaluation
+  choices, to see which could produce numbers like the paper's.
+
+**Diagnostics (physio windows, best of RF/AB/XGB vs. predicting the training
+mean or majority class):**
+
+| split / label scaling | STAI RMSE | NASA RMSE | STAI F1 | NASA F1 |
+|---|---:|---:|---:|---:|
+| paper (LOSO, per-subject min-max) | 0.20 | 0.19 | 0.33 | 0.39 |
+| k-fold over windows, per-subject | 0.251 (mean 0.302) | 0.238 (0.287) | 0.565 (0.174) | 0.616 (0.208) |
+| k-fold over whole trials, per-subject | 0.266 (0.302) | 0.252 (0.287) | 0.415 (0.167) | 0.497 (0.208) |
+| LOSO, labels / global max | 0.119 (**0.113**) | 0.218 (0.220) | - | - |
+
+- **Same-subject splits inflate everything.** When a subject's other
+  trials are in the training set, the models clearly beat the trivial
+  baseline: k-fold over windows reaches F1 0.57-0.62, above the paper.
+- **Under leave-one-subject-out, physio features don't beat predicting the
+  mean.** With global-max labels, the STAI mean predictor (0.113) is better
+  than every model.
+- Window k-fold also matches the shuffled `kfold_validation()` helper that
+  ships in the authors' repo. We can't tell whether the paper used it.
+- **Bottom line:** without the paper's code and data version, its absolute
+  numbers can't be verified. On the released data, with a strict
+  leave-one-subject-out split, the physio signal for STAI/NASA is at or
+  near chance level.
+
+**Full LOSO reproduction (all 52 subjects, all modalities, fusion):** still
+running when this was written. Table to be added from
+`results/reproduce_paper.json`.
+
+## Dataset exploration (2026-10-19)
+
+`explore_dataset.py` -> `eda/EDA.md`: 14 figures on coverage, label
+structure, feature quality, redundancy, similarity and information content.
+Headlines:
+
+- **Features mostly encode the participant's identity.**
+  - A trial's nearest neighbour is from the same person 56-72% of the time
+    (chance 2%).
+  - Participants can be identified from one trial at 54-77% balanced
+    accuracy.
+- **NASA-TLX is the only clearly learnable target, and it is task-driven.**
+  - The task explains 42% of NASA variance beyond the person.
+  - The load class is decoded at 48-55% on unseen participants (chance
+    33%).
+  - The features that track NASA largely track the task.
+- **STAI behaves like a personal trait**: 46% of its variance is between
+  people and 12% from the task. Its classes decode at chance.
+- **SAM affect labels are noisy**: 52-64% of their variance is unexplained,
+  and 15-25% of participants are near-flat responders.
+- **Known holes**:
+  - respiration features 14% missing;
+  - extreme values in EDA and the EEG theta/alpha ratios;
+  - no facial AUs in VR;
+  - only 8 "VR job sim" trials;
+  - habituation over the cobot repetitions (NASA 27.7 -> 20.1).
+- **The heart-rate channel is not healthy** (`inspect_heart_rate.py`,
+  `eda/EDA.md` section 6).
+  - 70% of the 60 s windows contain ECG beat-detection artifacts (extra or
+    missed beats); only 1 of 52 participants is mostly clean.
+  - The HRV variability features are artifact-dominated: median RMSSD is
+    202 ms in artifact windows vs 32.5 ms in clean ones.
+  - Trial HR barely tracks the ratings (within-person r about 0).
+  - Resting HR is unstable (rest 1 vs rest 2: r = 0.49).
+  - Fix: re-detect the R-peaks from the raw ECG with artifact correction.
+
+## Valence/arousal quadrants from HR, EDA and facial AUs (2026-10-19)
+
+**Clean dataset (`clean_dataset.py` -> `data/clean_labels.csv`).** All rules
+are fixed data-quality rules, not tuned on model results:
+- dropped 15 trials with two conflicting questionnaires;
+- dropped 12 participants:
+  - fewer than 8 trials: 1013, 1014, 1015, 1061;
+  - constant valence or arousal, or only 1 trial on one side of their own
+    mean: 1001, 1005, 1009, 1063, 1066, 10869;
+  - unusable physio/EEG: 1064, 1035;
+- flagged 71 dead EEG windows (dropped in loaders via `bad_eeg_windows()`).
+
+Result: 646 trials, 40 participants. Classes are Russell circumplex
+quadrants, relative to each participant's own mean valence and arousal.
+
+**Setup (`train_va_quadrants.py`, run with ~/.venvs/mphrc/bin/python):**
+- Inputs: HRV (72 features) + EDA (132) + facial AUs (40) only, each z-scored
+  within participant.
+- Trials: 548 with both physio and AUs, 39 participants. Quadrant balance:
+  calm 35%, stressed 30%, sad/bored 19%, happy 16%.
+- Evaluation: participant-wise 5-fold, repeated 5x; test participants are
+  never seen in training.
+- (a) a direct 4-class classifier.
+- (b) two regressors on within-participant z-scored valence and arousal; the
+  quadrant is read from the signs of the two predictions.
+
+**Results (quadrant macro-F1, best of linear / random forest / gradient
+boosting; repeat-to-repeat std ~0.01-0.02):**
+
+| features | (a) classify | (b) regress -> signs |
+|---|---:|---:|
+| HR + EDA | 0.302 | 0.302 |
+| AUs | 0.306 | **0.332** |
+| HR + EDA + AUs | 0.302 | 0.321 |
+| *task identity only* | *0.392* | *0.372* |
+| *chance* | *0.25* | *0.25* |
+
+- **(b) is slightly better than (a)**: it wins in 8 of 9 feature/model
+  combinations, by +0.026 macro-F1 on average. It also gives a continuous
+  intensity for free. But the participant-level difference between the best
+  of each isn't significant (Wilcoxon p = 0.85).
+- **Absolute performance is low.** The best sensor model (0.33) is closer to
+  chance (0.25) than to the task-identity baseline (0.39).
+- **Arousal carries the signal; valence doesn't.**
+  - Arousal high/low balanced accuracy: 0.55-0.64; within-participant
+    Spearman of (b)'s arousal prediction: 0.22-0.33.
+  - Valence: 0.51-0.55 (chance 0.5) and 0.04-0.11.
+  - Quadrant accuracy is capped by valence. The "stressed" quadrant is
+    recalled 33-37% of the time.
+- **Facial AUs are at least as useful as HR+EDA**, and combining the
+  modalities doesn't help.
 
 ## Known data quirks (handled in `prepare_dataset.py`)
 
