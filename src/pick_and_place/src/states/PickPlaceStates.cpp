@@ -2216,9 +2216,19 @@ struct DirectJointMove : mc_control::fsm::State
     return q;
   }
 
+  // At most this many points per trajectory. Sampling every sample_dt_ made
+  // a slow 151 s entry leg 3027 points - a ~0.5 MB message - and the arm
+  // never moved (live 2026-10-28; the 158-point, ~27 KB wrist roll always
+  // had). Large messages are a known weak spot of the default DDS
+  // transport. Nothing is lost by spacing points out: every point carries
+  // position, velocity AND acceleration, so the JTC fits a quintic per
+  // segment, which reproduces the quintic profile exactly and the cruise
+  // profile to 1e-12 rad at 200 points over 151 s.
+  static constexpr int kMaxPoints = 200;
+
   bool sendPlan(mc_control::fsm::Controller & ctl)
   {
-    const int n = std::max(1, static_cast<int>(std::ceil(T_ / sample_dt_)));
+    const int n = std::clamp(static_cast<int>(std::ceil(T_ / sample_dt_)), 1, kMaxPoints);
     std::vector<double> times;
     std::vector<std::vector<double>> Q, QD, QDD;
     times.reserve(n); Q.reserve(n); QD.reserve(n); QDD.reserve(n);
