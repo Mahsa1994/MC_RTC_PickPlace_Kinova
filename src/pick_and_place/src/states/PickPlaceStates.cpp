@@ -61,6 +61,18 @@ static inline double angDiff(double a, double b)
   return d;
 }
 
+// Only these joints spin freely (URDF type `continuous`), so only these may
+// have a TARGET wrapped by 2*pi. Wrapping a limited joint sends it the wrong
+// way, past its limit. Live 2026-10-28, after the arm was left with the elbow
+// folded the other way (joint_3 -2.18) for a hardware change: start_2's
+// joint_3 target +1.8801 was "wrapped" to 1.8801 - 2*pi = -4.4031, beyond the
+// -2.57 limit, and the move started folding the arm into its own body.
+// angDiff() for COMPARING two nearby angles stays fine for every joint.
+static inline bool isContinuous(const std::string & joint)
+{
+  return joint == "joint_1" || joint == "joint_4" || joint == "joint_6";
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 static PickPlaceController & ppc(mc_control::fsm::Controller & ctl)
 {
@@ -1420,6 +1432,9 @@ void start(mc_control::fsm::Controller & ctl) override
       if(mbs[ji].dof() != 1) continue;
       if(!target_joints_.count(jname)) continue;
 
+      // Continuous joints only - see isContinuous(). A limited joint keeps
+      // its YAML target and goes there the way its limits allow.
+      if(!isContinuous(jname)) continue;
       double current = q[ji][0];
       double & target = target_joints_.at(jname)[0];
       // Snap to the nearest equivalent angle
@@ -1600,7 +1615,7 @@ void start(mc_control::fsm::Controller & ctl) override
         // Wrapping per-sample keeps the reference within pi of the model at
         // all times. It stays smooth: when the model's q jumps by 2*pi at the
         // cut, so does the reference, and their difference never does.
-        if(ctl.robot().hasJoint(kv.first))
+        if(isContinuous(kv.first) && ctl.robot().hasJoint(kv.first))
         {
           auto idx = ctl.robot().jointIndexByName(kv.first);
           if(static_cast<size_t>(idx) < mq.size() && mq[idx].size() == 1)
@@ -2075,6 +2090,7 @@ struct DirectJointMove : mc_control::fsm::State
   bool   use_speed_scale_ = false; // true: v_max and min_duration follow speed_scale
   bool   quintic_         = false; // profile: quintic -> JointMove's exact timing
   double skip_if_within_  = -1.0;  // rad; already this close on every joint -> skip
+  double max_joint_move_  = -1.0;  // rad; any joint further than this -> refuse (<= 0 off)
   std::string next_state_;
 
   // Runtime
@@ -2100,6 +2116,7 @@ struct DirectJointMove : mc_control::fsm::State
     if(config.has("next"))            next_state_     = static_cast<std::string>(config("next"));
     if(config.has("use_speed_scale")) use_speed_scale_ = config("use_speed_scale");
     if(config.has("skip_if_within"))  skip_if_within_  = config("skip_if_within");
+    if(config.has("max_joint_move"))  max_joint_move_  = config("max_joint_move");
     if(config.has("profile"))
     {
       const std::string prof = static_cast<std::string>(config("profile"));
@@ -2269,7 +2286,21 @@ struct DirectJointMove : mc_control::fsm::State
     for(size_t k = 0; ok && k < 6; ++k)
     {
       const std::string jn = jointName(k);
-      dq_[k] = angDiff(target_[k], q0_[k]);
+      const auto idx = ctl.robot().jointIndexByName(jn);
+      if(isContinuous(jn))
+        dq_[k] = angDiff(target_[k], q0_[k]);   // shortest way round
+      else
+      {
+        // Limited joint: the real target, and it must be inside the limits.
+        dq_[k] = target_[k] - q0_[k];
+        const double lo = ctl.robot().ql()[idx][0], hi = ctl.robot().qu()[idx][0];
+        if(target_[k] < lo || target_[k] > hi)
+        {
+          mc_rtc::log::error("[{}] REFUSED: '{}' target {:.4f} is outside its limits [{:.4f}, {:.4f}]",
+                             name(), jn, target_[k], lo, hi);
+          ok = false;
+        }
+      }
       mc_rtc::log::info("[{}]   '{}' current={:.4f}  target={:.4f}  delta={:.4f}",
                         name(), jn, q0_[k], q0_[k] + dq_[k], dq_[k]);
       // Crossing +/-pi is allowed: sent as one continuous angle - see the
@@ -2278,6 +2309,19 @@ struct DirectJointMove : mc_control::fsm::State
         mc_rtc::log::info("[{}]   '{}' crosses +/-pi: sent as one continuous angle {:.4f} -> {:.4f} "
                           "(= {:.4f})", name(), jn, q0_[k], q0_[k] + dq_[k], angDiff(q0_[k] + dq_[k], 0.0));
       max_abs = std::max(max_abs, std::abs(dq_[k]));
+    }
+    // Entry legs (start_*) run from wherever the arm was left. If that is far
+    // from the pose - after maintenance, a web-app jog, a different elbow
+    // configuration - a straight joint-space move can sweep through the
+    // workspace or into the arm's own body. Refuse, and say where to jog to.
+    if(ok && max_joint_move_ > 0.0 && max_abs > max_joint_move_)
+    {
+      mc_rtc::log::error("[{}] REFUSED: the arm is {:.2f} rad from this pose on at least one joint "
+                         "(max_joint_move {:.2f}). Jog it close to [{:.4f}, {:.4f}, {:.4f}, {:.4f}, "
+                         "{:.4f}, {:.4f}] rad with the web app, then restart the trial.",
+                         name(), max_abs, max_joint_move_, target_[0], target_[1], target_[2],
+                         target_[3], target_[4], target_[5]);
+      ok = false;
     }
     const double sc = use_speed_scale_ ? ppc(ctl).speedScale() : 1.0;
     double v_eff = v_max_ * sc;

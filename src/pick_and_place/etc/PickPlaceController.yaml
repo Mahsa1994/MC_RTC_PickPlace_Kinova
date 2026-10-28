@@ -417,6 +417,16 @@ states:
   #                                       fast's peak (46% today at 2.5),
   #                                       ~89% base, ~96% slow
   #
+  # ENTRY GUARD (2026-10-28). start_1/2/3 run from wherever the arm was
+  # left. After the sensor was fitted the arm sat with its elbow folded the
+  # other way (joint_3 -2.18, Kinova's own Home side), and start_2's move
+  # began folding it into its own body: the target wrap was applied to
+  # joint_3, a LIMITED joint (fixed - only joints 1/4/6 wrap now). Even the
+  # correct move would have swept the base 179 deg and flipped the elbow
+  # through straight. So these three refuse if any joint is more than
+  # max_joint_move (1.2 rad) away, and log the pose to jog to. Normal chain
+  # switching needs at most 0.94 rad (start_1 -> start_3).
+  #
   # Cycle at fast: near 82.3 -> 49.1 s, far1 85.0 -> 50.2 s, far2 82.4 ->
   # 49.2 s (base-rotation legs 22.7 -> 11.3 s each, compliant 10.6 -> 5.3 s
   # each, wrist roll fixed at 7.9 s each). slow and base unchanged.
@@ -440,6 +450,7 @@ states:
     # it already is, rather than holding a no-op reference for the full
     # duration. Same bar as `threshold` below.
     skip_if_within: 0.05
+    max_joint_move: 1.2     # REFUSE if any joint is further than this - jog closer first (2026-10-28)
     min_duration: 15.0      # floor, divided by speed_scale - as JointMove's duration
     threshold: 0.05
     track_tolerance: 0.15   # rad, arm this far off the plan -> stop and hold
@@ -743,6 +754,7 @@ states:
     target: [-3.0683, -0.2699, 1.8801, -0.0026, 0.9525, -1.4534]
     # goes here from wherever the arm is; skips if already within
     skip_if_within: 0.05
+    max_joint_move: 1.2     # REFUSE if any joint is further than this - jog closer first (2026-10-28)
     min_duration: 15.0      # floor, divided by speed_scale - as JointMove's duration
     threshold: 0.05
     track_tolerance: 0.15   # rad, arm this far off the plan -> stop and hold
@@ -861,6 +873,7 @@ states:
     target: [-3.0314, -0.5614, 1.4110, -0.1049, 0.9267, -1.4534]
     # goes here from wherever the arm is; skips if already within
     skip_if_within: 0.05
+    max_joint_move: 1.2     # REFUSE if any joint is further than this - jog closer first (2026-10-28)
     min_duration: 15.0      # floor, divided by speed_scale - as JointMove's duration
     threshold: 0.05
     track_tolerance: 0.15   # rad, arm this far off the plan -> stop and hold
