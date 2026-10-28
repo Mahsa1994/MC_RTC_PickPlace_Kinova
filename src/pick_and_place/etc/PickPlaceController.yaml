@@ -81,12 +81,12 @@ trials:
   #
   # The two factors are independent and compose cleanly:
   #   entry:        which chain to run  -> start_1 / start_2 / start_3
-  #   speed_scale:  how fast to run it  -> 1.0 / 1.6 / 2.5
-  #                 (raised from 0.5 / 1.0 / 2.5 on 2026-10-21: slow 2x and
-  #                 base 1.6x faster. fast unchanged - 2.5 is already at the
-  #                 ~0.17 rad/s the arm can track through the bridge, so a
-  #                 higher fast needs bridge work, not a bigger number here.
-  #                 Each level is ~1.6x the one below.)
+  #   speed_scale:  how fast to run it  -> 1.0 / 1.6 / 5.0
+  #                 (from 0.5 / 1.0 / 2.5 on 2026-10-21: slow 2x and base
+  #                 1.6x faster, then fast 2.5 -> 5.0 once the joint legs
+  #                 went direct and the bridge limits were resized - see
+  #                 the joint-legs note above start_1. fast is now ~3.1x
+  #                 base; slow -> base stays 1.6x.)
   # Each chain drives to its OWN start pose first and returns there at the
   # end, so conditions can be run in any order without a sequence effect.
   #
@@ -98,9 +98,10 @@ trials:
   #
   # ⚠ THE VELOCITY GATE MAKES COMPLIANCE SPEED-DEPENDENT. The bridge scales
   # the estimated wrench down as the arm moves faster (qd_gate 0.05 -> 0.3
-  # rad/s), so the SAME push registers differently per speed: ~91% of it at
-  # slow, ~74% at base, ~48% at fast (near's compliant leg at its peak, for
-  # the 1.0 / 1.6 / 2.5 scales). A contact that pauses the arm in a slow
+  # rad/s; 0.65 since 2026-10-21), so the SAME push registers differently
+  # per speed: ~96% of it at slow, ~89% at base, ~47% at fast (near's
+  # compliant leg at its peak, joint_5, for the 1.0 / 1.6 / 5.0 scales). A
+  # contact that pauses the arm in a slow
   # trial may not in a fast one. That is a confound between the speed factor
   # and the compliance behaviour - worth deciding how to handle before
   # collecting data (widen qd_gate_high, or scale contact_force_threshold
@@ -114,7 +115,7 @@ trials:
     speed_scale: 1.6
     entry: start_1
   near_fast:
-    speed_scale: 2.5
+    speed_scale: 5.0
     entry: start_1
 
   # ── far1 (entry start_2) ──
@@ -125,7 +126,7 @@ trials:
     speed_scale: 1.6
     entry: start_2
   far1_fast:
-    speed_scale: 2.5
+    speed_scale: 5.0
     entry: start_2
 
   # ── far2 (entry start_3) ──
@@ -136,7 +137,7 @@ trials:
     speed_scale: 1.6
     entry: start_3
   far2_fast:
-    speed_scale: 2.5
+    speed_scale: 5.0
     entry: start_3
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -389,32 +390,59 @@ states:
   # does not close: the arm would park at the old angle and re-roll on
   # every trial, which is the 25 s move this change removes.
 
+  # ── JOINT LEGS: DIRECT, AND fast 2.5 -> 5.0 (2026-10-21) ─────────────
+  # Every joint-space leg in the three chains - start_*, step_1*,
+  # start_*_end, plus the unload roll states further down - is now a
+  # DirectJointMove: planned up front and sent to the JTC in one go instead
+  # of streamed through the bridge's delta_max leash. These nine follow the
+  # trial's speed_scale with JointMove's own formula and curve
+  # (`use_speed_scale: true`, `profile: quintic`), so at slow and base their
+  # durations are exactly what they were; only `fast` changed, because
+  # `fast` went 2.5 -> 5.0. Only the six compliant legs still stream.
+  #
+  # Why the compliant legs can follow: they are the one place the bridge's
+  # limits still bind, so those were sized from the joint paths (IK on the
+  # validated FK; matches the measured peaks at 2.5 within 3-5%). The
+  # fastest joint on every compliant leg is joint_5; at 5.0 it reaches
+  # 0.369 rad/s on near (0.288 far1, 0.267 far2). The launch file now has:
+  #     delta_max        0.006 -> 0.016   lead 0.0125 needed, 1.28x margin
+  #                                       (at 0.006, near_fast already
+  #                                       needed 0.0063 - why it was the
+  #                                       troublesome one)
+  #     model_real_gate  0.05  -> 0.10    stays 2x above the compliant legs'
+  #                                       pause threshold, which scales to
+  #                                       0.010 x 5.0 = 0.050
+  #     qd_gate_high     0.3   -> 0.65    above 0.3 rad/s the bridge passed
+  #                                       NO contact force; now ~47% at
+  #                                       fast's peak (46% today at 2.5),
+  #                                       ~89% base, ~96% slow
+  #
+  # Cycle at fast: near 82.3 -> 49.1 s, far1 85.0 -> 50.2 s, far2 82.4 ->
+  # 49.2 s (base-rotation legs 22.7 -> 11.3 s each, compliant 10.6 -> 5.3 s
+  # each, wrist roll fixed at 7.9 s each). slow and base unchanged.
+
   start_1:
-    base: JointMove
-    stiffness: 2.0
-    v_max: 0.05
+    base: DirectJointMove   # sent to the JTC in one go - see the joint-legs note above start_1
+    v_max: 0.05             # rad/s peak at speed_scale 1.0, multiplied by it
+    use_speed_scale: true
+    profile: quintic        # JointMove's curve - durations unchanged at every speed
     # RE-CAPTURED 2026-10-14, container removed. Read directly off
     # /joint_states with the driver up and the mc_rtc bridge down, so no
     # dry-run and no risk of motion during capture. Previous value was
     #     [-2.9995, 0.0027, 2.4176, -0.0587, 0.6477, 0.1337]
     # joint_1 sits at -3.0312 rad (-173.7 deg), i.e. 6.3 deg from the
     # -pi wrap boundary, so every leg in or out of this pose crosses it.
-    # That is handled (see angDiff and the reference wrapping in refAt()
-    # in PickPlaceStates.cpp) but it is why those fixes are load-bearing
-    # rather than defensive.
+    # That is handled - DirectJointMove sends each crossing leg as one
+    # continuous angle and every check is wrap-aware - and it is why that
+    # handling is load-bearing rather than defensive.
     target: [-3.0312, 0.1537, 2.3490, -0.1051, 0.9400, -1.4534]
     # "if the robot is not at the safe pose, go there" - skips instantly when
     # it already is, rather than holding a no-op reference for the full
     # duration. Same bar as `threshold` below.
     skip_if_within: 0.05
-    duration: 15.0
+    min_duration: 15.0      # floor, divided by speed_scale - as JointMove's duration
     threshold: 0.05
-    # Stall guard: freeze the interpolation clock and hold the model on
-    # the encoders if the real arm falls this far behind, so a physically
-    # blocked joint holds loudly instead of running the model past the
-    # bridge's model_real_gate into an unrecoverable deadlock. See the
-    # note on divergence_pause_ in PickPlaceStates.cpp (JointMove).
-    divergence_pause: 0.03
+    track_tolerance: 0.15   # rad, arm this far off the plan -> stop and hold
     # First leg of the near chain, same shape as start_2/start_3 in the far
     # chains: the trial drives to its OWN start pose before anything else.
     next: step_1
@@ -436,15 +464,16 @@ states:
   # STILL NEEDED: step_2, unload_1.
 
   step_1:
-    base: JointMove
-    stiffness: 2.0
-    v_max: 0.05
+    base: DirectJointMove   # sent to the JTC in one go - see the joint-legs note above start_1
+    v_max: 0.05             # rad/s peak at speed_scale 1.0, multiplied by it
+    use_speed_scale: true
+    profile: quintic        # JointMove's curve - durations unchanged at every speed
     # Captured 2026-10-12 from init_q with the arm placed by hand.
     # RE-CAPTURED 2026-10-14 off /joint_states, container removed.
     target: [1.7412, 0.1194, 2.2088, -0.0599, 0.9549, -1.4534]
-    duration: 15.0
+    min_duration: 15.0      # floor, divided by speed_scale - as JointMove's duration
     threshold: 0.05
-    divergence_pause: 0.03
+    track_tolerance: 0.15   # rad, arm this far off the plan -> stop and hold
     next: step_2
 
   # unload_1 - tip the container by rolling the wrist. JointMove: it is a
@@ -677,13 +706,14 @@ states:
   # same reason start_2_end/start_3_end are: mc_rtc keys transitions on
   # (state, output), so a state cannot both begin and end a chain.
   start_1_end:
-    base: JointMove
-    stiffness: 2.0
-    v_max: 0.05
+    base: DirectJointMove   # sent to the JTC in one go - see the joint-legs note above start_1
+    v_max: 0.05             # rad/s peak at speed_scale 1.0, multiplied by it
+    use_speed_scale: true
+    profile: quintic        # JointMove's curve - durations unchanged at every speed
     target: [-3.0312, 0.1537, 2.3490, -0.1051, 0.9400, -1.4534]   # = start_1
-    duration: 15.0
+    min_duration: 15.0      # floor, divided by speed_scale - as JointMove's duration
     threshold: 0.05
-    divergence_pause: 0.03
+    track_tolerance: 0.15   # rad, arm this far off the plan -> stop and hold
     next: TrialGate
 
   # ═══════════════════════════════════════════════════════════════════
@@ -706,24 +736,26 @@ states:
   # Compliant legs: step_2_far1 and step_1_far1_return (the step_1<->step_2
   # traverse, both directions), matching near.
   start_2:
-    base: JointMove
-    stiffness: 2.0
-    v_max: 0.05
+    base: DirectJointMove   # sent to the JTC in one go - see the joint-legs note above start_1
+    v_max: 0.05             # rad/s peak at speed_scale 1.0, multiplied by it
+    use_speed_scale: true
+    profile: quintic        # JointMove's curve - durations unchanged at every speed
     target: [-3.0683, -0.2699, 1.8801, -0.0026, 0.9525, -1.4534]
     # goes here from wherever the arm is; skips if already within
     skip_if_within: 0.05
-    duration: 15.0
+    min_duration: 15.0      # floor, divided by speed_scale - as JointMove's duration
     threshold: 0.05
-    divergence_pause: 0.03
+    track_tolerance: 0.15   # rad, arm this far off the plan -> stop and hold
     next: step_1_far1
   step_1_far1:
-    base: JointMove
-    stiffness: 2.0
-    v_max: 0.05
+    base: DirectJointMove   # sent to the JTC in one go - see the joint-legs note above start_1
+    v_max: 0.05             # rad/s peak at speed_scale 1.0, multiplied by it
+    use_speed_scale: true
+    profile: quintic        # JointMove's curve - durations unchanged at every speed
     target: [1.6522, -0.2699, 1.8801, -0.0026, 0.9525, -1.4534]
-    duration: 15.0
+    min_duration: 15.0      # floor, divided by speed_scale - as JointMove's duration
     threshold: 0.05
-    divergence_pause: 0.03
+    track_tolerance: 0.15   # rad, arm this far off the plan -> stop and hold
     next: step_2_far1
   step_2_far1:
     base: ComplianceCartesianMove
@@ -791,15 +823,16 @@ states:
       stiffness: {linear: [100, 100, 100], angular: [10, 10, 10]}
       damping:   {linear: [60, 60, 60],    angular: [15, 15, 15]}
   start_2_end:
-    base: JointMove
-    stiffness: 2.0
-    v_max: 0.05
+    base: DirectJointMove   # sent to the JTC in one go - see the joint-legs note above start_1
+    v_max: 0.05             # rad/s peak at speed_scale 1.0, multiplied by it
+    use_speed_scale: true
+    profile: quintic        # JointMove's curve - durations unchanged at every speed
     target: [-3.0683, -0.2699, 1.8801, -0.0026, 0.9525, -1.4534]
     # same pose as start_2; separate state because mc_rtc keys
     # transitions on (state, output) and this one returns to the gate
-    duration: 15.0
+    min_duration: 15.0      # floor, divided by speed_scale - as JointMove's duration
     threshold: 0.05
-    divergence_pause: 0.03
+    track_tolerance: 0.15   # rad, arm this far off the plan -> stop and hold
     next: TrialGate
 
 
@@ -821,25 +854,27 @@ states:
   # a real pose (it sits 64 mm lower), not capture drift. far1's equivalent
   # deltas were 0.0003 rad, where snapping cost nothing.
   start_3:
-    base: JointMove
-    stiffness: 2.0
-    v_max: 0.05
+    base: DirectJointMove   # sent to the JTC in one go - see the joint-legs note above start_1
+    v_max: 0.05             # rad/s peak at speed_scale 1.0, multiplied by it
+    use_speed_scale: true
+    profile: quintic        # JointMove's curve - durations unchanged at every speed
     target: [-3.0314, -0.5614, 1.4110, -0.1049, 0.9267, -1.4534]
     # goes here from wherever the arm is; skips if already within
     skip_if_within: 0.05
-    duration: 15.0
+    min_duration: 15.0      # floor, divided by speed_scale - as JointMove's duration
     threshold: 0.05
-    divergence_pause: 0.03
+    track_tolerance: 0.15   # rad, arm this far off the plan -> stop and hold
     next: step_1_far2
   step_1_far2:
-    base: JointMove
-    stiffness: 2.0
-    v_max: 0.05
+    base: DirectJointMove   # sent to the JTC in one go - see the joint-legs note above start_1
+    v_max: 0.05             # rad/s peak at speed_scale 1.0, multiplied by it
+    use_speed_scale: true
+    profile: quintic        # JointMove's curve - durations unchanged at every speed
     target: [1.6243, -0.6464, 1.4741, 0.0037, 0.8512, -1.4534]
     # as captured - see the note above about NOT snapping this one
-    duration: 15.0
+    min_duration: 15.0      # floor, divided by speed_scale - as JointMove's duration
     threshold: 0.05
-    divergence_pause: 0.03
+    track_tolerance: 0.15   # rad, arm this far off the plan -> stop and hold
     next: step_2_far2
   step_2_far2:
     base: ComplianceCartesianMove
@@ -907,15 +942,16 @@ states:
       stiffness: {linear: [100, 100, 100], angular: [10, 10, 10]}
       damping:   {linear: [60, 60, 60],    angular: [15, 15, 15]}
   start_3_end:
-    base: JointMove
-    stiffness: 2.0
-    v_max: 0.05
+    base: DirectJointMove   # sent to the JTC in one go - see the joint-legs note above start_1
+    v_max: 0.05             # rad/s peak at speed_scale 1.0, multiplied by it
+    use_speed_scale: true
+    profile: quintic        # JointMove's curve - durations unchanged at every speed
     target: [-3.0314, -0.5614, 1.4110, -0.1049, 0.9267, -1.4534]
     # same pose as start_3; separate state because mc_rtc keys
     # transitions on (state, output)
-    duration: 15.0
+    min_duration: 15.0      # floor, divided by speed_scale - as JointMove's duration
     threshold: 0.05
-    divergence_pause: 0.03
+    track_tolerance: 0.15   # rad, arm this far off the plan -> stop and hold
     next: TrialGate
 
   # ── Trial gate ───────────────────────────────────────────────────────

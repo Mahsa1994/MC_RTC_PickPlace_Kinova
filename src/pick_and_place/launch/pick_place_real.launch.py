@@ -164,10 +164,40 @@ def generate_launch_description():
                     # THIS IS A SAFETY CLAMP - it bounds how far a command may
                     # lead the arm. Raise one step at a time, watch
                     # model-vs-real in the per-state logs, and keep it well
-                    # under model_real_gate (0.05) below, past which the
+                    # under model_real_gate below, past which the
                     # bridge stops publishing and needs a restart.
-                    'delta_max': 0.006,
-                    'model_real_gate': 0.05,
+                    # 0.006 -> 0.016 on 2026-10-21, ONE 2.7x step, for fast at
+                    # speed_scale 5.0. Only the six compliant legs still stream
+                    # (every joint leg is a direct JTC trajectory now), and
+                    # their fastest joint is joint_5: 0.369 rad/s on near at
+                    # 5.0 (IK on the validated FK, which matches the measured
+                    # peaks at 2.5 within 3-5%). With joint_5 answering ~34 ms
+                    # late that needs a 0.0125 lead - 1.28x under 0.016. At
+                    # slow/base the most any leg needs is ~0.004, so this
+                    # changes nothing there; what it does loosen is how hard a
+                    # runaway model can push before model_real_gate stops it.
+                    # Watch for: model-vs-real on the compliant legs at fast
+                    # (expect ~0.0125 at peak), and any Joint Fault.
+                    'delta_max': 0.016,
+                    # 0.05 -> 0.10 on 2026-10-21. The compliant legs pause at
+                    # divergence_pause x speed_scale = 0.010 x 5.0 = 0.050 at
+                    # fast; this gate must sit above that or the bridge stops
+                    # publishing at the same moment the state pauses. 0.10
+                    # keeps today's 2x ratio (0.05 vs 0.025 at 2.5).
+                    'model_real_gate': 0.10,
+                    # Velocity gate on the estimated wrench: full below low,
+                    # zero above high. Was the bridge default (0.05 / 0.3)
+                    # until 2026-10-21. At fast 5.0 the compliant legs reach
+                    # 0.369 rad/s, past 0.3, where NO contact force would get
+                    # through - the arm would not notice a touch at all.
+                    # 0.65 keeps fast's peak at ~47% (today ~46% at 2.5), and
+                    # raises base to ~89% (was ~73%) and slow to ~96% (~90%):
+                    # compliance is no less sensitive anywhere. If slow/base
+                    # start pausing on the compliant legs with nobody touching
+                    # them, that is motion-induced wrench error getting
+                    # through - raise contact_force_threshold, not this.
+                    'qd_gate_low': 0.05,
+                    'qd_gate_high': 0.65,
                 }]
             )
         ]

@@ -2041,10 +2041,22 @@ struct Idle : mc_control::fsm::State
 // - blocked, or the Kinova faulted - it stops the JTC where the arm is,
 // hands control back to the bridge, and holds without advancing.
 //
-// Speed is FIXED: speed_scale is ignored. The profile is a smooth
-// trapezoid - ramp over the first `accel_fraction` of the move, cruise at
-// v_max, ramp down over the last - with zero acceleration and jerk at both
-// ends (quintic smoothstep ramps).
+// Speed: FIXED by default (speed_scale ignored - the unload wrist roll).
+// `use_speed_scale: true` makes v_max and min_duration follow the trial's
+// speed_scale exactly as JointMove's do (the base-rotation legs, 2026-10-21).
+// Profile: `cruise` (default) is a smooth trapezoid - ramp over the first
+// `accel_fraction`, cruise at v_max, ramp down - with zero acceleration and
+// jerk at both ends; `quintic` is JointMove's own curve, so a leg moved here
+// from JointMove keeps exactly the timing it had.
+//
+// Continuous joints may cross +/-pi. The plan is sent as ONE continuous
+// angle (e.g. joint_1 -3.03 -> -4.54, the short way to +1.74) rather than
+// wrapped, because the JTC interpolates between consecutive points as given
+// and a wrapped point would jump 2*pi mid-trajectory. The driver treats
+// angles 2*pi apart as the same position - the streamed legs cross the cut
+// every cycle with commands that do exactly that - and every check here is
+// wrap-aware, so if the arm ever went the other way the track_tolerance
+// abort would stop it within 0.15 rad.
 struct DirectJointMove : mc_control::fsm::State
 {
   static constexpr const char * kHold   = "KortexBridge::HoldStreaming";
@@ -2060,10 +2072,13 @@ struct DirectJointMove : mc_control::fsm::State
   double track_tol_      = 0.15;  // rad, REAL arm this far off the plan -> abort
   double settle_timeout_ = 5.0;   // s after the plan ends before complaining
   double sample_dt_      = 0.05;  // s between points sent to the JTC
+  bool   use_speed_scale_ = false; // true: v_max and min_duration follow speed_scale
+  bool   quintic_         = false; // profile: quintic -> JointMove's exact timing
+  double skip_if_within_  = -1.0;  // rad; already this close on every joint -> skip
   std::string next_state_;
 
   // Runtime
-  enum class Phase { Refused, Simulating, WaitHold, Running, Settling, Aborted };
+  enum class Phase { Refused, Skipped, Simulating, WaitHold, Running, Settling, Aborted };
   Phase phase_ = Phase::Refused;
   std::vector<double> q0_, dq_;   // start, and signed shortest-path delta
   double T_ = 0.0, t_ = 0.0, wait_ = 0.0, settle_ = 0.0, dt_ = 0.001;
@@ -2083,6 +2098,15 @@ struct DirectJointMove : mc_control::fsm::State
     if(config.has("track_tolerance")) track_tol_      = config("track_tolerance");
     if(config.has("settle_timeout"))  settle_timeout_ = config("settle_timeout");
     if(config.has("next"))            next_state_     = static_cast<std::string>(config("next"));
+    if(config.has("use_speed_scale")) use_speed_scale_ = config("use_speed_scale");
+    if(config.has("skip_if_within"))  skip_if_within_  = config("skip_if_within");
+    if(config.has("profile"))
+    {
+      const std::string prof = static_cast<std::string>(config("profile"));
+      if(prof == "quintic")     quintic_ = true;
+      else if(prof == "cruise") quintic_ = false;
+      else mc_rtc::log::error("[DirectJointMove] unknown profile '{}' - using cruise", prof);
+    }
     accel_fraction_ = std::clamp(accel_fraction_, 0.05, 0.5);
     // Sanity bound, not a tuning value: 82% of the URDF limit for the small
     // actuators (1.2218 rad/s, joints 4-6).
@@ -2093,11 +2117,18 @@ struct DirectJointMove : mc_control::fsm::State
     }
   }
 
-  // Smooth trapezoid on u in [0,1]: s, ds/du, d2s/du2. Same shape as
-  // JointMove's accel_fraction profile.
-  static void profile(double u, double b, double & s, double & ds, double & dds)
+  // s, ds/du, d2s/du2 on u in [0,1]. Quintic: JointMove's 10u^3-15u^4+6u^5.
+  // Otherwise the smooth trapezoid, same shape as JointMove's accel_fraction.
+  static void profile(double u, double b, bool quintic, double & s, double & ds, double & dds)
   {
     u = std::clamp(u, 0.0, 1.0);
+    if(quintic)
+    {
+      s   = u * u * u * (10.0 - 15.0 * u + 6.0 * u * u);
+      ds  = 30.0 * u * u * (1.0 - u) * (1.0 - u);
+      dds = 60.0 * u * (1.0 - u) * (1.0 - 2.0 * u);
+      return;
+    }
     auto I  = [](double x) { return x * x * x * x * (2.5 - 3.0 * x + x * x); };   // integral of S
     auto S  = [](double x) { return x * x * x * (10.0 - 15.0 * x + 6.0 * x * x); }; // smoothstep
     auto dS = [](double x) { return 30.0 * x * x * (1.0 - x) * (1.0 - x); };         // its slope
@@ -2123,7 +2154,7 @@ struct DirectJointMove : mc_control::fsm::State
   std::vector<double> planAt(double t) const
   {
     double s, ds, dds;
-    profile(T_ > 1e-9 ? t / T_ : 1.0, accel_fraction_, s, ds, dds);
+    profile(T_ > 1e-9 ? t / T_ : 1.0, accel_fraction_, quintic_, s, ds, dds);
     std::vector<double> q(6);
     for(size_t k = 0; k < 6; ++k) q[k] = q0_[k] + dq_[k] * s;
     return q;
@@ -2178,7 +2209,7 @@ struct DirectJointMove : mc_control::fsm::State
     {
       const double t = T_ * static_cast<double>(i) / n;
       double s, ds, dds;
-      profile(t / T_, accel_fraction_, s, ds, dds);
+      profile(t / T_, accel_fraction_, quintic_, s, ds, dds);
       std::vector<double> q(6), qd(6), qdd(6);
       for(size_t k = 0; k < 6; ++k)
       {
@@ -2241,21 +2272,23 @@ struct DirectJointMove : mc_control::fsm::State
       dq_[k] = angDiff(target_[k], q0_[k]);
       mc_rtc::log::info("[{}]   '{}' current={:.4f}  target={:.4f}  delta={:.4f}",
                         name(), jn, q0_[k], q0_[k] + dq_[k], dq_[k]);
-      // The JTC is fed absolute angles. Keep every point inside [-pi, pi] so
-      // a continuous joint is never asked across the branch cut, where a JTC
-      // without wraparound would take the long way. Each joint moves
-      // monotonically, so checking the end is enough. (Never the case for
-      // the unload roll: carry -1.45, unload +1.43..+1.56.)
+      // Crossing +/-pi is allowed: sent as one continuous angle - see the
+      // note above the struct.
       if(std::abs(q0_[k] + dq_[k]) > M_PI)
-      {
-        mc_rtc::log::error("[{}] '{}' would cross the +/-pi branch cut ({:.4f} -> {:.4f}) - "
-                           "refusing rather than risk the long way round",
-                           name(), jn, q0_[k], q0_[k] + dq_[k]);
-        ok = false;
-      }
+        mc_rtc::log::info("[{}]   '{}' crosses +/-pi: sent as one continuous angle {:.4f} -> {:.4f} "
+                          "(= {:.4f})", name(), jn, q0_[k], q0_[k] + dq_[k], angDiff(q0_[k] + dq_[k], 0.0));
       max_abs = std::max(max_abs, std::abs(dq_[k]));
     }
-    T_ = std::max(min_duration_, max_abs / (v_max_ * (1.0 - accel_fraction_)));
+    const double sc = use_speed_scale_ ? ppc(ctl).speedScale() : 1.0;
+    double v_eff = v_max_ * sc;
+    if(v_eff > 1.0)
+    {
+      mc_rtc::log::error("[{}] v_max {:.3f} x speed_scale {:.2f} = {:.3f} rad/s - capped at 1.0",
+                         name(), v_max_, sc, v_eff);
+      v_eff = 1.0;
+    }
+    const double peak_ratio = quintic_ ? 1.875 : 1.0 / (1.0 - accel_fraction_);
+    T_ = std::max(min_duration_ / sc, peak_ratio * max_abs / v_eff);
 
     if(!ok)
     {
@@ -2263,9 +2296,19 @@ struct DirectJointMove : mc_control::fsm::State
       phase_ = Phase::Refused;
       return;
     }
-    mc_rtc::log::info("[{}] DIRECT JTC move: max |delta| {:.4f} rad in {:.2f}s - peak {:.3f} rad/s, "
-                      "ramps over the first and last {:.0f}% ({:.2f}s each). speed_scale ignored.",
-                      name(), max_abs, T_, v_max_, 100.0 * accel_fraction_, accel_fraction_ * T_);
+    if(skip_if_within_ > 0.0 && max_abs <= skip_if_within_)
+    {
+      phase_ = Phase::Skipped;
+      mc_rtc::log::success("[{}] already within {:.4f} rad of target (max |delta| {:.4f}) - skipping",
+                           name(), skip_if_within_, max_abs);
+      return;
+    }
+    mc_rtc::log::info("[{}] DIRECT JTC move: max |delta| {:.4f} rad in {:.2f}s - peak {:.3f} rad/s, {} profile{}. "
+                      "speed_scale {:.2f}{}.",
+                      name(), max_abs, T_, peak_ratio * max_abs / T_, quintic_ ? "quintic" : "cruise",
+                      quintic_ ? "" : " (ramps over the first and last " +
+                                      std::to_string(static_cast<int>(std::lround(100.0 * accel_fraction_))) + "%)",
+                      sc, use_speed_scale_ ? "" : " (ignored - fixed speed)");
 
     if(ppc(ctl).dryRunValidation() || (ds.has(kDryRun) && ds.get<bool>(kDryRun)))
     {
@@ -2301,6 +2344,10 @@ struct DirectJointMove : mc_control::fsm::State
                              name(), phase_ == Phase::Refused ? "a refusal" : "an abort");
         }
         return false;
+
+      case Phase::Skipped:
+        output(next_state_);
+        return true;
 
       case Phase::Simulating:
       {
