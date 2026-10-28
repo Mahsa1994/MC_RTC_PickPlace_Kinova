@@ -146,7 +146,23 @@ def generate_launch_description():
                     'dry_run': False,
                     'torque_sign': -1.0,
                     'deadband_force': 1.0,
-                    'deadband_moment': 1.5,
+                    # 1.5 -> 3.0 on 2026-10-28, TEMPORARY. After the Bota F/T
+                    # sensor was fitted between wrist and gripper, the
+                    # estimate showed a steady phantom moment with ZERO force
+                    # and nobody touching: 1.98 Nm partway into step_2_far1,
+                    # growing with tool tilt (2 deg at step_1 -> 44 deg at
+                    # step_2). Above 1.5 it reached the controller, so the
+                    # compliant leg paused on it, yielded to it (the arm
+                    # tilted down), cleared and re-triggered - brake, sag,
+                    # repeat. Either the payload's weight (gripper/container
+                    # pushed further out) or the sensor cable pulling as the
+                    # arm stretches - not yet separated. Real touches still
+                    # register through the force channel (deadband 1.0 N,
+                    # trigger 2.0 N) - a push strong enough to make 3 Nm at
+                    # the container is ~15-20 N. Proper fix: compensate the
+                    # orientation-dependent moment in the bridge, then put
+                    # this back to 1.5.
+                    'deadband_moment': 3.0,
                     # RAISED 0.003 -> 0.004 (2026-09-23) to lift the tracking
                     # ceiling from ~0.12 to ~0.16 rad/s, which is what
                     # speed_scale 2.5-3.0 needs. This does NOT itself make the
