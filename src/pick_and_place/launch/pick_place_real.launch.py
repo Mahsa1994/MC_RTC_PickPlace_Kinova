@@ -194,13 +194,26 @@ def generate_launch_description():
                     # runaway model can push before model_real_gate stops it.
                     # Watch for: model-vs-real on the compliant legs at fast
                     # (expect ~0.0125 at peak), and any Joint Fault.
-                    'delta_max': 0.016,
+                    # 0.016 -> 0.026 on 2026-11-04, ONE 1.6x step, for fast_2 at
+                    # speed_scale 8.0. joint_5 on the compliant legs reaches
+                    # 0.590 rad/s on near and far3 (0.461 far1, 0.428 far2),
+                    # which needs a 0.0201 lead - 0.80x of 0.016, so the arm
+                    # would have fallen behind into the divergence pause on
+                    # every near/far3 fast_2 run. 0.026 gives 1.29x, the same
+                    # margin fast has at 0.016. slow/base/fast need no more
+                    # than 0.0125, so they are unaffected; as before, what
+                    # this loosens is how hard a runaway model can push before
+                    # model_real_gate stops it.
+                    'delta_max': 0.026,
                     # 0.05 -> 0.10 on 2026-10-21. The compliant legs pause at
                     # divergence_pause x speed_scale = 0.010 x 5.0 = 0.050 at
                     # fast; this gate must sit above that or the bridge stops
                     # publishing at the same moment the state pauses. 0.10
                     # keeps today's 2x ratio (0.05 vs 0.025 at 2.5).
-                    'model_real_gate': 0.10,
+                    # 0.10 -> 0.16 on 2026-11-04 for fast_2: the pause is
+                    # 0.010 x 8.0 = 0.080 there, 0.10 would be only 1.25x
+                    # above it. 0.16 keeps the 2x ratio.
+                    'model_real_gate': 0.16,
                     # Velocity gate on the estimated wrench: full below low,
                     # zero above high. Was the bridge default (0.05 / 0.3)
                     # until 2026-10-21. At fast 5.0 the compliant legs reach
