@@ -204,7 +204,17 @@ def generate_launch_description():
                     # than 0.0125, so they are unaffected; as before, what
                     # this loosens is how hard a runaway model can push before
                     # model_real_gate stops it.
-                    'delta_max': 0.026,
+                    # 0.026 -> 0.032 on 2026-11-11, for fast doubled 5.0 -> 10.0.
+                    # joint_5 on the near/far3 compliant legs reaches 0.738
+                    # rad/s there (0.577 far1, 0.535 far2), a 0.0251 lead -
+                    # 1.04x of 0.026, no margin. 0.032 gives 1.28x, as before.
+                    # slow 2.0 / base 3.2 / fast_2 8.0 need <= 0.0201.
+                    # 0.032 -> 0.040 on 2026-11-11 for fast_2 at 16, with the
+                    # QP joint-speed cap raised to 75% (velocityPercent in the
+                    # YAML). The compliant legs then run AT the cap on near and
+                    # far3: joint_5 0.916 rad/s (lead 0.0311, 1.28x of 0.040)
+                    # and joint_2 1.047 (lead 0.0356, 1.12x).
+                    'delta_max': 0.040,
                     # 0.05 -> 0.10 on 2026-10-21. The compliant legs pause at
                     # divergence_pause x speed_scale = 0.010 x 5.0 = 0.050 at
                     # fast; this gate must sit above that or the bridge stops
@@ -213,7 +223,11 @@ def generate_launch_description():
                     # 0.10 -> 0.16 on 2026-11-04 for fast_2: the pause is
                     # 0.010 x 8.0 = 0.080 there, 0.10 would be only 1.25x
                     # above it. 0.16 keeps the 2x ratio.
-                    'model_real_gate': 0.16,
+                    # 0.16 -> 0.20 on 2026-11-11: fast is now 10.0, pause at
+                    # 0.010 x 10.0 = 0.100; 0.20 keeps the 2x ratio.
+                    # 0.20 -> 0.32 on 2026-11-11: fast_2 is now 16.0, pause at
+                    # 0.010 x 16.0 = 0.160; 0.32 keeps the 2x ratio.
+                    'model_real_gate': 0.32,
                     # Velocity gate on the estimated wrench: full below low,
                     # zero above high. Was the bridge default (0.05 / 0.3)
                     # until 2026-10-21. At fast 5.0 the compliant legs reach
@@ -225,6 +239,11 @@ def generate_launch_description():
                     # start pausing on the compliant legs with nobody touching
                     # them, that is motion-induced wrench error getting
                     # through - raise contact_force_threshold, not this.
+                    # NOT changed on 2026-11-11 when slow/base/fast doubled
+                    # (2.0 / 3.2 / 10.0): now ~84% slow, ~69% base, and 0% at
+                    # fast's peak on near/far3 (0.738 rad/s > 0.65). ~1.35
+                    # would put fast back at ~47%, but it also raises every
+                    # other mode's sensitivity - a decision, not a fix.
                     'qd_gate_low': 0.05,
                     'qd_gate_high': 0.65,
                 }]

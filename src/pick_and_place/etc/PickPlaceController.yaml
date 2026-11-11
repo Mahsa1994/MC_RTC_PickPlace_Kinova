@@ -81,7 +81,11 @@ trials:
   #
   # The two factors are independent and compose cleanly:
   #   entry:        which chain to run  -> start_1 / start_2 / start_3 / start_4
-  #   speed_scale:  how fast to run it  -> 1.0 / 1.6 / 5.0 / 8.0
+  #   speed_scale:  how fast to run it  -> 2.0 / 3.2 / 10.0 / 16.0
+  #                 (all four doubled 2026-11-11 from 1.0 / 1.6 / 5.0 / 8.0.
+  #                 fast_2 at 16 needed the QP joint-speed cap raised - see
+  #                 velocityPercent under constraints: - and the launch
+  #                 file's delta_max / model_real_gate were resized.)
   #                 (fast_2 = 8.0 added 2026-11-04 - see the launch file's
   #                 delta_max note for what it needed from the bridge)
   #                 (from 0.5 / 1.0 / 2.5 on 2026-10-21: slow 2x and base
@@ -102,7 +106,10 @@ trials:
   # the estimated wrench down as the arm moves faster (qd_gate 0.05 -> 0.3
   # rad/s; 0.65 since 2026-10-21), so the SAME push registers differently
   # per speed: ~96% of it at slow, ~89% at base, ~47% at fast (near's
-  # compliant leg at its peak, joint_5, for the 1.0 / 1.6 / 5.0 scales). A
+  # compliant leg at its peak, joint_5, for the 1.0 / 1.6 / 5.0 scales).
+  # SINCE 2026-11-11 (2.0 / 3.2 / 10.0 / 16.0): ~84% slow, ~69% base,
+  # 0% fast (near and far3 peak at 0.738 rad/s, past qd_gate_high 0.65 -
+  # far1 12%, far2 19%), 0% fast_2 on every chain. A
   # contact that pauses the arm in a slow
   # trial may not in a fast one. That is a confound between the speed factor
   # and the compliance behaviour - worth deciding how to handle before
@@ -111,58 +118,58 @@ trials:
 
   # ── near (entry start_1) ──
   near_slow:
-    speed_scale: 1.0
+    speed_scale: 2.0
     entry: start_1
   near_base:
-    speed_scale: 1.6
+    speed_scale: 3.2
     entry: start_1
   near_fast:
-    speed_scale: 5.0
+    speed_scale: 10.0
     entry: start_1
   near_fast_2:
-    speed_scale: 8.0
+    speed_scale: 16.0
     entry: start_1
 
   # ── far1 (entry start_2) ──
   far1_slow:
-    speed_scale: 1.0
+    speed_scale: 2.0
     entry: start_2
   far1_base:
-    speed_scale: 1.6
+    speed_scale: 3.2
     entry: start_2
   far1_fast:
-    speed_scale: 5.0
+    speed_scale: 10.0
     entry: start_2
   far1_fast_2:
-    speed_scale: 8.0
+    speed_scale: 16.0
     entry: start_2
 
   # ── far2 (entry start_3) ──
   far2_slow:
-    speed_scale: 1.0
+    speed_scale: 2.0
     entry: start_3
   far2_base:
-    speed_scale: 1.6
+    speed_scale: 3.2
     entry: start_3
   far2_fast:
-    speed_scale: 5.0
+    speed_scale: 10.0
     entry: start_3
   far2_fast_2:
-    speed_scale: 8.0
+    speed_scale: 16.0
     entry: start_3
 
   # ── far3 (entry start_4) ──
   far3_slow:
-    speed_scale: 1.0
+    speed_scale: 2.0
     entry: start_4
   far3_base:
-    speed_scale: 1.6
+    speed_scale: 3.2
     entry: start_4
   far3_fast:
-    speed_scale: 5.0
+    speed_scale: 10.0
     entry: start_4
   far3_fast_2:
-    speed_scale: 8.0
+    speed_scale: 16.0
     entry: start_4
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -1184,6 +1191,16 @@ constraints:
   - type: kinematics
   - type: dynamics
     damper: [0.1, 0.01, 0.5]
+    # QP joint-speed cap, as a fraction of the URDF limits (1.3963 rad/s
+    # joints 1-3, 1.2218 joints 4-6). mc_rtc's default is 0.5 (0.70 / 0.61).
+    # RAISED 0.5 -> 0.75 on 2026-11-11 for fast_2 at speed_scale 16 (caps
+    # now 1.047 / 0.916 rad/s). The direct legs glue the model to the
+    # encoders, velocities included, so a real joint moving faster than this
+    # cap leaves the QP no feasible step and the controller stops: at 16 the
+    # base turns peak at 0.80 rad/s on joint_1, past 0.70. The compliant legs
+    # are simply limited by it - near/far3 at 16 want 1.18 rad/s on joint_5
+    # and run at 0.916 instead, so they do not get the full 2x.
+    velocityPercent: 0.75
   - type: collision
     r1: kinova_6dof
     r2: kinova_6dof
