@@ -81,7 +81,10 @@ trials:
   #
   # The two factors are independent and compose cleanly:
   #   entry:        which chain to run  -> start_1 / start_2 / start_3 / start_4
-  #   speed_scale:  how fast to run it  -> 2.0 / 3.2 / 10.0 / 16.0
+  #   speed_scale:  how fast to run it  -> 2.6 / 4.2 / 13.0 / 16.0
+  #                 (slow/base/fast x1.3 again on 2026-11-11 from 2.0 / 3.2 /
+  #                 10.0; fast_2 left at 16 - at 20.8 the base turns would
+  #                 peak at 1.04 rad/s, on the QP joint-speed cap.)
   #                 (all four doubled 2026-11-11 from 1.0 / 1.6 / 5.0 / 8.0.
   #                 fast_2 at 16 needed the QP joint-speed cap raised - see
   #                 velocityPercent under constraints: - and the launch
@@ -118,13 +121,13 @@ trials:
 
   # ── near (entry start_1) ──
   near_slow:
-    speed_scale: 2.0
+    speed_scale: 2.6
     entry: start_1
   near_base:
-    speed_scale: 3.2
+    speed_scale: 4.2
     entry: start_1
   near_fast:
-    speed_scale: 10.0
+    speed_scale: 13.0
     entry: start_1
   near_fast_2:
     speed_scale: 16.0
@@ -132,13 +135,13 @@ trials:
 
   # ── far1 (entry start_2) ──
   far1_slow:
-    speed_scale: 2.0
+    speed_scale: 2.6
     entry: start_2
   far1_base:
-    speed_scale: 3.2
+    speed_scale: 4.2
     entry: start_2
   far1_fast:
-    speed_scale: 10.0
+    speed_scale: 13.0
     entry: start_2
   far1_fast_2:
     speed_scale: 16.0
@@ -146,13 +149,13 @@ trials:
 
   # ── far2 (entry start_3) ──
   far2_slow:
-    speed_scale: 2.0
+    speed_scale: 2.6
     entry: start_3
   far2_base:
-    speed_scale: 3.2
+    speed_scale: 4.2
     entry: start_3
   far2_fast:
-    speed_scale: 10.0
+    speed_scale: 13.0
     entry: start_3
   far2_fast_2:
     speed_scale: 16.0
@@ -160,13 +163,13 @@ trials:
 
   # ── far3 (entry start_4) ──
   far3_slow:
-    speed_scale: 2.0
+    speed_scale: 2.6
     entry: start_4
   far3_base:
-    speed_scale: 3.2
+    speed_scale: 4.2
     entry: start_4
   far3_fast:
-    speed_scale: 10.0
+    speed_scale: 13.0
     entry: start_4
   far3_fast_2:
     speed_scale: 16.0
