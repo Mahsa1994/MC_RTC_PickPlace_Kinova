@@ -303,4 +303,24 @@
     <child link="tool_frame"/>
     <axis xyz="0 0 0"/>
   </joint>
+  <!-- Tool past the flange (2026-11-23): Bota SensONE T15 Gen A (BFT-SENS-IND2-B4,
+       235 g, 70 x 35 mm) + Robotiq 2F-85 (0.921 kg, CoM 47 mm above its base, from
+       robotiq_description), lumped into one body. Assumes 50 mm flange -> gripper base
+       (sensor + adapter plates); +/-10 mm moves the wrench estimate by ~0.02 Nm.
+       Container (<100 g) left out. Mass only - tool_frame is NOT moved, so every
+       captured Cartesian target stays valid. Without this the bridge's wrench
+       estimate read the tool's weight as a pose-dependent phantom moment. -->
+  <link name="tool_payload_link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0.0827"/>
+      <mass value="1.156"/>
+      <inertia ixx="0.002324" ixy="0" ixz="0" iyy="0.003116" iyz="0" izz="0.001297"/>
+    </inertial>
+  </link>
+  <joint name="tool_payload_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="0 0 0"/>
+    <parent link="end_effector_link"/>
+    <child link="tool_payload_link"/>
+    <axis xyz="0 0 0"/>
+  </joint>
 </robot>
