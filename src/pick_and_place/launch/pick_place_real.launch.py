@@ -145,15 +145,18 @@ def generate_launch_description():
                     # direction motion, or a gate-trip that doesn't clear).
                     'dry_run': False,
                     'torque_sign': -1.0,
-                    # 1.0 -> 3.0 on 2026-11-23, TEMPORARY - measurement run
-                    # for the new wrench_dls_lambda2 below. The lower damping
-                    # also amplifies joint-torque noise, and its untouched
-                    # level is not measured yet; 3.0 keeps that noise from
-                    # pausing the compliant legs. Note contact_force_threshold
-                    # (2.0 in the YAML) is now below this, so a force contact
-                    # triggers as soon as it passes 3.0. Set both from the
-                    # untouched RAW force of this run.
-                    'deadband_force': 3.0,
+                    # 1.0 -> 4.5 on 2026-11-23, for the new wrench_dls_lambda2
+                    # below. Measured untouched at 0.05 (far3, speed_scale 16,
+                    # the farthest/fastest condition): RAW force 1.3-2.2 N
+                    # stopped, 1.6-2.6 N moving, and the filtered value
+                    # reached 3.41 N - a 3.0 deadband let that through and
+                    # paused step_2_far3 with nobody touching it. 4.5 is
+                    # ~30% over that. contact_force_threshold (2.0 in the
+                    # YAML) is now below this, so the deadband decides: a
+                    # force contact pauses as soon as it passes 4.5 (unless
+                    # the velocity gate scales it under 2.0). Cost: a 10 N
+                    # push reads ~5-6 N, so only firm pushes register.
+                    'deadband_force': 4.5,
                     # 4.0 (default, never set here) -> 0.05 on 2026-11-23.
                     # At 4.0 the damped solve shrank real forces ~10-30x and
                     # leaked them into the moment: a firm push in
