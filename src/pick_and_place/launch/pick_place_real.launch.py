@@ -145,7 +145,26 @@ def generate_launch_description():
                     # direction motion, or a gate-trip that doesn't clear).
                     'dry_run': False,
                     'torque_sign': -1.0,
-                    'deadband_force': 1.0,
+                    # 1.0 -> 3.0 on 2026-11-23, TEMPORARY - measurement run
+                    # for the new wrench_dls_lambda2 below. The lower damping
+                    # also amplifies joint-torque noise, and its untouched
+                    # level is not measured yet; 3.0 keeps that noise from
+                    # pausing the compliant legs. Note contact_force_threshold
+                    # (2.0 in the YAML) is now below this, so a force contact
+                    # triggers as soon as it passes 3.0. Set both from the
+                    # untouched RAW force of this run.
+                    'deadband_force': 3.0,
+                    # 4.0 (default, never set here) -> 0.05 on 2026-11-23.
+                    # At 4.0 the damped solve shrank real forces ~10-30x and
+                    # leaked them into the moment: a firm push in
+                    # step_1_far1_return read 0.83 N force / 1.93 Nm, so only
+                    # the moment channel ever detected contact. Offline model
+                    # along step_2_far1 <-> step_1_far1: a true 10 N push
+                    # reads 0.35-0.86 N at 4.0, 4.7-6.2 N at 0.05. Cost: noise
+                    # gain is at most 1/(2*sqrt(0.05)) = 2.2 N per Nm of
+                    # joint-torque error, even at the near-singular wrist
+                    # (joint_5 ~0.12) in step_2_far1.
+                    'wrench_dls_lambda2': 0.05,
                     # Back to 1.5 on 2026-11-23. It was raised to 3.0 on
                     # 2026-10-28 to hide a phantom moment (1.98 Nm untouched
                     # in step_2_far1) that appeared once the Bota sensor was
